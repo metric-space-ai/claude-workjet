@@ -147,7 +147,7 @@ claude-agent <hard|normal|simple> [claude args...]
 claude-agent --degrade <role> [claude args...]
 ```
 
-Chains: `hard` sol→kimi→minimax, `normal` kimi→sol→minimax, `simple` minimax→kimi→sol. Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`).
+Chains: `hard` sol→kimi→minimax, `normal` kimi→sol→minimax, `simple` minimax→kimi→sol. Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached `.workjet/wt-*` worktree by default. Successful worktrees are retained for orchestrator inspection and integration; failed or timed-out worktrees are discarded before fallback. Use `--no-isolate` only when in-place execution is intentional.
 
 | Exit | Meaning |
 |---|---|

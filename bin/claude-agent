@@ -6,10 +6,11 @@
 # A DOWNGRADE to a lower-capability model never happens transparently — it either
 # refuses (default, exit 3) or is loudly banner-tagged (--degrade, exit 10).
 #
-# Usage:  claude-agent [--degrade] <role> [claude args...]
+# Usage:  claude-agent [--degrade] [--no-isolate] <role> [claude args...]
 #   role = hard | normal | simple
-#   --degrade : permit delivering a LOWER-tier result than the role requires,
-#               with a loud banner on stdout and exit code 10.
+#   --degrade    : permit delivering a LOWER-tier result than the role requires,
+#                  with a loud banner on stdout and exit code 10.
+#   --no-isolate : run workers in the current checkout instead of a git worktree.
 #
 # Tiers:  minimax=1  kimi=2  sol=3     Required: simple=1 normal=2 hard=3
 #   - fallback tier >= required  -> safe (equal/upgrade) swap, taken automatically
@@ -31,7 +32,15 @@ PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-25}
 TASK_TIMEOUT=${AGENT_TIMEOUT:-1800}
 
 allow_degrade=0
-[[ "$1" == "--degrade" ]] && { allow_degrade=1; shift; }
+isolate=1
+while [[ "$1" == --* ]]; do
+  case "$1" in
+    --degrade) allow_degrade=1 ;;
+    --no-isolate) isolate=0 ;;
+    *) print -u2 "claude-agent: unknown option '$1'"; exit 2 ;;
+  esac
+  shift
+done
 role="$1"; shift 2>/dev/null
 case "$role" in
   hard)   chain=(claude-sol claude-kimi claude-minimax); need=3 ;;
@@ -76,20 +85,88 @@ run_timed() {
   else
     python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" </dev/null >"$of" 2>"$ef" &
   fi
-  local pid=$! n=0
-  while kill -0 $pid 2>/dev/null; do
-    sleep 1
-    if (( ++n >= secs )); then
+  local pid=$! timeout_marker="${of}.timeout.$$" watchdog rc
+  (
+    sleep "$secs"
+    if kill -0 $pid 2>/dev/null; then
+      : > "$timeout_marker"
       kill -TERM -- -$pid 2>/dev/null
       sleep 1
       kill -KILL -- -$pid 2>/dev/null
-      wait $pid 2>/dev/null
-      return 124
     fi
-  done
+  ) &
+  watchdog=$!
   wait $pid 2>/dev/null
-  return $?
+  rc=$?
+  kill $watchdog 2>/dev/null
+  wait $watchdog 2>/dev/null
+  if [[ -f "$timeout_marker" ]]; then
+    rm -f "$timeout_marker"
+    return 124
+  fi
+  return $rc
 }
+
+repo_root=""
+repo_subdir=""
+if (( isolate )); then
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+  if [[ -n "$repo_root" ]]; then
+    repo_subdir="${PWD#$repo_root}"
+  else
+    isolate=0
+    print -u2 "[claude-agent] warning: current directory is not a Git repository; running in-place"
+  fi
+fi
+
+cleanup_stale_worktrees() {
+  (( isolate )) || return 0
+  local stale
+  mkdir -p "$repo_root/.workjet"
+  while IFS= read -r -d '' stale; do
+    print -u2 "[claude-agent] removing stale worktree older than 24h: $stale"
+    git -C "$repo_root" worktree remove --force "$stale" >/dev/null 2>&1 || rm -rf -- "$stale"
+  done < <(find "$repo_root/.workjet" -mindepth 1 -maxdepth 1 -type d -name 'wt-*' -mtime +0 -print0 2>/dev/null)
+  git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+}
+
+create_worktree() {  # sets WORKTREE_PATH, WORKER_CWD, WORKTREE_BASE
+  local stamp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  WORKTREE_PATH="$repo_root/.workjet/wt-${role}-${stamp}-$$"
+  WORKTREE_BASE="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null)" || return 4
+  mkdir -p "$repo_root/.workjet"
+  if ! git -C "$repo_root" worktree add --detach --quiet "$WORKTREE_PATH" "$WORKTREE_BASE"; then
+    print_task_failed "worktree setup" "git worktree add failed for $WORKTREE_PATH"
+    WORKTREE_PATH=""
+    return 4
+  fi
+  WORKER_CWD="$WORKTREE_PATH$repo_subdir"
+  if [[ ! -d "$WORKER_CWD" ]]; then
+    print -u2 "[claude-agent] warning: matching subdirectory absent at HEAD; worker starts at worktree root"
+    WORKER_CWD="$WORKTREE_PATH"
+  fi
+}
+
+remove_worktree() {
+  local wt="$1"
+  [[ -n "$wt" ]] || return 0
+  git -C "$repo_root" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf -- "$wt"
+  git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+}
+
+report_worktree() {
+  local wt="$1" base="$2" wt_status diffstat
+  wt_status="$(git -C "$wt" status --short 2>/dev/null | head)"
+  diffstat="$(git -C "$wt" diff --stat "$base" -- 2>/dev/null)"
+  print -u2 "[claude-agent] worktree retained: $wt"
+  print -u2 "[claude-agent] worktree status (first 10 lines):"
+  print -u2 -r -- "${wt_status:-<clean>}"
+  print -u2 "[claude-agent] worktree diffstat:"
+  print -u2 -r -- "${diffstat:-<no tracked diff>}"
+}
+
+cleanup_stale_worktrees
 
 ensure_proxy() {  # start the local proxy if Sol is the target and it's not listening
   [[ "$1" == claude-sol ]] || return 0
@@ -118,16 +195,36 @@ probe_available() {  # $1 worker -> 0 available, 1 unavailable, 4 task failure
 deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 unavailable / 4 task failure
   local w=$1; shift
   ensure_proxy "$w"
-  local of=$(mktemp) ef=$(mktemp) rc err
+  local of=$(mktemp) ef=$(mktemp) rc err oldpwd="$PWD"
+  local wt="" wt_base=""
+  if (( isolate )); then
+    create_worktree || { rm -f "$of" "$ef"; return 4; }
+    wt="$WORKTREE_PATH"; wt_base="$WORKTREE_BASE"
+    cd "$WORKER_CWD" || { remove_worktree "$wt"; rm -f "$of" "$ef"; print_task_failed "$w" "cannot enter worktree $WORKER_CWD"; return 4; }
+  fi
   run_timed $TASK_TIMEOUT "$of" "$ef" ~/.local/bin/$w "$@"; rc=$?
+  cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"; rm -f "$of" "$ef"
-  (( rc == 124 )) && { print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — aborting worker"; REPLY=""; return 1; }
+  if (( rc == 124 )); then
+    remove_worktree "$wt"
+    print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — aborting worker"
+    REPLY=""
+    return 1
+  fi
   if (( rc == 0 )); then
-    has_output "$REPLY" && return 0
+    if has_output "$REPLY"; then
+      [[ -n "$wt" ]] && report_worktree "$wt" "$wt_base"
+      return 0
+    fi
+    remove_worktree "$wt"
     print -u2 "[claude-agent] $w task returned empty output — treating as unavailable"
     return 1
   fi
-  is_unavailable "$err" "$rc" && return 1
+  if is_unavailable "$err" "$rc"; then
+    remove_worktree "$wt"
+    return 1
+  fi
+  remove_worktree "$wt"
   print_task_failed "$w" "$err"
   REPLY=""
   return 4
