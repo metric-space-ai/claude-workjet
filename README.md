@@ -1,6 +1,6 @@
 # claude-workjet
 
-Get shit done with coding agents — Michael Welsch's Claude Code setup.
+Get shit done with coding agents — Michael Welsch's Claude Code "workjet" setup.
 
 Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
