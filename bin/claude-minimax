@@ -2,12 +2,56 @@
 # Claude Code CLI routed to MiniMax M3 (api.minimax.io, Anthropic-compatible).
 # Uses the MiniMax coding/flat subscription key from the secret store.
 # Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session stays untouched.
-source ~/.config/secrets/minimax.env
+
+load_secret() {
+  local file="$1" label="$2" mode mode_value value
+  if [[ ! -f "$file" ]]; then
+    print -u2 "$label: missing secret file: $file"
+    return 1
+  fi
+  mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null)"
+  if [[ -z "$mode" ]]; then
+    print -u2 "$label: cannot inspect permissions on $file"
+    return 1
+  fi
+  mode_value=$(( 8#$mode ))
+  if (( (mode_value & 8#77) != 0 )); then
+    print -u2 "$label: insecure permissions on $file (mode $mode; require 0600 or stricter)"
+    return 1
+  fi
+  IFS= read -r value < "$file" || true
+  if [[ -z "${value//[[:space:]]/}" || "$value" == "CHANGE-ME" || "$value" == "YOUR_KEY" ]]; then
+    print -u2 "$label: $file is empty or still contains a placeholder"
+    return 1
+  fi
+  REPLY="$value"
+}
+
+KEY_FILE="$HOME/.config/secrets/minimax-key"
+LEGACY_FILE="$HOME/.config/secrets/minimax.env"
+if [[ -f "$KEY_FILE" ]]; then
+  load_secret "$KEY_FILE" claude-minimax || exit 1
+  MINIMAX_KEY="$REPLY"
+elif [[ -f "$LEGACY_FILE" ]]; then
+  load_secret "$LEGACY_FILE" claude-minimax || exit 1
+  legacy_line="$(grep -E '^[[:space:]]*(export[[:space:]]+)?MINIMAX_API_KEY[[:space:]]*=' "$LEGACY_FILE" | head -n 1)"
+  MINIMAX_KEY="$(print -r -- "$legacy_line" | sed -E "s/^[[:space:]]*(export[[:space:]]+)?MINIMAX_API_KEY[[:space:]]*=[[:space:]]*//; s/[[:space:]]*$//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")"
+  if [[ -z "${MINIMAX_KEY//[[:space:]]/}" || "$MINIMAX_KEY" == "CHANGE-ME" || "$MINIMAX_KEY" == "YOUR_KEY" ]]; then
+    print -u2 "claude-minimax: no usable MINIMAX_API_KEY assignment in $LEGACY_FILE"
+    exit 1
+  fi
+  print -u2 "claude-minimax: using legacy $LEGACY_FILE without sourcing it; migrate the key to $KEY_FILE"
+else
+  print -u2 "claude-minimax: missing secret file: $KEY_FILE"
+  print -u2 "claude-minimax: create it with one line and chmod 600 $KEY_FILE"
+  exit 1
+fi
+
 export CLAUDE_CONFIG_DIR="$HOME/.config/claude-minimax"
 mkdir -p "$CLAUDE_CONFIG_DIR"
 export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
-export ANTHROPIC_API_KEY="$MINIMAX_API_KEY"
-export ANTHROPIC_AUTH_TOKEN="$MINIMAX_API_KEY"
+export ANTHROPIC_API_KEY="$MINIMAX_KEY"
+export ANTHROPIC_AUTH_TOKEN="$MINIMAX_KEY"
 export ANTHROPIC_MODEL="${MINIMAX_MODEL:-MiniMax-M3}"
 export ANTHROPIC_SMALL_FAST_MODEL="${MINIMAX_MODEL:-MiniMax-M3}"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1

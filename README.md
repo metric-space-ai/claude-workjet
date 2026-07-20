@@ -65,11 +65,11 @@ Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent}` prints four paths, and 
 
 ```sh
 mkdir -p ~/.config/secrets
-printf 'export MINIMAX_API_KEY="%s"\n' "KEY" > ~/.config/secrets/minimax.env
-chmod 600 ~/.config/secrets/minimax.env
+printf '%s\n' "KEY" > ~/.config/secrets/minimax-key
+chmod 600 ~/.config/secrets/minimax-key
 ```
 
-Check: `claude-minimax -p "Reply with the token: OK" < /dev/null` returns `OK`. On an auth error, the key is wrong — do not retry in a loop.
+Check: `claude-minimax -p "Reply with the token: OK" < /dev/null` returns `OK`. On an auth error, the key is wrong — do not retry in a loop. Existing `~/.config/secrets/minimax.env` installations remain readable without sourcing, but should migrate to `minimax-key`.
 
 ### 3. Kimi (skip without subscription)
 
@@ -100,7 +100,7 @@ lsof -nP -iTCP:8317 -sTCP:LISTEN
 
 Check: listener on `127.0.0.1:8317`.
 
-Choose a random local secret and set the same value in the CLIProxyAPI config (`/opt/homebrew/etc/cliproxyapi.conf`) and in `~/.local/bin/claude-sol` (both occurrences of `sol-local-CHANGE-ME`). It is only used on loopback.
+Choose a random local secret and set the same value in the CLIProxyAPI config (`/opt/homebrew/etc/cliproxyapi.conf`) and as the single line in `~/.config/secrets/sol-key`; then run `chmod 600 ~/.config/secrets/sol-key`. It is only used on loopback.
 
 Check: `claude-sol -p "Reply with the token: OK" < /dev/null` returns `OK`.
 

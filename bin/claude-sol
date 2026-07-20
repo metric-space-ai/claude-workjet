@@ -1,19 +1,48 @@
 #!/bin/zsh
 # Claude Code CLI routed to GPT-5.6 Sol via CLIProxyAPI, a local Anthropic<->Codex
-# proxy (127.0.0.1:8317) that authenticates with your ChatGPT Pro subscription
-# (OAuth, no API key). Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session
-# stays untouched. Run exactly like `claude`.
+# proxy (127.0.0.1:8317) that authenticates with your ChatGPT Pro subscription.
+# Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session stays untouched.
 #
 # Reasoning effort is pinned HIGH: the proxy maps the Anthropic "thinking" budget
 # to the Codex reasoning-effort level, and a budget of ~10k+ maps to "high".
 #
 # Requires the proxy to be running:  brew services start cliproxyapi
 # (or) /opt/homebrew/opt/cliproxyapi/bin/cliproxyapi -config /opt/homebrew/etc/cliproxyapi.conf
+
+load_secret() {
+  local file="$1" label="$2" mode mode_value value
+  if [[ ! -f "$file" ]]; then
+    print -u2 "$label: missing secret file: $file"
+    print -u2 "$label: create it with one line and chmod 600 $file"
+    return 1
+  fi
+  mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null)"
+  if [[ -z "$mode" ]]; then
+    print -u2 "$label: cannot inspect permissions on $file"
+    return 1
+  fi
+  mode_value=$(( 8#$mode ))
+  if (( (mode_value & 8#77) != 0 )); then
+    print -u2 "$label: insecure permissions on $file (mode $mode; require 0600 or stricter)"
+    return 1
+  fi
+  IFS= read -r value < "$file" || true
+  if [[ -z "${value//[[:space:]]/}" || "$value" == "CHANGE-ME" || "$value" == "YOUR_KEY" ]]; then
+    print -u2 "$label: $file is empty or still contains a placeholder"
+    return 1
+  fi
+  REPLY="$value"
+}
+
+SOL_KEY_FILE="$HOME/.config/secrets/sol-key"
+load_secret "$SOL_KEY_FILE" claude-sol || exit 1
+SOL_KEY="$REPLY"
+
 export CLAUDE_CONFIG_DIR="$HOME/.config/claude-sol"
 mkdir -p "$CLAUDE_CONFIG_DIR"
 export ANTHROPIC_BASE_URL="http://127.0.0.1:8317"
-export ANTHROPIC_API_KEY="sol-local-CHANGE-ME"
-export ANTHROPIC_AUTH_TOKEN="sol-local-CHANGE-ME"
+export ANTHROPIC_API_KEY="$SOL_KEY"
+export ANTHROPIC_AUTH_TOKEN="$SOL_KEY"
 export ANTHROPIC_MODEL="${SOL_MODEL:-gpt-5.6-sol}"
 export ANTHROPIC_SMALL_FAST_MODEL="${SOL_SMALL_MODEL:-gpt-5.6-sol}"
 # reasoning HIGH via thinking budget (proxy: budget -> codex effort level)

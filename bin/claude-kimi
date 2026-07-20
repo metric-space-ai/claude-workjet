@@ -2,7 +2,35 @@
 # Claude Code CLI routed to Kimi K3 (kimi.com Kimi-Code, Anthropic-compatible).
 # Per https://www.kimi.com/code/docs/en/third-party-tools/other-coding-agents.html
 # Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session stays untouched.
-KIMI_KEY="$(cat ~/.config/kimi/api-key)"
+
+load_secret() {
+  local file="$1" label="$2" mode mode_value value
+  if [[ ! -f "$file" ]]; then
+    print -u2 "$label: missing secret file: $file"
+    return 1
+  fi
+  mode="$(stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null)"
+  if [[ -z "$mode" ]]; then
+    print -u2 "$label: cannot inspect permissions on $file"
+    return 1
+  fi
+  mode_value=$(( 8#$mode ))
+  if (( (mode_value & 8#77) != 0 )); then
+    print -u2 "$label: insecure permissions on $file (mode $mode; require 0600 or stricter)"
+    return 1
+  fi
+  IFS= read -r value < "$file" || true
+  if [[ -z "${value//[[:space:]]/}" || "$value" == "CHANGE-ME" || "$value" == "YOUR_KEY" ]]; then
+    print -u2 "$label: $file is empty or still contains a placeholder"
+    return 1
+  fi
+  REPLY="$value"
+}
+
+KIMI_KEY_FILE="$HOME/.config/kimi/api-key"
+load_secret "$KIMI_KEY_FILE" claude-kimi || exit 1
+KIMI_KEY="$REPLY"
+
 export CLAUDE_CONFIG_DIR="$HOME/.config/claude-kimi"
 mkdir -p "$CLAUDE_CONFIG_DIR"
 export ANTHROPIC_BASE_URL="https://api.kimi.com/coding/"

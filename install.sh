@@ -16,21 +16,22 @@ done
 mkdir -p "$HOME/.config/secrets" "$HOME/.config/kimi" "$HOME/.claude/skills/workjet"
 cp "$HERE/skills/workjet/SKILL.md" "$HOME/.claude/skills/workjet/SKILL.md"
 echo "installed skill: /workjet"
-[ -f "$HOME/.config/secrets/minimax.env" ] || {
-  printf 'export MINIMAX_API_KEY="YOUR_KEY"\n' > "$HOME/.config/secrets/minimax.env"
-  chmod 600 "$HOME/.config/secrets/minimax.env"
-  echo "created ~/.config/secrets/minimax.env — put your MiniMax key in it"
+create_key_skeleton() {
+  file=$1
+  label=$2
+  [ -f "$file" ] && return 0
+  (umask 077 && printf 'CHANGE-ME\n' > "$file")
+  chmod 600 "$file"
+  echo "created $file — put your $label key in it"
 }
-[ -f "$HOME/.config/kimi/api-key" ] || {
-  printf 'YOUR_KEY\n' > "$HOME/.config/kimi/api-key"
-  chmod 600 "$HOME/.config/kimi/api-key"
-  echo "created ~/.config/kimi/api-key — put your Kimi key in it"
-}
+create_key_skeleton "$HOME/.config/secrets/sol-key" "CLIProxyAPI"
+create_key_skeleton "$HOME/.config/secrets/minimax-key" "MiniMax"
+create_key_skeleton "$HOME/.config/kimi/api-key" "Kimi"
 
 echo
 echo "Next steps:"
-echo "  1. Fill in the key files above."
-echo "  2. Sol: brew install cliproxyapi && cliproxyapi -codex-login && brew services start cliproxyapi"
-echo "     then replace sol-local-CHANGE-ME in $BIN/claude-sol with your CLIProxyAPI key."
+echo "  1. Fill in the key files above and keep them chmod 600."
+echo "  2. Sol: set the same random local key in ~/.config/secrets/sol-key and CLIProxyAPI,"
+echo "     then run: brew install cliproxyapi && cliproxyapi -codex-login && brew services start cliproxyapi"
 echo "  3. Orchestrator prompt: cp $HERE/AGENTS.md ~/.claude/AGENTS.md && printf '@AGENTS.md\n' > ~/.claude/CLAUDE.md (merge if one exists)."
 echo "  4. Verify: claude-minimax -p 'Reply with the token: OK' < /dev/null"
