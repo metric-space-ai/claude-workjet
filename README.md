@@ -24,6 +24,7 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `bin/claude-minimax` | MiniMax M3; MiniMax coding plan |
 | `bin/claude-kimi` | Kimi K3 (1M context); Kimi coding plan |
 | `bin/claude-agent` | Role-based dispatcher: probes the required worker, degrades only with explicit authorization |
+| `bin/claude-fleet` | Multi-brief runner: delegates through `claude-agent`, with a global three-slot provider semaphore |
 | `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
 | `CLAUDE.md` | One line: `@AGENTS.md` — Claude Code imports the canonical prompt |
 | `skills/workjet/` | Claude Code skill: `/workjet` switches the session into workjet orchestration for the current task |
@@ -57,7 +58,7 @@ git clone https://github.com/metric-space-ai/claude-workjet /tmp/claude-workjet
 cd /tmp/claude-workjet && ./install.sh
 ```
 
-Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent}` prints four paths, and `~/.local/bin` is on `PATH`.
+Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent,fleet}` prints five paths, and `~/.local/bin` is on `PATH`.
 
 ### 2. MiniMax (skip without subscription)
 
@@ -206,9 +207,17 @@ Every invocation records its brief and final worker attempt under `~/.local/stat
 | 10 | Degraded result (only with `--degrade`), banner-marked — verify and disclose before use |
 | 2 | Usage error |
 
+### Fleet runner
+
+```sh
+claude-fleet <role> brief1.md [brief2.md ...]
+```
+
+Each brief is a separate `claude-agent` run with its own run directory and isolated worktree. `claude-fleet` uses a shared flock semaphore under `~/.local/state/workjet/sem/<provider>.lock/` and enforces at most three concurrent calls per provider across fleet processes. Set `WORKJET_PROVIDER_SLOTS=1..3` to lower the cap; values above three are rejected. A provider failure (`claude-agent` exit 3, including 403/quota/auth failures) stops queued briefs for that provider, while task failures (exit 4) do not stop the queue. The final table reports status, run directory, and worktree for every brief.
+
 ### Operating rules
 
-- Concurrency ≤ 3 per provider; a 403/quota wall means stop, not retry.
+- Use `claude-fleet` for parallel briefs; it technically enforces concurrency ≤ 3 per provider and stops queued work on a 403/quota wall.
 - Verify worker results independently (run the tests, check the diff against the whitelist).
 - MiniMax writes new files only — no Edit, no git.
 

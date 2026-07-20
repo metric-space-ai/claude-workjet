@@ -166,9 +166,13 @@ until the orchestrator marks the run `integrated` or `abandoned` with
 `claude-agent runs mark <run-id> integrated|abandoned`; unmarked worktrees are never
 automatically deleted.
 
-For a **fleet** (waves-of-N over many parallel briefs), keep using the
-wrappers directly but STOP on a 403 rather than burning failed attempts, and never
-silently let fleet items fall to a lower tier — re-plan the batch instead.
+For a **fleet** (many briefs for one role), use
+`claude-fleet <role> brief1.md [brief2.md ...]`. It routes every brief through
+`claude-agent`, gives each one its own run/worktree, and enforces at most three
+concurrent calls per provider with a shared flock semaphore. A provider failure
+stops that provider's queued briefs; a task failure (exit 4) does not. Read the final
+per-brief status/run-directory/worktree summary and never bypass this path with raw
+parallel wrapper calls.
 
 ## When to use the Workflow tool (multi-agent orchestration)
 

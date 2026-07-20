@@ -1,0 +1,140 @@
+#!/bin/zsh
+# claude-fleet: provider-bounded parallel runner over claude-agent.
+# Usage: claude-fleet <role> brief1.md [brief2.md ...]
+emulate -L zsh
+setopt pipe_fail
+
+STATE_ROOT=${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}
+SLOTS=${WORKJET_PROVIDER_SLOTS:-3}
+AGENT=${CLAUDE_AGENT_BIN:-${0:A:h}/claude-agent}
+
+usage() {
+  print -u2 "use: claude-fleet <role> brief1.md [brief2.md ...]"
+  exit 2
+}
+
+(( $# >= 2 )) || usage
+role="$1"; shift
+case "$role" in
+  hard) role=implementation-hard ;;
+  normal) role=research ;;
+  simple) role=bulk-generation ;;
+esac
+case "$role" in
+  implementation-hard|frontend-integration) provider=sol ;;
+  frontend-greenfield|review|research) provider=kimi ;;
+  bulk-generation) provider=minimax ;;
+  *) usage ;;
+esac
+[[ "$SLOTS" == <1-> ]] && (( SLOTS >= 1 && SLOTS <= 3 )) || {
+  print -u2 "claude-fleet: WORKJET_PROVIDER_SLOTS must be between 1 and 3"
+  exit 2
+}
+[[ -x "$AGENT" ]] || { print -u2 "claude-fleet: claude-agent not executable: $AGENT"; exit 2; }
+zmodload zsh/system 2>/dev/null || {
+  print -u2 "claude-fleet: zsh/system flock support is required"
+  exit 2
+}
+
+briefs=("$@")
+for brief in "${briefs[@]}"; do
+  [[ -f "$brief" && -r "$brief" ]] || {
+    print -u2 "claude-fleet: brief is not readable: $brief"
+    exit 2
+  }
+done
+
+fleet_id="$(date +%Y%m%dT%H%M%S)-$$-$role"
+fleet_dir="$STATE_ROOT/fleets/$fleet_id"
+sem_dir="$STATE_ROOT/sem/${provider}.lock"
+stop_file="$fleet_dir/provider-stopped"
+mkdir -p "$fleet_dir/items" "$sem_dir" || exit 2
+for (( slot=1; slot <= SLOTS; slot++ )); do
+  touch "$sem_dir/slot-$slot" || exit 2
+done
+chmod 700 "$fleet_dir" 2>/dev/null || true
+print -r -- "$role" > "$fleet_dir/role"
+print -r -- "$provider" > "$fleet_dir/provider"
+
+acquire_slot() {
+  local slot
+  while true; do
+    [[ -f "$stop_file" ]] && return 3
+    for (( slot=1; slot <= SLOTS; slot++ )); do
+      if zsystem flock -t 0 -f SEM_FD "$sem_dir/slot-$slot" 2>/dev/null; then
+        SEM_SLOT=$slot
+        [[ -f "$stop_file" ]] && { zsystem flock -u "$SEM_FD"; return 3; }
+        return 0
+      fi
+    done
+    sleep 0.05
+  done
+}
+
+run_item() {
+  local idx="$1" brief="$2" item_dir run_dir rc item_status worktree
+  item_dir="$fleet_dir/items/${(l:3::0:)idx}"
+  run_dir="$STATE_ROOT/runs/${fleet_id}-${(l:3::0:)idx}"
+  mkdir -p "$item_dir"
+  print -r -- "${brief:A}" > "$item_dir/brief-path"
+  print -r -- "$run_dir" > "$item_dir/run-dir"
+
+  if ! acquire_slot; then
+    print -r -- skipped-provider > "$item_dir/status"
+    print -r -- 3 > "$item_dir/rc"
+    : > "$item_dir/run-dir"
+    : > "$item_dir/worktree"
+    return 0
+  fi
+
+  print -r -- "$SEM_SLOT" > "$item_dir/slot"
+  "$AGENT" --run-dir "$run_dir" "$role" -p "$(<"$brief")" \
+    > "$item_dir/stdout" 2> "$item_dir/stderr"
+  rc=$?
+  zsystem flock -u "$SEM_FD" 2>/dev/null || true
+
+  case "$rc" in
+    0) item_status=success ;;
+    3)
+      item_status=provider-failed
+      : > "$stop_file"
+      ;;
+    4) item_status=task-failed ;;
+    10) item_status=degraded ;;
+    *) item_status="failed-$rc" ;;
+  esac
+  if [[ -f "$run_dir/worktree-path" ]]; then
+    worktree="$(<"$run_dir/worktree-path")"
+  else
+    worktree=""
+  fi
+  print -r -- "$item_status" > "$item_dir/status"
+  print -r -- "$rc" > "$item_dir/rc"
+  print -r -- "$worktree" > "$item_dir/worktree"
+}
+
+pids=()
+for (( i=1; i <= ${#briefs}; i++ )); do
+  run_item "$i" "${briefs[$i]}" &
+  pids+=("$!")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid" 2>/dev/null
+done
+
+print "claude-fleet summary: role=$role provider=$provider fleet=$fleet_dir"
+print "STATUS\tBRIEF\tRUN_DIR\tWORKTREE"
+final_rc=0
+for (( i=1; i <= ${#briefs}; i++ )); do
+  item_dir="$fleet_dir/items/${(l:3::0:)i}"
+  item_status="$(<"$item_dir/status")"
+  run_dir="$(<"$item_dir/run-dir")"
+  worktree="$(<"$item_dir/worktree")"
+  printf '%s\t%s\t%s\t%s\n' "$item_status" "${briefs[$i]}" "${run_dir:-<not-started>}" "${worktree:-<none>}"
+  case "$item_status" in
+    provider-failed|skipped-provider) final_rc=3 ;;
+    task-failed) (( final_rc == 0 )) && final_rc=4 ;;
+    failed-*) (( final_rc == 0 )) && final_rc=1 ;;
+  esac
+done
+exit $final_rc

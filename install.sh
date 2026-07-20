@@ -15,7 +15,7 @@ BIN="$HOME/.local/bin"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$BIN"
-for w in claude-sol claude-minimax claude-kimi claude-agent; do
+for w in claude-sol claude-minimax claude-kimi claude-agent claude-fleet; do
   cp "$HERE/bin/$w" "$BIN/$w"
   chmod +x "$BIN/$w"
   echo "installed $BIN/$w"
