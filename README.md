@@ -6,6 +6,18 @@ Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
 Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `CLAUDE.md` is the orchestrator prompt for the Claude session that coordinates the workers.
 
+## Roles
+
+| Agent | Role |
+|---|---|
+| **Claude (Fable/Opus)** — your Claude Code session | **Orchestrator.** Decomposes the task, writes the briefs, routes work, integrates results, verifies everything, does the final edit. Does not do the bulk production work itself. |
+| **GPT-5.6 "Sol"** — `claude-sol` | **Completion engine.** Hard, detail-heavy, must-not-fail implementation work. Follows a precise brief relentlessly; tends to over-deliver, which the brief's whitelist bounds. Also owns edits to existing frontend and frontend↔backend wiring. |
+| **MiniMax M3** — `claude-minimax` | **Bulk worker.** Clear, repetitive, high-volume work: generation, classification, judging, test writing. Write-only on files, never Edit, never git. |
+| **Kimi K3** — `claude-kimi` | **Frontend lead and independent reviewer.** Greenfield UI/design work from scratch; reviews substantial integrations and the orchestrator's final edits; resolves disputes between agents. |
+| **Claude Opus 4.8** (logged-in `claude` CLI) | **Rare third opinion.** Normally not used at all; pulled in only on a large review discrepancy, on the Claude subscription. |
+
+Review model: the orchestrator self-reviews adversarially by default, Kimi reviews independently, Opus breaks ties. The full role split, brief format, and operating rules are the content of [CLAUDE.md](CLAUDE.md).
+
 ## Components
 
 | File | Purpose |
