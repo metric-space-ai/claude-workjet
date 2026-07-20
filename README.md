@@ -4,7 +4,7 @@ Get shit done with coding agents — Michael Welsch's Claude Code "workjet" setu
 
 Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
-Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a role-based dispatcher with explicit degradation and failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers (`CLAUDE.md` just imports it, so the same prompt also serves agents that read AGENTS.md natively).
+Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a role-based dispatcher with explicit degradation and failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers. The default installer loads it only through `/workjet`; the repository's `CLAUDE.md` import supports project-local or opt-in global use.
 
 ## Roles
 
@@ -27,7 +27,7 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
 | `CLAUDE.md` | One line: `@AGENTS.md` — Claude Code imports the canonical prompt |
 | `skills/workjet/` | Claude Code skill: `/workjet` switches the session into workjet orchestration for the current task |
-| `install.sh` | Copies the wrappers to `~/.local/bin`, installs the skill, creates key-file skeletons |
+| `install.sh` | Copies wrappers, installs the skill-only rules by default, and creates key-file skeletons |
 
 Any subset works; install only the wrappers you have subscriptions for.
 
@@ -120,17 +120,25 @@ Choose a random local secret and set the same value in the CLIProxyAPI config (`
 
 Check: `claude-sol -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
-### 5. Orchestrator prompt
+### 5. Orchestrator mode
+
+The default install is **skill-only**. `install.sh` copies the rules to `~/.claude/workjet/AGENTS.md` (not auto-loaded) and installs `/workjet`. It does not modify the global `~/.claude/CLAUDE.md`.
 
 ```sh
-test -f ~/.claude/CLAUDE.md && cp ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak-workjet
-cp /tmp/claude-workjet/AGENTS.md ~/.claude/AGENTS.md
-printf '@AGENTS.md\n' > ~/.claude/CLAUDE.md
+test -f ~/.claude/workjet/AGENTS.md
+test -f ~/.claude/skills/workjet/SKILL.md
 ```
 
-If a `CLAUDE.md` already exists, keep its rules: merge them into `~/.claude/AGENTS.md` (the canonical file) instead of overwriting, and show the diff. `CLAUDE.md` stays the one-line import.
+Check: start Claude Code and invoke `/workjet <task>`; the skill reads the workjet rules for that task only.
 
-Check: `grep -c claude-sol ~/.claude/AGENTS.md` ≥ 1 and `cat ~/.claude/CLAUDE.md` prints `@AGENTS.md`.
+To make workjet the global prompt for every Claude Code session, opt in explicitly:
+
+```sh
+cd /tmp/claude-workjet
+./install.sh --global-prompt
+```
+
+Global mode backs up existing `~/.claude/CLAUDE.md` and `~/.claude/AGENTS.md` with timestamped `.bak-workjet-*` names, installs the canonical prompt as `~/.claude/AGENTS.md`, and writes the one-line `@AGENTS.md` redirect. Merge any pre-existing rules from the backups into the new `AGENTS.md`, review the diff, and keep `CLAUDE.md` as the one-line import.
 
 ### 6. Smoke test
 
@@ -144,7 +152,7 @@ Check: output contains `OK`, exit 0, stderr names the answering worker.
 
 ### Triggering workjet
 
-In any Claude Code session: `/workjet <task>` (or just say "workjet"). The skill activates the orchestration mode — decompose, route to the fleet, brief per standard, track on the board, verify, final edit. Installed by `install.sh` to `~/.claude/skills/workjet/`.
+In any Claude Code session: `/workjet <task>` (or just say "workjet"). The skill reads `~/.claude/workjet/AGENTS.md` and activates the orchestration mode for that task — decompose, route to the fleet, brief per standard, track on the board, verify, final edit. Installed by `install.sh` to `~/.claude/skills/workjet/` without changing the global prompt.
 
 ### Spawning a worker
 

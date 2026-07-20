@@ -3,10 +3,11 @@ name: workjet
 description: Orchestrate the current task with the workjet fleet — Sol (GPT-5.6) for hard completion work, MiniMax M3 for bulk work, Kimi K3 for greenfield frontend and independent review, the Claude session as orchestrator. Use when the user says "workjet" or wants a task run through the multi-agent setup.
 ---
 
-Run the user's task in workjet mode. The full operating rules are in
-`~/.claude/AGENTS.md` (roles, review model, brief standard, progress board,
-agent wiring, quota rules) — they are already part of your context; this skill
-makes them the active mode for the task at hand.
+Run the user's task in workjet mode. First read the full operating rules from
+`~/.claude/workjet/AGENTS.md` (roles, review model, brief standard, progress
+board, agent wiring, quota rules). If that skill-only path does not exist, fall
+back to `~/.claude/AGENTS.md` for installations made with the global prompt
+option. Apply those rules as the active mode for the task at hand.
 
 Execute in this order:
 
