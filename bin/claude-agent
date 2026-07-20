@@ -6,7 +6,7 @@
 # that role. Every later worker is a deliberate degradation: refused by default
 # (exit 3) or loudly banner-tagged when explicitly authorized (--degrade, exit 10).
 #
-# Usage:  claude-agent [--degrade] [--no-isolate] <role> [claude args...]
+# Usage:  claude-agent [--degrade] [--no-isolate] [--run-dir DIR] <role> [claude args...]
 #   roles: implementation-hard | frontend-greenfield | frontend-integration |
 #          bulk-generation | review | research
 #   --degrade    : permit a later worker in the role chain to deliver a provisional
@@ -27,6 +27,7 @@ setopt pipe_fail
 
 PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-25}
 TASK_TIMEOUT=${AGENT_TIMEOUT:-1800}
+AGENT_BIN_DIR=${AGENT_BIN_DIR:-$HOME/.local/bin}
 
 allow_degrade=0
 isolate=1
@@ -258,7 +259,7 @@ probe_available() {  # $1 worker -> 0 available, 1 unavailable, 4 task failure
   local w="$1"
   ensure_proxy "$w"
   local of=$(mktemp) ef=$(mktemp) rc out err
-  run_timed $PROBE_TIMEOUT "$of" "$ef" ~/.local/bin/$w -p "Reply with the token: OK"; rc=$?
+  run_timed $PROBE_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" -p "Reply with the token: OK"; rc=$?
   out="$(<"$of")"; err="$(<"$ef")"
   record_attempt "$w" "$out" "$err"
   rm -f "$of" "$ef"
@@ -283,7 +284,7 @@ deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 unavailable / 4 ta
     wt="$WORKTREE_PATH"; wt_base="$WORKTREE_BASE"
     cd "$WORKER_CWD" || { remove_worktree "$wt"; rm -f "$of" "$ef"; print_task_failed "$w" "cannot enter worktree $WORKER_CWD"; return 4; }
   fi
-  run_timed $TASK_TIMEOUT "$of" "$ef" ~/.local/bin/$w "$@"; rc=$?
+  run_timed $TASK_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"; rc=$?
   cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"
   record_attempt "$w" "$REPLY" "$err"

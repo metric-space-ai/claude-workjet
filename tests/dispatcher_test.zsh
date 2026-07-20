@@ -5,75 +5,144 @@ setopt pipe_fail
 ROOT=${0:A:h:h}
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/workjet-dispatcher.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
-mkdir -p "$TMP_ROOT/home/.local/bin" "$TMP_ROOT/work"
+mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/bin" "$TMP_ROOT/work"
 
 make_stub() {
   local name=$1
-  cat > "$TMP_ROOT/home/.local/bin/$name" <<'STUB'
+  cat > "$TMP_ROOT/bin/$name" <<'STUB'
 #!/bin/zsh
 name=${0:t}
 kind=task
 [[ " $* " == *"Reply with the token: OK"* ]] && kind=probe
 print -r -- "$name:$kind" >> "$STUB_LOG"
-[[ "$kind" == probe ]] && { print OK; exit 0; }
-case "$STUB_SCENARIO:$name" in
-  success-words:claude-minimax)
+
+case "$STUB_SCENARIO:$name:$kind" in
+  success-words:claude-minimax:probe|provider-fallback:claude-minimax:probe|task-failed:claude-minimax:probe|timeout-group:claude-minimax:probe)
+    print OK
+    exit 0
+    ;;
+  success-words:claude-minimax:task)
     print 'Report: fixed the 403 rate limit handling.'
     exit 0
     ;;
-  provider-fallback:claude-minimax)
+  provider-fallback:claude-minimax:task)
     print -u2 '429 quota exceeded'
     exit 1
     ;;
-  provider-fallback:claude-kimi)
-    print 'fallback result'
+  degrade-path:claude-minimax:probe)
+    print -u2 'quota exhausted'
+    exit 1
+    ;;
+  provider-fallback:claude-kimi:probe|degrade-path:claude-kimi:probe)
+    print OK
     exit 0
     ;;
-  task-failed:claude-minimax)
+  provider-fallback:claude-kimi:task)
+    print 'fallback after task provider error'
+    exit 0
+    ;;
+  degrade-path:claude-kimi:task)
+    print 'explicit degraded result'
+    exit 0
+    ;;
+  task-failed:claude-minimax:task)
+    print '429 quota exceeded in stdout must not classify provider failure'
     print -u2 'compiler exited while applying requested edit'
     exit 7
     ;;
+  timeout-group:claude-minimax:task)
+    sleep 300 &
+    child=$!
+    print -r -- "$$ $child" > "$STUB_PID_FILE"
+    wait $child
+    ;;
   *)
-    print "unexpected invocation: $STUB_SCENARIO $name" >&2
+    print -u2 "unexpected invocation: $STUB_SCENARIO $name $kind"
     exit 9
     ;;
 esac
 STUB
-  chmod +x "$TMP_ROOT/home/.local/bin/$name"
+  chmod +x "$TMP_ROOT/bin/$name"
 }
 for worker in claude-minimax claude-kimi claude-sol; do make_stub "$worker"; done
 
 failures=0
-run_case() {
-  local label=$1 scenario=$2 expected_rc=$3 expected_out=$4 expected_err=$5
-  local case_dir="$TMP_ROOT/$scenario"
-  local out="$case_dir/stdout" err="$case_dir/stderr" log="$case_dir/log"
-  mkdir -p "$case_dir"
-  local agent_options=()
-  [[ "$scenario" == provider-fallback ]] && agent_options=(--degrade)
-  (cd "$TMP_ROOT/work" && HOME="$TMP_ROOT/home" STUB_SCENARIO="$scenario" STUB_LOG="$log" \
-    AGENT_PROBE_TIMEOUT=3 AGENT_TIMEOUT=3 "$ROOT/bin/claude-agent" "${agent_options[@]}" simple -p task >"$out" 2>"$err")
-  local rc=$?
-  if [[ $rc -ne $expected_rc ]] || { [[ -n "$expected_out" ]] && ! grep -Fq -- "$expected_out" "$out"; } || { [[ -n "$expected_err" ]] && ! grep -Fq -- "$expected_err" "$err"; }; then
-    print -u2 "not ok - $label"
-    print -u2 "  rc=$rc expected=$expected_rc"
-    print -u2 "  stdout: $(<"$out")"
-    print -u2 "  stderr: $(<"$err")"
-    (( failures++ ))
-  else
-    print "ok - $label"
-  fi
+LAST_RC=0
+LAST_OUT=""
+LAST_ERR=""
+LAST_LOG=""
+run_agent() {
+  local scenario=$1; shift
+  local case_dir="$TMP_ROOT/case-$scenario"
+  mkdir -p "$case_dir/run"
+  LAST_OUT="$case_dir/stdout"
+  LAST_ERR="$case_dir/stderr"
+  LAST_LOG="$case_dir/log"
+  (cd "$TMP_ROOT/work" && \
+    HOME="$TMP_ROOT/home" \
+    AGENT_BIN_DIR="$TMP_ROOT/bin" \
+    STUB_SCENARIO="$scenario" \
+    STUB_LOG="$LAST_LOG" \
+    STUB_PID_FILE="$case_dir/pids" \
+    AGENT_PROBE_TIMEOUT=10 \
+    AGENT_TIMEOUT="${CASE_TASK_TIMEOUT:-10}" \
+    "$ROOT/bin/claude-agent" --run-dir "$case_dir/run" "$@" >"$LAST_OUT" 2>"$LAST_ERR")
+  LAST_RC=$?
 }
 
-run_case 'rc 0 ignores provider words in stdout' success-words 0 'fixed the 403 rate limit handling' 'answered by: claude-minimax'
-run_case 'provider error in stderr permits explicit fallback' provider-fallback 10 'fallback result' 'DEGRADED FALLBACK'
-run_case 'unstructured nonzero is TASK_FAILED' task-failed 4 '' 'TASK_FAILED worker=claude-minimax'
-
-if grep -q 'claude-kimi' "$TMP_ROOT/task-failed/log" 2>/dev/null; then
-  print -u2 'not ok - TASK_FAILED did not stop fallback chain'
+pass() { print "ok - $1"; }
+fail() {
+  print -u2 "not ok - $1"
+  print -u2 "  rc=$LAST_RC"
+  [[ -f "$LAST_OUT" ]] && print -u2 "  stdout: $(<"$LAST_OUT")"
+  [[ -f "$LAST_ERR" ]] && print -u2 "  stderr: $(<"$LAST_ERR")"
   (( failures++ ))
+}
+log_has() { grep -Fq -- "$1" "$LAST_LOG" 2>/dev/null; }
+
+run_agent success-words bulk-generation -p task
+if [[ $LAST_RC -eq 0 ]] && grep -Fq 'fixed the 403 rate limit handling' "$LAST_OUT" && ! log_has 'claude-kimi'; then
+  pass 'rc 0 ignores provider words in stdout and does not fallback'
 else
-  print 'ok - TASK_FAILED stops fallback chain'
+  fail 'rc 0 ignores provider words in stdout and does not fallback'
+fi
+
+run_agent provider-fallback --degrade bulk-generation -p task
+if [[ $LAST_RC -eq 10 ]] && grep -Fq 'fallback after task provider error' "$LAST_OUT" && log_has 'claude-kimi:task'; then
+  pass 'provider error in stderr permits explicit fallback'
+else
+  fail 'provider error in stderr permits explicit fallback'
+fi
+
+run_agent task-failed bulk-generation -p task
+if [[ $LAST_RC -eq 4 ]] && grep -Fq 'TASK_FAILED worker=claude-minimax' "$LAST_ERR" && ! log_has 'claude-kimi'; then
+  pass 'unstructured nonzero exits 4 without fallback'
+else
+  fail 'unstructured nonzero exits 4 without fallback'
+fi
+
+run_agent degrade-path --degrade bulk-generation -p task
+if [[ $LAST_RC -eq 10 ]] && grep -Fq 'explicit degraded result' "$LAST_OUT" && grep -Fq 'DEGRADED FALLBACK' "$LAST_ERR"; then
+  pass '--degrade follows the role chain'
+else
+  fail '--degrade follows the role chain'
+fi
+
+CASE_TASK_TIMEOUT=1 run_agent timeout-group bulk-generation -p task
+pid_file="$TMP_ROOT/case-timeout-group/pids"
+parent_pid="" child_pid=""
+[[ -f "$pid_file" ]] && read -r parent_pid child_pid < "$pid_file"
+for _ in {1..20}; do
+  { [[ -z "$parent_pid" ]] || ! kill -0 "$parent_pid" 2>/dev/null; } && \
+    { [[ -z "$child_pid" ]] || ! kill -0 "$child_pid" 2>/dev/null; } && break
+  sleep 0.1
+done
+if [[ $LAST_RC -eq 3 && -n "$parent_pid" && -n "$child_pid" ]] && \
+   ! kill -0 "$parent_pid" 2>/dev/null && ! kill -0 "$child_pid" 2>/dev/null; then
+  pass 'timeout kills the worker process group'
+else
+  fail 'timeout kills the worker process group'
+  print -u2 "  parent_pid=${parent_pid:-missing} child_pid=${child_pid:-missing}"
 fi
 
 (( failures == 0 )) || exit 1
