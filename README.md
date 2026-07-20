@@ -4,7 +4,7 @@ Get shit done with coding agents — Michael Welsch's Claude Code "workjet" setu
 
 Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
-Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `CLAUDE.md` is the orchestrator prompt for the Claude session that coordinates the workers.
+Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers (`CLAUDE.md` just imports it, so the same prompt also serves agents that read AGENTS.md natively).
 
 ## Roles
 
@@ -14,7 +14,7 @@ Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its
 | **GPT-5.6 "Sol"** — `claude-sol` | **Completion engine.** Hard, detail-heavy, must-not-fail implementation work. Follows a precise brief relentlessly; tends to over-deliver, which the brief's whitelist bounds. Also owns edits to existing frontend and frontend↔backend wiring. |
 | **MiniMax M3** — `claude-minimax` | **Bulk worker.** Clear, repetitive, high-volume work: generation, classification, judging, test writing. Write-only on files, never Edit, never git. |
 | **Kimi K3** — `claude-kimi` | **Frontend lead and independent reviewer.** Greenfield UI/design work from scratch; reviews substantial integrations and the orchestrator's final edits; resolves disputes between agents. |
-Review model: the orchestrator self-reviews adversarially by default; Kimi reviews independently and resolves disputes. The full role split, brief format, and operating rules are the content of [CLAUDE.md](CLAUDE.md).
+Review model: the orchestrator self-reviews adversarially by default; Kimi reviews independently and resolves disputes. The full role split, brief format, and operating rules are the content of [AGENTS.md](AGENTS.md).
 
 ## Components
 
@@ -24,7 +24,8 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `bin/claude-minimax` | MiniMax M3; MiniMax coding plan |
 | `bin/claude-kimi` | Kimi K3 (1M context); Kimi coding plan |
 | `bin/claude-agent` | Dispatcher: probes workers, falls back by capability tier, never downgrades silently |
-| `CLAUDE.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
+| `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
+| `CLAUDE.md` | One line: `@AGENTS.md` — Claude Code imports the canonical prompt |
 | `install.sh` | Copies the wrappers to `~/.local/bin`, creates key-file skeletons |
 
 Any subset works; install only the wrappers you have subscriptions for.
@@ -106,12 +107,13 @@ Check: `claude-sol -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
 ```sh
 test -f ~/.claude/CLAUDE.md && cp ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak-workjet
-cp /tmp/claude-workjet/CLAUDE.md ~/.claude/CLAUDE.md
+cp /tmp/claude-workjet/AGENTS.md ~/.claude/AGENTS.md
+printf '@AGENTS.md\n' > ~/.claude/CLAUDE.md
 ```
 
-If a `CLAUDE.md` already exists, merge instead of overwriting: keep the existing rules, append the workjet sections, show the diff.
+If a `CLAUDE.md` already exists, keep its rules: merge them into `~/.claude/AGENTS.md` (the canonical file) instead of overwriting, and show the diff. `CLAUDE.md` stays the one-line import.
 
-Check: `grep -c claude-sol ~/.claude/CLAUDE.md` ≥ 1.
+Check: `grep -c claude-sol ~/.claude/AGENTS.md` ≥ 1 and `cat ~/.claude/CLAUDE.md` prints `@AGENTS.md`.
 
 ### 6. Smoke test
 
@@ -131,7 +133,7 @@ claude-sol -p "$(cat brief.md)" --allowedTools "Read,Write,Edit,Grep,Glob,Bash" 
 
 `< /dev/null` prevents a worker that asks a question from blocking forever. For long jobs, run in the background and read the output file.
 
-Brief format (defined in `CLAUDE.md`): hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause (stop and justify instead of widening scope), a structured report tail, no subagents. Workers cannot be steered mid-run; all precision goes into the brief.
+Brief format (defined in `AGENTS.md`): hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause (stop and justify instead of widening scope), a structured report tail, no subagents. Workers cannot be steered mid-run; all precision goes into the brief.
 
 ### Dispatcher
 
