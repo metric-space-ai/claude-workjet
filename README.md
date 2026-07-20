@@ -4,7 +4,7 @@ Get shit done with coding agents — Michael Welsch's Claude Code "workjet" setu
 
 Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
-Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers (`CLAUDE.md` just imports it, so the same prompt also serves agents that read AGENTS.md natively).
+Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a role-based dispatcher with explicit degradation and failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers (`CLAUDE.md` just imports it, so the same prompt also serves agents that read AGENTS.md natively).
 
 ## Roles
 
@@ -23,7 +23,7 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `bin/claude-sol` | GPT-5.6 (reasoning high) via a local CLIProxyAPI bridge; ChatGPT Pro subscription |
 | `bin/claude-minimax` | MiniMax M3; MiniMax coding plan |
 | `bin/claude-kimi` | Kimi K3 (1M context); Kimi coding plan |
-| `bin/claude-agent` | Dispatcher: probes workers, falls back by capability tier, never downgrades silently |
+| `bin/claude-agent` | Role-based dispatcher: probes the required worker, degrades only with explicit authorization |
 | `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
 | `CLAUDE.md` | One line: `@AGENTS.md` — Claude Code imports the canonical prompt |
 | `skills/workjet/` | Claude Code skill: `/workjet` switches the session into workjet orchestration for the current task |
@@ -135,7 +135,7 @@ Check: `grep -c claude-sol ~/.claude/AGENTS.md` ≥ 1 and `cat ~/.claude/CLAUDE.
 ### 6. Smoke test
 
 ```sh
-claude-agent simple -p "Reply with the token: OK" < /dev/null; echo "exit=$?"
+claude-agent bulk-generation -p "Reply with the token: OK" < /dev/null; echo "exit=$?"
 ```
 
 Check: output contains `OK`, exit 0, stderr names the answering worker.
@@ -159,17 +159,32 @@ Brief format (defined in `AGENTS.md`): hard file whitelist, acceptance criteria 
 ### Dispatcher
 
 ```sh
-claude-agent <hard|normal|simple> [claude args...]
+claude-agent <role> [claude args...]
 claude-agent --degrade <role> [claude args...]
+claude-agent --no-isolate <role> [claude args...]
 ```
 
-Chains: `hard` sol→kimi→minimax, `normal` kimi→sol→minimax, `simple` minimax→kimi→sol. Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached `.workjet/wt-*` worktree by default. Successful worktrees are retained for orchestrator inspection and integration; failed or timed-out worktrees are discarded before fallback. Use `--no-isolate` only when in-place execution is intentional.
+The first worker in each chain is **required**: it is the only worker that fully satisfies the role. Every later worker is provisional and is invoked only with `--degrade`.
+
+| Role | Chain |
+|---|---|
+| `implementation-hard` | Sol → Kimi |
+| `frontend-greenfield` | Kimi → Sol |
+| `frontend-integration` | Sol → Kimi |
+| `bulk-generation` | MiniMax → Kimi → Sol |
+| `review` | Kimi only; no automatic fallback — on outage, exit 3 and defer review |
+| `research` | Kimi → Sol → MiniMax |
+
+Legacy aliases remain temporarily available and print a deprecation notice: `hard` → `implementation-hard`, `normal` → `research`, `simple` → `bulk-generation`.
+
+Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached `.workjet/wt-*` worktree by default. Successful worktrees are retained for orchestrator inspection and integration; failed or timed-out worktrees are discarded before another worker starts. Use `--no-isolate` only when in-place execution is intentional.
 
 | Exit | Meaning |
 |---|---|
-| 0 | Delivered by a worker at or above the required tier; stderr names it |
-| 3 | `PRIMARY_UNAVAILABLE`: only lower-tier workers reachable, nothing delivered — re-plan |
-| 10 | Degraded result (only with `--degrade`), banner-marked — verify before use |
+| 0 | Delivered by the role's required worker; stderr names it |
+| 3 | `PRIMARY_UNAVAILABLE`: required worker unavailable and no result delivered — re-plan; for `review`, defer the independent review |
+| 4 | `TASK_FAILED`: worker returned a non-provider task error; no fallback attempted |
+| 10 | Degraded result (only with `--degrade`), banner-marked — verify and disclose before use |
 | 2 | Usage error |
 
 ### Operating rules

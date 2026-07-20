@@ -49,8 +49,10 @@ run_case() {
   local case_dir="$TMP_ROOT/$scenario"
   local out="$case_dir/stdout" err="$case_dir/stderr" log="$case_dir/log"
   mkdir -p "$case_dir"
+  local agent_options=()
+  [[ "$scenario" == provider-fallback ]] && agent_options=(--degrade)
   (cd "$TMP_ROOT/work" && HOME="$TMP_ROOT/home" STUB_SCENARIO="$scenario" STUB_LOG="$log" \
-    AGENT_PROBE_TIMEOUT=3 AGENT_TIMEOUT=3 "$ROOT/bin/claude-agent" simple -p task >"$out" 2>"$err")
+    AGENT_PROBE_TIMEOUT=3 AGENT_TIMEOUT=3 "$ROOT/bin/claude-agent" "${agent_options[@]}" simple -p task >"$out" 2>"$err")
   local rc=$?
   if [[ $rc -ne $expected_rc ]] || { [[ -n "$expected_out" ]] && ! grep -Fq -- "$expected_out" "$out"; } || { [[ -n "$expected_err" ]] && ! grep -Fq -- "$expected_err" "$err"; }; then
     print -u2 "not ok - $label"
@@ -64,7 +66,7 @@ run_case() {
 }
 
 run_case 'rc 0 ignores provider words in stdout' success-words 0 'fixed the 403 rate limit handling' 'answered by: claude-minimax'
-run_case 'provider error in stderr permits fallback' provider-fallback 0 'fallback result' 'safe fallback'
+run_case 'provider error in stderr permits explicit fallback' provider-fallback 10 'fallback result' 'DEGRADED FALLBACK'
 run_case 'unstructured nonzero is TASK_FAILED' task-failed 4 '' 'TASK_FAILED worker=claude-minimax'
 
 if grep -q 'claude-kimi' "$TMP_ROOT/task-failed/log" 2>/dev/null; then

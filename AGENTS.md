@@ -125,41 +125,42 @@ Sol specifics:
 
 Flat subs hit hard quota/auth walls. For a single delegated call, delegate through
 `~/.local/bin/claude-agent [--degrade] <role> [claude args...]` rather than a raw
-wrapper. **The hard rule: a capability DOWNGRADE never happens silently.** A degraded
-result masquerading as the requested worker's result is catastrophic — the
-orchestrator must re-plan, not just accept a weaker model's answer.
+wrapper. The first worker in a role chain is **required**: only that worker fully
+satisfies the role. Every later worker is a deliberate degradation, never an
+automatic substitute.
 
-**If Kimi K3 is down (quota/auth): review adversarially yourself now, and
-defer the independent re-review to when Kimi is reachable again — state that
-deferral explicitly in your report. There is no other review fallback.**
-Sol keeps its own chain.
+| Role | Chain (required first) |
+|---|---|
+| `implementation-hard` | Sol → Kimi |
+| `frontend-greenfield` | Kimi → Sol |
+| `frontend-integration` | Sol → Kimi |
+| `bulk-generation` | MiniMax → Kimi → Sol |
+| `review` | Kimi only |
+| `research` | Kimi → Sol → MiniMax |
 
-Tiers: `minimax`=1, `kimi`=2, `sol`=3. Required by role: `simple`=1, `normal`=2,
-`hard`=3. Chains: hard=sol→kimi→minimax, normal=kimi→sol→minimax, simple=minimax→kimi→sol.
+Legacy aliases print a deprecation notice: `hard`→`implementation-hard`,
+`normal`→`research`, `simple`→`bulk-generation`.
 
-- **Safe swap (fallback tier ≥ required)** — e.g. `normal` with Kimi down → Sol
-  (upgrade). Taken automatically; `[claude-agent] answered by: …` on stderr. **exit 0**.
-- **Downgrade needed (only lower-tier workers left)** — e.g. `hard` with Sol down.
-  The dispatcher **REFUSES**, delivers no output, and prints `PRIMARY_UNAVAILABLE`
-  guidance on stderr. **exit 3** → you MUST re-plan: decompose the task so a lower
-  tier can do it reliably and re-delegate; or wait for the primary to recover; or do
-  it yourself; **Never** just
-  re-run with a weaker model. **Surface a persistently-down primary to the user.**
-  - **Sol auth expiry is a USER-ACTION case, not a re-plan case.** If Sol is down
-    because its ChatGPT OAuth token expired (not quota), the only fix is the user
-    running `cliproxyapi -codex-login` (browser login). You cannot do it. **Tell the
-    user to run it** — state the exact command — and do not silently route around Sol.
-- **Deliberate degrade** — only if you consciously accept it: `claude-agent --degrade
-  <role> …`. Delivers the lower-tier result prefixed with a loud ⚠️ banner. **exit 10**
-  → treat the result as PROVISIONAL: verify it hard and disclose the substitution to
-  the user.
-- Sol/Terra/Luna share one ChatGPT quota pool, so a Sol wall isn't dodged by
-  Terra/Luna — the chain crosses to a different provider.
+- **Required worker available** — delivery is **exit 0**.
+- **Required worker unavailable** — the dispatcher refuses to invoke later workers
+  unless `--degrade` was explicit, delivers no output, and exits **3** with
+  `PRIMARY_UNAVAILABLE`. Re-plan, wait, or do the work yourself; surface a persistent
+  outage to the user.
+- **Review has no fallback.** If Kimi is down, review adversarially yourself now and
+  **defer review** until Kimi is reachable; state that deferral explicitly.
+- **Deliberate degradation** — `claude-agent --degrade <role> …` tries later workers
+  in chain order. A delivered result has a loud ⚠️ banner and **exit 10**; treat it
+  as provisional, verify hard, and disclose the substitution.
+- **Task failure is not provider failure.** A nonzero worker exit without an
+  auth/quota/network signature exits **4** (`TASK_FAILED`) and never falls back.
+- **Sol auth expiry is user action.** Tell the user to run
+  `cliproxyapi -codex-login`; do not attempt browser login or silently route around it.
+  Sol/Terra/Luna share one ChatGPT quota pool.
 
 Hang-proof: each worker is probed with a short timeout (`AGENT_PROBE_TIMEOUT`, 25s)
-so a dead-auth/stalled worker can't block the chain; the real task runs under a
-generous cap (`AGENT_TIMEOUT`, 1800s) that only catches true hangs, never legit long
-work. Do not lower `AGENT_TIMEOUT` below your expected task length.
+and the real task runs under `AGENT_TIMEOUT` (1800s). In Git repositories, deliveries
+run in isolated `.workjet/wt-*` worktrees by default; successful worktrees remain for
+inspection, while failed/timed-out worktrees are removed before another worker starts.
 
 For a **fleet** (waves-of-N over many parallel briefs), keep using the
 wrappers directly but STOP on a 403 rather than burning failed attempts, and never

@@ -1,20 +1,17 @@
 #!/bin/zsh
-# claude-agent: capability-aware, hang-proof dispatcher over the flat-sub wrappers
+# claude-agent: role-aware, hang-proof dispatcher over the flat-sub wrappers
 # (claude-sol / claude-kimi / claude-minimax).
 #
-# CORE RULE: a fallback is a RE-PLANNING TRIGGER, never a silent substitution.
-# A DOWNGRADE to a lower-capability model never happens transparently — it either
-# refuses (default, exit 3) or is loudly banner-tagged (--degrade, exit 10).
+# CORE RULE: the first worker in a role chain is the only worker that fully satisfies
+# that role. Every later worker is a deliberate degradation: refused by default
+# (exit 3) or loudly banner-tagged when explicitly authorized (--degrade, exit 10).
 #
 # Usage:  claude-agent [--degrade] [--no-isolate] <role> [claude args...]
-#   role = hard | normal | simple
-#   --degrade    : permit delivering a LOWER-tier result than the role requires,
-#                  with a loud banner on stdout and exit code 10.
+#   roles: implementation-hard | frontend-greenfield | frontend-integration |
+#          bulk-generation | review | research
+#   --degrade    : permit a later worker in the role chain to deliver a provisional
+#                  result, with a loud banner on stdout and exit code 10.
 #   --no-isolate : run workers in the current checkout instead of a git worktree.
-#
-# Tiers:  minimax=1  kimi=2  sol=3     Required: simple=1 normal=2 hard=3
-#   - fallback tier >= required  -> safe (equal/upgrade) swap, taken automatically
-#   - fallback tier <  required  -> DEGRADE: refused unless --degrade
 #
 # HANG-PROOF: each worker is first PROBED with a short timeout (AGENT_PROBE_TIMEOUT,
 # default 25s) so a dead-auth/stalled worker can't block the chain (Claude retries
@@ -43,13 +40,33 @@ while [[ "$1" == --* ]]; do
 done
 role="$1"; shift 2>/dev/null
 case "$role" in
-  hard)   chain=(claude-sol claude-kimi claude-minimax); need=3 ;;
-  normal) chain=(claude-kimi claude-sol claude-minimax); need=2 ;;
-  simple) chain=(claude-minimax claude-kimi claude-sol); need=1 ;;
-  *) print -u2 "claude-agent: unknown role '${role:-}' (use: [--degrade] hard|normal|simple)"; exit 2 ;;
+  hard)
+    print -u2 "[claude-agent] deprecated role 'hard'; use 'implementation-hard'"
+    role=implementation-hard
+    ;;
+  normal)
+    print -u2 "[claude-agent] deprecated role 'normal'; use 'research'"
+    role=research
+    ;;
+  simple)
+    print -u2 "[claude-agent] deprecated role 'simple'; use 'bulk-generation'"
+    role=bulk-generation
+    ;;
 esac
-
-tier() { case "$1" in claude-minimax) print 1;; claude-kimi) print 2;; claude-sol) print 3;; *) print 0;; esac }
+case "$role" in
+  implementation-hard)  chain=(claude-sol claude-kimi) ;;
+  frontend-greenfield)  chain=(claude-kimi claude-sol) ;;
+  frontend-integration) chain=(claude-sol claude-kimi) ;;
+  bulk-generation)      chain=(claude-minimax claude-kimi claude-sol) ;;
+  review)               chain=(claude-kimi) ;;
+  research)             chain=(claude-kimi claude-sol claude-minimax) ;;
+  *)
+    print -u2 "claude-agent: unknown role '${role:-}'"
+    print -u2 "use: implementation-hard|frontend-greenfield|frontend-integration|bulk-generation|review|research"
+    exit 2
+    ;;
+esac
+required_worker=${chain[1]}
 
 unavailable_re='usage limit|out of quota|quota exceeded|quota.*exhaust|membership/subscription|purchase extra usage|upgrade your plan|insufficient (quota|credit|balance)|invalid authentication|invalid api key|authentication_error|unauthorized|401 |403 |429 |rate limit|too many requests|overloaded|connection refused|econnrefused|dial tcp|502 bad gateway|503 service|service unavailable'
 
@@ -233,64 +250,74 @@ deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 unavailable / 4 ta
 args=("$@")
 degrade_candidate=""
 
-# Pass 1: first AVAILABLE worker whose tier >= need (safe/primary/upgrade) delivers.
-for w in $chain; do
-  probe_available "$w"
-  probe_rc=$?
-  (( probe_rc == 4 )) && exit 4
-  if (( probe_rc == 0 )); then
-    if (( $(tier "$w") >= need )); then
-      deliver "$w" "${args[@]}"
-      deliver_rc=$?
-      (( deliver_rc == 4 )) && exit 4
-      if (( deliver_rc == 0 )); then
-        [[ "$w" == "${chain[1]}" ]] && print -u2 "[claude-agent] answered by: $w (primary)" \
-                                     || print -u2 "[claude-agent] answered by: $w (safe fallback, tier>=required)"
-        print -r -- "$REPLY"; exit 0
-      fi
-      print -u2 "[claude-agent] $w passed probe but hit a provider failure on the task — continuing"
-    else
-      [[ -z "$degrade_candidate" ]] && degrade_candidate="$w"   # available but LOWER tier
-    fi
-  else
-    print -u2 "[claude-agent] $w unavailable — skipping"
-  fi
-done
-
-# Pass 2: no safe worker. Downgrade only with explicit --degrade, loudly.
-reqname=${chain[1]}
-if (( allow_degrade )) && [[ -n "$degrade_candidate" ]]; then
-  deliver "$degrade_candidate" "${args[@]}"
+# The required worker is the only non-degraded delivery for this role.
+probe_available "$required_worker"
+probe_rc=$?
+(( probe_rc == 4 )) && exit 4
+if (( probe_rc == 0 )); then
+  deliver "$required_worker" "${args[@]}"
   deliver_rc=$?
   (( deliver_rc == 4 )) && exit 4
   if (( deliver_rc == 0 )); then
-    banner="⚠️⚠️ DEGRADED FALLBACK — role=$role required=$reqname(tier$need) DELIVERED=$degrade_candidate(tier$(tier $degrade_candidate)). LOWER-capability model. Result is PROVISIONAL: re-scope/verify before trusting, and disclose the substitution to the user."
-    print -r -- "$banner"; print -r -- "----- degraded output below -----"; print -r -- "$REPLY"
-    print -u2 "$banner"; exit 10
+    print -u2 "[claude-agent] answered by: $required_worker (required for $role)"
+    print -r -- "$REPLY"
+    exit 0
   fi
-  print -u2 "[claude-agent] degrade candidate $degrade_candidate hit a provider failure."
+  print -u2 "[claude-agent] $required_worker passed probe but hit a provider failure on the task"
+else
+  print -u2 "[claude-agent] $required_worker unavailable"
 fi
 
-# Pass 3: refuse to silently downgrade.
-print -u2 "════════════════════════════════════════════════════════════════"
-print -u2 "[claude-agent] PRIMARY_UNAVAILABLE  role=$role  required=$reqname (tier$need)"
-if [[ -n "$degrade_candidate" ]]; then
-  print -u2 "  Only LOWER-tier workers are available (e.g. $degrade_candidate). A blind model-swap"
-  print -u2 "  would be catastrophic for a '$role' task."
-else
-  print -u2 "  No worker in the chain is available at all."
+# Later workers are invoked only when the caller explicitly accepts degradation.
+if (( allow_degrade )); then
+  for (( i=2; i <= ${#chain}; i++ )); do
+    w=${chain[$i]}
+    probe_available "$w"
+    probe_rc=$?
+    (( probe_rc == 4 )) && exit 4
+    if (( probe_rc != 0 )); then
+      print -u2 "[claude-agent] degraded candidate $w unavailable — skipping"
+      continue
+    fi
+    [[ -z "$degrade_candidate" ]] && degrade_candidate="$w"
+    deliver "$w" "${args[@]}"
+    deliver_rc=$?
+    (( deliver_rc == 4 )) && exit 4
+    if (( deliver_rc == 0 )); then
+      banner="⚠️⚠️ DEGRADED FALLBACK — role=$role required=$required_worker DELIVERED=$w. This worker does not fully satisfy the requested role. Result is PROVISIONAL: re-scope/verify before trusting, and disclose the substitution to the user."
+      print -r -- "$banner"
+      print -r -- "----- degraded output below -----"
+      print -r -- "$REPLY"
+      print -u2 "$banner"
+      exit 10
+    fi
+    print -u2 "[claude-agent] degraded candidate $w hit a provider failure — continuing"
+  done
 fi
-print -u2 "  ORCHESTRATOR MUST RE-PLAN — do NOT just swap models. Options:"
-print -u2 "    • decompose the task so a lower-tier model can do it reliably, then re-delegate;"
-print -u2 "    • deliberately accept a degraded result via: claude-agent --degrade $role ... (then verify hard);"
-print -u2 "    • wait for the primary's quota/auth window to recover;"
+
+print -u2 "════════════════════════════════════════════════════════════════"
+print -u2 "[claude-agent] PRIMARY_UNAVAILABLE  role=$role  required=$required_worker"
+if [[ "$role" == review ]]; then
+  print -u2 "  Kimi is required for an independent review; there is no automatic review fallback."
+  print -u2 "  defer review until Kimi is reachable, and state that deferral explicitly."
+elif (( ! allow_degrade )) && (( ${#chain} > 1 )); then
+  print -u2 "  Later workers in the role chain were not invoked because they do not fully satisfy '$role'."
+  print -u2 "  To accept a provisional substitution explicitly: claude-agent --degrade $role ..."
+elif [[ -n "$degrade_candidate" ]]; then
+  print -u2 "  Every explicitly allowed degraded candidate also hit a provider failure."
+else
+  print -u2 "  No worker in the role chain is available."
+fi
+print -u2 "  ORCHESTRATOR MUST RE-PLAN — do NOT silently swap models. Options:"
+print -u2 "    • decompose or re-scope the task for a later worker, then use --degrade deliberately;"
+print -u2 "    • wait for the required provider's quota/auth window to recover;"
 print -u2 "    • do the work yourself."
-if [[ "$reqname" == claude-sol ]]; then
+if [[ "$required_worker" == claude-sol ]]; then
   print -u2 "  ── Sol (ChatGPT Pro OAuth) note: if this is AUTH (not quota), the token expired."
   print -u2 "     You CANNOT fix it — the browser login is the user's step. TELL THE USER to run:"
   print -u2 "         cliproxyapi -codex-login"
   print -u2 "     Do not attempt the login yourself and do not silently route around it."
 fi
-print -u2 "  SURFACE this to the user if the primary stays down across the session."
+print -u2 "  SURFACE this to the user if the required worker stays down across the session."
 print -u2 "════════════════════════════════════════════════════════════════"
 exit 3

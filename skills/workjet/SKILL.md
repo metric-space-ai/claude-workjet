@@ -13,10 +13,12 @@ Execute in this order:
 1. **Decompose.** Preserve every explicit requirement. Pick the smallest
    useful pattern — for small work (one file, quick wiring), do it yourself
    and skip the fleet entirely.
-2. **Route.** Completion-critical/hard → `claude-sol`. Clear high-volume →
-   `claude-minimax` (Write-only on files, never Edit, never git). Greenfield
-   frontend/design → `claude-kimi`. Uncertain availability → `claude-agent
-   <hard|normal|simple>`.
+2. **Route.** Completion-critical/hard → `implementation-hard`. Clear high-volume →
+   `bulk-generation` (MiniMax remains Write-only on files, never Edit, never git).
+   Greenfield frontend/design → `frontend-greenfield`; existing frontend/backend
+   wiring → `frontend-integration`; independent review → `review`; research →
+   `research`. Invoke roles through `claude-agent`; later chain workers require
+   explicit `--degrade`.
 3. **Brief per the standard.** Hard file whitelist · acceptance criteria as
    exact commands · escape-hatch clause · structured report tail · no
    subagents. Spawn headless:
