@@ -13,7 +13,9 @@ for w in claude-sol claude-minimax claude-kimi claude-agent; do
   echo "installed $BIN/$w"
 done
 
-mkdir -p "$HOME/.config/secrets" "$HOME/.config/kimi"
+mkdir -p "$HOME/.config/secrets" "$HOME/.config/kimi" "$HOME/.claude/skills/workjet"
+cp "$HERE/skills/workjet/SKILL.md" "$HOME/.claude/skills/workjet/SKILL.md"
+echo "installed skill: /workjet"
 [ -f "$HOME/.config/secrets/minimax.env" ] || {
   printf 'export MINIMAX_API_KEY="YOUR_KEY"\n' > "$HOME/.config/secrets/minimax.env"
   chmod 600 "$HOME/.config/secrets/minimax.env"

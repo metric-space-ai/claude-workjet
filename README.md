@@ -26,7 +26,8 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `bin/claude-agent` | Dispatcher: probes workers, falls back by capability tier, never downgrades silently |
 | `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
 | `CLAUDE.md` | One line: `@AGENTS.md` — Claude Code imports the canonical prompt |
-| `install.sh` | Copies the wrappers to `~/.local/bin`, creates key-file skeletons |
+| `skills/workjet/` | Claude Code skill: `/workjet` switches the session into workjet orchestration for the current task |
+| `install.sh` | Copies the wrappers to `~/.local/bin`, installs the skill, creates key-file skeletons |
 
 Any subset works; install only the wrappers you have subscriptions for.
 
@@ -124,6 +125,10 @@ claude-agent simple -p "Reply with the token: OK" < /dev/null; echo "exit=$?"
 Check: output contains `OK`, exit 0, stderr names the answering worker.
 
 ## Usage
+
+### Triggering workjet
+
+In any Claude Code session: `/workjet <task>` (or just say "workjet"). The skill activates the orchestration mode — decompose, route to the fleet, brief per standard, track on the board, verify, final edit. Installed by `install.sh` to `~/.claude/skills/workjet/`.
 
 ### Spawning a worker
 
