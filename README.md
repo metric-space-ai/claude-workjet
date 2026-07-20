@@ -46,10 +46,10 @@ Ordered steps; each ends with a check. Steps marked **HUMAN** require input an a
 ### 0. Preconditions
 
 ```sh
-command -v claude && command -v git && command -v zsh
+command -v claude && command -v git && command -v zsh && command -v python3
 ```
 
-Check: three paths. `claude` must be installed and logged in once (interactive `claude`).
+Check: four paths. `claude` must be installed and logged in once (interactive `claude`). `python3` provides the process-session fallback on platforms without `setsid`.
 
 ### 1. Install
 
@@ -172,6 +172,7 @@ claude-agent <role> [claude args...]
 claude-agent --degrade <role> [claude args...]
 claude-agent --no-isolate <role> [claude args...]
 claude-agent --include-dirty <role> [claude args...]
+claude-agent --allowed-paths 'src/**,tests/**' <role> [claude args...]
 claude-agent runs mark <run-id> integrated|abandoned
 ```
 
@@ -188,6 +189,10 @@ The first worker in each chain is **required**: it is the only worker that fully
 
 Legacy aliases remain temporarily available and print a deprecation notice: `hard` → `implementation-hard`, `normal` → `research`, `simple` → `bulk-generation`.
 
+Unless the caller supplies `--allowedTools` or `--tools`, the dispatcher injects role policy into task calls: `review` is limited to `Read,Grep,Glob` and explicitly denies `Write,Edit,Bash`; `bulk-generation` explicitly denies `Edit`; implementation, frontend, and research roles receive the full `Read,Write,Edit,Grep,Glob,Bash` set. Explicit caller tool flags take precedence.
+
+`--allowed-paths 'glob1,glob2'` audits the actual post-run diff. Out-of-policy paths are written to `path-violations.txt` in the run directory and reported on stderr. This is a non-blocking flag: the dispatcher preserves the result and exit code so the orchestrator can inspect and decide.
+
 Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached worktree under `~/.local/state/workjet/worktrees/<repo-id>/<run-id>`; the repository checkout is never populated with dispatcher state. The main checkout must be clean. To transfer staged, unstaged, and untracked changes intentionally, pass `--include-dirty`; the dispatcher archives a binary patch in the run directory and applies it to the worker worktree. Use `--no-isolate` only when in-place execution is intentional.
 
 After a successful isolated delivery, all worktree changes are committed and protected by `refs/workjet/<run-id>`. The worktree remains for inspection and integration. Automatic stale cleanup removes it only after the run is explicitly marked `integrated` or `abandoned`; unmarked worktrees are warned about and retained:
@@ -197,7 +202,7 @@ claude-agent runs mark <run-id> integrated
 claude-agent runs mark <run-id> abandoned
 ```
 
-Every invocation records its brief and final worker attempt under `~/.local/state/workjet/runs/<timestamp>-<role>/`: `brief.txt`, `stdout`, `stderr`, `rc`, `worker`, `run-id`, and `worktree-path`, plus `git-head-before`, `git-head-after`, `diffstat`, `protected-ref`, and `protected-sha` when applicable. The path is printed on stderr at exit. Use `--run-dir DIR` to select an explicit location.
+Every invocation records its brief and final result under `~/.local/state/workjet/runs/<timestamp>-<role>/`: `brief.txt`, `stdout`, `stderr`, `rc`, `worker`, `run-id`, and `worktree-path`, plus `git-head-before`, `git-head-after`, `diffstat`, `protected-ref`, and `protected-sha` when applicable. Every probe and task invocation also has an immutable `attempts/NN-<worker>/` directory containing its `kind`, `rc`, `stdout`, and `stderr`, so degradation chains never overwrite evidence. The path is printed on stderr at exit. Use `--run-dir DIR` to select an explicit location.
 
 | Exit | Meaning |
 |---|---|
@@ -229,7 +234,12 @@ Run the pure-zsh dispatcher suite without real provider calls:
 ./tests/dispatcher_test.zsh
 ```
 
-The suite injects stub workers through `AGENT_BIN_DIR` and covers stdout error words on successful runs, provider-error fallback, `TASK_FAILED` exit 4, explicit degradation, and whole-process-group timeout cleanup. The current setup was tested with Claude Code **2.1.215** (`claude --version`) and zsh 5.9 on macOS.
+The suite injects stub workers through `AGENT_BIN_DIR` and covers error classification, degradation, immutable attempt artifacts, process-group timeout cleanup, dirty-checkout handling, protected refs, safe stale-worktree cleanup, path auditing, review tool policy, and fleet semaphore serialization. The current setup was tested with Claude Code **2.1.215** (`claude --version`) and zsh 5.9 on macOS.
+
+## Known limits
+
+- Worktrees and Claude Code tool policy are not a full OS sandbox. Workers do not have enforced filesystem namespaces or network isolation.
+- Provider failure classification currently uses exit status plus regex matching on CLI stderr. Structured CLI error output is the roadmap; until then, new provider wording may require classifier updates.
 
 ## Notes
 

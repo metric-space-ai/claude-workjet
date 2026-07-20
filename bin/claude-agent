@@ -3,7 +3,7 @@
 # (claude-sol / claude-kimi / claude-minimax).
 #
 # Usage: claude-agent [--degrade] [--no-isolate] [--include-dirty]
-#                     [--run-dir DIR] <role> [claude args...]
+#                     [--allowed-paths GLOBS] [--run-dir DIR] <role> [claude args...]
 #        claude-agent runs mark <run-id> integrated|abandoned
 #
 # Exit: 0 required worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
@@ -55,11 +55,18 @@ allow_degrade=0
 isolate=1
 include_dirty=0
 run_dir_override=""
+allowed_paths=""
 while [[ "$1" == --* ]]; do
   case "$1" in
     --degrade) allow_degrade=1 ;;
     --no-isolate) isolate=0 ;;
     --include-dirty) include_dirty=1 ;;
+    --allowed-paths)
+      shift
+      [[ -n "$1" ]] || { print -u2 "claude-agent: --allowed-paths requires comma-separated globs"; exit 2; }
+      allowed_paths="$1"
+      ;;
+    --allowed-paths=*) allowed_paths="${1#--allowed-paths=}" ;;
     --run-dir)
       shift
       [[ -n "$1" ]] || { print -u2 "claude-agent: --run-dir requires a directory"; exit 2; }
@@ -144,6 +151,27 @@ run_timed() {
 }
 
 args=("$@")
+task_args=("${args[@]}")
+caller_sets_tools=0
+for arg in "${args[@]}"; do
+  case "$arg" in
+    --allowedTools|--allowedTools=*|--tools|--tools=*) caller_sets_tools=1 ;;
+  esac
+done
+if (( ! caller_sets_tools )); then
+  case "$role" in
+    review)
+      task_args+=(--allowedTools "Read,Grep,Glob" --disallowedTools "Write,Edit,Bash")
+      ;;
+    bulk-generation)
+      task_args+=(--allowedTools "Read,Write,Grep,Glob,Bash" --disallowedTools "Edit")
+      ;;
+    *)
+      task_args+=(--allowedTools "Read,Write,Edit,Grep,Glob,Bash")
+      ;;
+  esac
+fi
+
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 repo_subdir=""
 if [[ -n "$repo_root" ]]; then
@@ -165,6 +193,7 @@ WORKTREE_BASE=""
 WORKER_CWD=""
 WORKTREE_USE_COUNT=0
 FAILED_CHECKPOINT_COUNT=0
+ATTEMPT_COUNT=0
 
 sha256_short() {
   if (( $+commands[shasum] )); then
@@ -182,14 +211,14 @@ init_run_dir() {
   stamp="$(date +%Y%m%dT%H%M%S)-$$"
   if [[ -n "$run_dir_override" ]]; then
     RUN_DIR="${run_dir_override:A}"
-    raw_id="${RUN_DIR:t}"
+    raw_id="${RUN_DIR:t}-${stamp}"
   else
     raw_id="${stamp}-${role}"
     RUN_DIR="$STATE_ROOT/runs/$raw_id"
   fi
   RUN_ID="${raw_id//[^A-Za-z0-9._-]/_}"
   [[ -n "$RUN_ID" && "$RUN_ID" != .* ]] || RUN_ID="run-$stamp"
-  mkdir -p "$RUN_DIR" "$STATE_ROOT/run-index" || {
+  mkdir -p "$RUN_DIR/attempts" "$STATE_ROOT/run-index" || {
     print -u2 "claude-agent: cannot create run directory: $RUN_DIR"
     exit 2
   }
@@ -217,10 +246,57 @@ init_run_dir() {
 }
 
 record_attempt() {
-  RUN_WORKER="$1"
+  local worker="$1" out="$2" err="$3" attempt_rc="$4" kind="$5" attempt_dir
+  RUN_WORKER="$worker"
+  (( ++ATTEMPT_COUNT ))
+  attempt_dir="$RUN_DIR/attempts/$(printf '%02d' $ATTEMPT_COUNT)-$worker"
+  mkdir -p "$attempt_dir"
+  print -r -- "$worker" > "$attempt_dir/worker"
+  print -r -- "$kind" > "$attempt_dir/kind"
+  print -r -- "$attempt_rc" > "$attempt_dir/rc"
+  print -rn -- "$out" > "$attempt_dir/stdout"
+  print -rn -- "$err" > "$attempt_dir/stderr"
   print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
-  print -rn -- "$2" > "$RUN_DIR/stdout"
-  print -rn -- "$3" > "$RUN_DIR/stderr"
+  print -rn -- "$out" > "$RUN_DIR/stdout"
+  print -rn -- "$err" > "$RUN_DIR/stderr"
+}
+
+path_is_allowed() {
+  setopt local_options
+  unsetopt bad_pattern
+  local changed="$1" pattern
+  for pattern in ${(s:,:)allowed_paths}; do
+    pattern="$(print -r -- "$pattern" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [[ -n "$pattern" && "$changed" == ${~pattern} ]] && return 0
+  done
+  return 1
+}
+
+audit_allowed_paths() {
+  [[ -n "$allowed_paths" && -n "$repo_root" ]] || return 0
+  local git_target="$repo_root" changed names_file violation_file
+  local -A seen
+  [[ -n "$RUN_WORKTREE" && -d "$RUN_WORKTREE" ]] && git_target="$RUN_WORKTREE"
+  names_file="$(mktemp "${TMPDIR:-/tmp}/workjet-paths.XXXXXX")" || return 0
+  violation_file="$RUN_DIR/path-violations.txt"
+  git -C "$git_target" diff --name-only -z "$RUN_GIT_BEFORE" -- > "$names_file" 2>/dev/null || true
+  git -C "$git_target" ls-files --others --exclude-standard -z >> "$names_file" 2>/dev/null || true
+  : > "${violation_file}.tmp"
+  while IFS= read -r -d '' changed; do
+    [[ -n "${seen[$changed]}" ]] && continue
+    seen[$changed]=1
+    if ! path_is_allowed "$changed"; then
+      print -r -- "$changed" >> "${violation_file}.tmp"
+      print -u2 "[claude-agent] PATH_VIOLATION: $changed (allowed: $allowed_paths)"
+    fi
+  done < "$names_file"
+  rm -f "$names_file"
+  if [[ -s "${violation_file}.tmp" ]]; then
+    mv "${violation_file}.tmp" "$violation_file"
+    print -u2 "[claude-agent] path audit flagged changes; see: $violation_file"
+  else
+    rm -f "${violation_file}.tmp" "$violation_file"
+  fi
 }
 
 finalize_run() {
@@ -236,6 +312,7 @@ finalize_run() {
     diffstat="$(git -C "$git_target" diff --stat "$RUN_GIT_BEFORE" -- 2>/dev/null)"
     print -rn -- "$diffstat" > "$RUN_DIR/diffstat"
   fi
+  audit_allowed_paths
   print -u2 "[claude-agent] run directory: $RUN_DIR"
 }
 
@@ -410,7 +487,7 @@ probe_available() {
   of=$(mktemp); ef=$(mktemp)
   run_timed $PROBE_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" -p "Reply with the token: OK"; rc=$?
   out="$(<"$of")"; err="$(<"$ef")"
-  record_attempt "$w" "$out" "$err"
+  record_attempt "$w" "$out" "$err" "$rc" probe
   rm -f "$of" "$ef"
   (( rc == 124 )) && { print -u2 "[claude-agent] $w probe timed out (${PROBE_TIMEOUT}s) — treating as unavailable"; return 1; }
   if (( rc == 0 )); then
@@ -436,7 +513,7 @@ deliver() {
   run_timed $TASK_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"; rc=$?
   cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"
-  record_attempt "$w" "$REPLY" "$err"
+  record_attempt "$w" "$REPLY" "$err" "$rc" task
   rm -f "$of" "$ef"
   if (( rc == 124 )); then
     print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — retaining worktree for inspection"
@@ -469,7 +546,7 @@ probe_available "$required_worker"
 probe_rc=$?
 (( probe_rc == 4 )) && exit 4
 if (( probe_rc == 0 )); then
-  deliver "$required_worker" "${args[@]}"
+  deliver "$required_worker" "${task_args[@]}"
   deliver_rc=$?
   (( deliver_rc == 4 )) && exit 4
   if (( deliver_rc == 0 )); then
@@ -493,7 +570,7 @@ if (( allow_degrade )); then
       continue
     fi
     [[ -z "$degrade_candidate" ]] && degrade_candidate="$w"
-    deliver "$w" "${args[@]}"
+    deliver "$w" "${task_args[@]}"
     deliver_rc=$?
     (( deliver_rc == 4 )) && exit 4
     if (( deliver_rc == 0 )); then

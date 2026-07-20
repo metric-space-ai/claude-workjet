@@ -141,6 +141,12 @@ automatic substitute.
 Legacy aliases print a deprecation notice: `hard`→`implementation-hard`,
 `normal`→`research`, `simple`→`bulk-generation`.
 
+The dispatcher enforces role tool defaults unless you explicitly pass `--allowedTools`
+or `--tools`: review gets only Read/Grep/Glob and denies Write/Edit/Bash;
+bulk-generation denies Edit; implementation, frontend, and research get the full tool
+set. Use `--allowed-paths 'glob1,glob2'` on tightly scoped briefs. A path violation is
+recorded and reported but does not abort automatically; you decide whether to reject it.
+
 - **Required worker available** — delivery is **exit 0**.
 - **Required worker unavailable** — the dispatcher refuses to invoke later workers
   unless `--degrade` was explicit, delivers no output, and exits **3** with
