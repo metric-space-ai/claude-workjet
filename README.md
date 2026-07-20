@@ -1,6 +1,8 @@
 # claude-workjet
 
-Run GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
+Get shit done with coding agents — Michael Welsch's Claude Code setup.
+
+Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
 Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `CLAUDE.md` is the orchestrator prompt for the Claude session that coordinates the workers.
 
