@@ -203,6 +203,16 @@ Every invocation records its brief and final worker attempt under `~/.local/stat
 - Verify worker results independently (run the tests, check the diff against the whitelist).
 - MiniMax writes new files only — no Edit, no git.
 
+## Testing
+
+Run the pure-zsh dispatcher suite without real provider calls:
+
+```sh
+./tests/dispatcher_test.zsh
+```
+
+The suite injects stub workers through `AGENT_BIN_DIR` and covers stdout error words on successful runs, provider-error fallback, `TASK_FAILED` exit 4, explicit degradation, and whole-process-group timeout cleanup. The current setup was tested with Claude Code **2.1.215** (`claude --version`) and zsh 5.9 on macOS.
+
 ## Notes
 
 - Prompt-override instructions are not reliably honored by weaker models; `--bare` is the isolation mechanism, not a system-prompt instruction.

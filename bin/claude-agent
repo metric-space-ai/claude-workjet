@@ -18,10 +18,9 @@
 # auth errors and would otherwise hang). The real task then runs with a GENEROUS cap
 # (AGENT_TIMEOUT, default 1800s) that only catches true hangs, never legit long work.
 #
-# Exit: 0 safe worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
+# Exit: 0 required worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
 #       4 TASK_FAILED (worker ran, but the task itself failed; no fallback) |
-#       10 degraded result (provisional; verify+disclose) | 1 chain exhausted w/ --degrade |
-#       2 usage error
+#       10 degraded result (provisional; verify+disclose) | 2 usage error
 emulate -L zsh
 setopt pipe_fail
 
@@ -137,7 +136,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 repo_subdir=""
 if [[ -n "$repo_root" ]]; then
   repo_subdir="${PWD#$repo_root}"
-elif (( isolate )); then
+else
   isolate=0
   print -u2 "[claude-agent] warning: current directory is not a Git repository; running in-place"
 fi
@@ -199,7 +198,7 @@ init_run_dir
 trap 'finalize_run $?' EXIT
 
 cleanup_stale_worktrees() {
-  (( isolate )) || return 0
+  [[ -n "$repo_root" ]] || return 0
   local stale
   mkdir -p "$repo_root/.workjet"
   while IFS= read -r -d '' stale; do
