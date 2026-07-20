@@ -1,182 +1,153 @@
 # claude-workjet
 
-Multi-agent orchestration for Claude Code with zero infrastructure. Workflows flow; a workjet has thrust.
+Run GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
-## What this is, in plain words
+Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a dispatcher that adds tiered fallback with explicit failure semantics. `CLAUDE.md` is the orchestrator prompt for the Claude session that coordinates the workers.
 
-You already pay for flat-rate AI subscriptions: Claude, ChatGPT Pro, MiniMax, Kimi. This repo turns them into a **team that works together in one place** — your Claude Code session.
+## Components
 
-The idea is simple:
+| File | Purpose |
+|---|---|
+| `bin/claude-sol` | GPT-5.6 (reasoning high) via a local CLIProxyAPI bridge; ChatGPT Pro subscription |
+| `bin/claude-minimax` | MiniMax M3; MiniMax coding plan |
+| `bin/claude-kimi` | Kimi K3 (1M context); Kimi coding plan |
+| `bin/claude-agent` | Dispatcher: probes workers, falls back by capability tier, never downgrades silently |
+| `CLAUDE.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
+| `install.sh` | Copies the wrappers to `~/.local/bin`, creates key-file skeletons |
 
-- **Your Claude session is the manager.** It plans the work, splits it into jobs, and checks the results.
-- **Three specialist workers do the jobs.** Each worker is just the normal `claude` CLI started by a small shell script that points it at a different AI provider. GPT-5.6 does the hard, exacting work. MiniMax M3 does the high-volume simple work. Kimi K3 builds frontends and reviews the others.
-- **A job is one command.** The manager writes a work order (a "brief") into a prompt, starts the worker, and gets a report back on stdout. No servers, no plugins, no protocol — a worker run is an ordinary process.
+Any subset works; install only the wrappers you have subscriptions for.
 
-That's the whole system: one manager, three workers, briefs in, reports out.
+## Design
 
-## Why this is good
+- **One process per job.** No server, no protocol layer. Briefs and reports are files; every run can be inspected and replayed.
+- **Isolation via `--bare`.** Workers load no global or project `CLAUDE.md`, no hooks, no plugins, and use no interactive login. `CLAUDE_CONFIG_DIR` alone does not prevent prompt auto-discovery (`~/.claude` is resolved through the system user database); `--bare` does. Task context goes into the brief.
+- **Subscription billing.** All workers run on flat-rate plans through their Anthropic-compatible APIs.
+- **Explicit failure.** Quota and auth walls surface as distinct dispatcher exit codes. A weaker model is never substituted for a stronger one without an explicit `--degrade` flag and a marked result.
 
-- **No infrastructure.** Nothing runs in the background except one optional local proxy for GPT-5.6. There is no MCP server, no framework, nothing to babysit or debug.
-- **Flat-rate, not per-token.** All workers run on subscriptions you already have. Iterating ten times costs the same as iterating once.
-- **Everything is auditable.** A brief is a file. A report is a file. You can read, diff, and replay every job.
-- **Workers can't see your stuff.** Each worker runs with `--bare` and its own config directory: it never sees your orchestrator prompt, your project rules, your hooks, or your Claude login.
-- **Failure is loud, never silent.** If the strong model is unavailable, the dispatcher refuses to secretly substitute a weaker one. You get an explicit error that says "re-plan", not a quietly worse answer.
-- **Battle-tested rules included.** The orchestrator prompt in [CLAUDE.md](CLAUDE.md) encodes what we learned running this in production: how to write briefs workers can't misinterpret, when to review, when NOT to delegate.
+## Setup
 
-## The fleet
+Ordered steps; each ends with a check. Steps marked **HUMAN** require input an automated agent cannot obtain itself (API keys, a browser OAuth flow) — everything else is scriptable. All steps are idempotent.
 
-| Worker | Use it for | Model | Billing |
-|---|---|---|---|
-| `claude-sol` | Hard, detail-heavy, must-not-fail work | GPT-5.6, reasoning high | ChatGPT Pro subscription |
-| `claude-minimax` | Clear, repetitive, high-volume work | MiniMax M3 | MiniMax coding plan |
-| `claude-kimi` | Greenfield frontend/design; independent review | Kimi K3, 1M context | Kimi coding plan |
-| `claude-agent` | Dispatcher with safe fallback across the three | — | — |
-
-Any subset works. If you only have one of the subscriptions, install that wrapper and skip the rest.
-
----
-
-## Setup (agent-executable)
-
-**If you are an AI agent:** execute these steps in order. Every step ends with a CHECK command and its expected result — do not continue past a failed check. Steps marked **HUMAN** need something only your human can provide (a key or a browser login): ask for exactly that, then continue. All steps are idempotent.
-
-### Step 0 — preconditions
+### 0. Preconditions
 
 ```sh
 command -v claude && command -v git && command -v zsh
 ```
 
-CHECK: three paths print. If `claude` is missing, install Claude Code first (https://claude.com/claude-code); if the human hasn't logged it in, ask them to run `claude` once interactively.
+Check: three paths. `claude` must be installed and logged in once (interactive `claude`).
 
-### Step 1 — install the wrappers and scripts
+### 1. Install
 
 ```sh
 git clone https://github.com/metric-space-ai/claude-workjet /tmp/claude-workjet
 cd /tmp/claude-workjet && ./install.sh
 ```
 
-CHECK: `ls ~/.local/bin/claude-sol ~/.local/bin/claude-minimax ~/.local/bin/claude-kimi ~/.local/bin/claude-agent` prints four paths. Also confirm `~/.local/bin` is on `PATH` (`echo "$PATH" | tr ':' '\n' | grep -x "$HOME/.local/bin"`); if not, append `export PATH="$HOME/.local/bin:$PATH"` to the shell profile.
+Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent}` prints four paths, and `~/.local/bin` is on `PATH`.
 
-### Step 2 — MiniMax worker (skip if no MiniMax subscription)
+### 2. MiniMax (skip without subscription)
 
-**HUMAN:** ask for the MiniMax coding-plan API key (from platform.minimax.io).
+**HUMAN:** MiniMax coding-plan API key (platform.minimax.io).
 
 ```sh
 mkdir -p ~/.config/secrets
-printf 'export MINIMAX_API_KEY="%s"\n' "PASTE_KEY_HERE" > ~/.config/secrets/minimax.env
+printf 'export MINIMAX_API_KEY="%s"\n' "KEY" > ~/.config/secrets/minimax.env
 chmod 600 ~/.config/secrets/minimax.env
 ```
 
-CHECK:
+Check: `claude-minimax -p "Reply with the token: OK" < /dev/null` returns `OK`. On an auth error, the key is wrong — do not retry in a loop.
 
-```sh
-claude-minimax -p "Reply with the token: OK" < /dev/null
-```
+### 3. Kimi (skip without subscription)
 
-Expected: a reply containing `OK`. An auth error means the key is wrong — ask the human again, do not retry in a loop.
-
-### Step 3 — Kimi worker (skip if no Kimi subscription)
-
-**HUMAN:** ask for the Kimi-Code API key (from kimi.com/code).
+**HUMAN:** Kimi-Code API key (kimi.com/code).
 
 ```sh
 mkdir -p ~/.config/kimi
-printf '%s\n' "PASTE_KEY_HERE" > ~/.config/kimi/api-key
+printf '%s\n' "KEY" > ~/.config/kimi/api-key
 chmod 600 ~/.config/kimi/api-key
 ```
 
-CHECK: `claude-kimi -p "Reply with the token: OK" < /dev/null` → reply contains `OK`.
+Check: `claude-kimi -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
-### Step 4 — Sol worker via CLIProxyAPI (skip if no ChatGPT Pro subscription)
+### 4. Sol (skip without ChatGPT Pro)
 
-Sol needs a small local proxy that translates the Anthropic API the `claude` CLI speaks into the Codex API GPT-5.6 speaks, authenticated with the human's ChatGPT login.
+CLIProxyAPI bridges the Anthropic API to the Codex API using the ChatGPT login.
 
 ```sh
 brew install cliproxyapi
 ```
 
-**HUMAN:** run `cliproxyapi -codex-login` in a terminal and complete the browser login. (This cannot be done headlessly — the OAuth flow needs a browser.)
-
-Then:
+**HUMAN:** `cliproxyapi -codex-login` (browser OAuth; not possible headlessly).
 
 ```sh
 brew services start cliproxyapi
 lsof -nP -iTCP:8317 -sTCP:LISTEN
 ```
 
-CHECK: a listener on `127.0.0.1:8317`.
+Check: listener on `127.0.0.1:8317`.
 
-Now set a shared local secret (any random string; it never leaves the machine). Put the SAME value in both places:
+Choose a random local secret and set the same value in the CLIProxyAPI config (`/opt/homebrew/etc/cliproxyapi.conf`) and in `~/.local/bin/claude-sol` (both occurrences of `sol-local-CHANGE-ME`). It is only used on loopback.
 
-1. the proxy config (`/opt/homebrew/etc/cliproxyapi.conf`, field for API keys),
-2. `~/.local/bin/claude-sol` — replace both occurrences of `sol-local-CHANGE-ME`.
+Check: `claude-sol -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
-CHECK: `claude-sol -p "Reply with the token: OK" < /dev/null` → reply contains `OK`.
-
-### Step 5 — install the orchestrator prompt
+### 5. Orchestrator prompt
 
 ```sh
 test -f ~/.claude/CLAUDE.md && cp ~/.claude/CLAUDE.md ~/.claude/CLAUDE.md.bak-workjet
 cp /tmp/claude-workjet/CLAUDE.md ~/.claude/CLAUDE.md
 ```
 
-If a `CLAUDE.md` already existed, MERGE instead of overwriting: keep the human's existing rules and append the workjet sections (roles, review model, progress board, brief standard, agent wiring). Show the human the diff.
+If a `CLAUDE.md` already exists, merge instead of overwriting: keep the existing rules, append the workjet sections, show the diff.
 
-CHECK: `grep -c "claude-sol" ~/.claude/CLAUDE.md` ≥ 1.
+Check: `grep -c claude-sol ~/.claude/CLAUDE.md` ≥ 1.
 
-### Step 6 — end-to-end smoke
+### 6. Smoke test
 
 ```sh
 claude-agent simple -p "Reply with the token: OK" < /dev/null; echo "exit=$?"
 ```
 
-Expected: output contains `OK`, `exit=0`, and stderr names the worker that answered. Setup complete — report to the human which workers are live and which were skipped.
+Check: output contains `OK`, exit 0, stderr names the answering worker.
 
----
+## Usage
 
-## Using the fleet
-
-### Spawn a worker (the one pattern that matters)
+### Spawning a worker
 
 ```sh
 claude-sol -p "$(cat brief.md)" --allowedTools "Read,Write,Edit,Grep,Glob,Bash" < /dev/null
 ```
 
-Headless, fire-and-forget, report on stdout. `< /dev/null` matters: a worker that asks a question would otherwise hang forever. Long jobs: run in the background, read the output file when it lands.
+`< /dev/null` prevents a worker that asks a question from blocking forever. For long jobs, run in the background and read the output file.
 
-Every brief follows the standard in [CLAUDE.md](CLAUDE.md): a hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause ("if you need more scope: STOP and justify, never widen on your own"), a structured report tail, and a no-subagents clause. All precision is front-loaded — there is no steering mid-flight.
+Brief format (defined in `CLAUDE.md`): hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause (stop and justify instead of widening scope), a structured report tail, no subagents. Workers cannot be steered mid-run; all precision goes into the brief.
 
-### Dispatch with safe fallback
+### Dispatcher
 
 ```sh
 claude-agent <hard|normal|simple> [claude args...]
-claude-agent --degrade <role> [claude args...]   # consciously accept a weaker model
+claude-agent --degrade <role> [claude args...]
 ```
 
-Chains: `hard` = sol→kimi→minimax · `normal` = kimi→sol→minimax · `simple` = minimax→kimi→sol. Each worker is probed with a short timeout first (25s default) so a dead login can't hang the chain; the real job runs under a generous cap (1800s default, `AGENT_TIMEOUT`).
+Chains: `hard` sol→kimi→minimax, `normal` kimi→sol→minimax, `simple` minimax→kimi→sol. Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`).
 
 | Exit | Meaning |
 |---|---|
-| 0 | delivered by a worker at or above the required tier (stderr names it) |
-| 3 | `PRIMARY_UNAVAILABLE` — only weaker workers left, nothing delivered. Re-plan: decompose, wait, or do it yourself. |
-| 10 | degraded result, loudly banner-tagged — provisional, verify hard |
-| 2 | usage error |
+| 0 | Delivered by a worker at or above the required tier; stderr names it |
+| 3 | `PRIMARY_UNAVAILABLE`: only lower-tier workers reachable, nothing delivered — re-plan |
+| 10 | Degraded result (only with `--degrade`), banner-marked — verify before use |
+| 2 | Usage error |
 
-**Core rule: a fallback is a re-planning trigger, never a silent substitution.** The one failure mode this setup makes impossible is a weak model's answer masquerading as the strong model's.
+### Operating rules
 
-### Operating rules (short)
+- Concurrency ≤ 3 per provider; a 403/quota wall means stop, not retry.
+- Verify worker results independently (run the tests, check the diff against the whitelist).
+- MiniMax writes new files only — no Edit, no git.
 
-- Concurrency ≤3 per provider. A 403/quota wall means STOP, not retry-until-broke.
-- Verify every worker result yourself: run the tests, check the diff against the whitelist. A worker's "green" is a claim, not evidence.
-- MiniMax touches files Write-only (new files, never Edit, never git).
-- Larger orchestrations get an HTML progress board, updated on events, never on a timer.
+## Notes
 
-## Field notes (paid for in real incidents)
-
-- **`--bare` or leak.** Weaker worker models do not reliably obey "ignore the orchestrator prompt" instructions. Not loading it at all is the only isolation that held.
-- **Headless children can't reach the macOS Keychain.** A `claude` child spawned from a session can't use OAuth logins — that's why every wrapper authenticates via env var or key file, and why the ChatGPT login in Step 4 is the human's step.
-- **The strong model produces 150%.** The required 100% plus abstractions nobody asked for. The whitelist-plus-acceptance-criteria brief turns that into a precise 100%. Deciding what was unnecessary is the manager's job, not the worker's.
-- **The escape hatch works.** Workers told "STOP and justify instead of widening scope" actually stop. Workers not told that improvise. Every brief carries the clause.
+- Prompt-override instructions are not reliably honored by weaker models; `--bare` is the isolation mechanism, not a system-prompt instruction.
+- Headless `claude` children spawned from a session cannot access macOS Keychain/OAuth logins. All wrapper auth is therefore env-var or key-file based; the ChatGPT OAuth in step 4 is the only interactive step.
+- GPT-5.6 tends to over-deliver (extra abstractions, files, scope). The whitelist and acceptance criteria in the brief bound this; deciding what is unnecessary stays with the orchestrator.
 
 ## License
 
