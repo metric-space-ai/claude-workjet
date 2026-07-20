@@ -165,4 +165,4 @@ Chains: `hard` sol→kimi→minimax, `normal` kimi→sol→minimax, `simple` min
 
 ## License
 
-Apache-2.0
+MIT
