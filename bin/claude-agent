@@ -30,10 +30,17 @@ TASK_TIMEOUT=${AGENT_TIMEOUT:-1800}
 
 allow_degrade=0
 isolate=1
+run_dir_override=""
 while [[ "$1" == --* ]]; do
   case "$1" in
     --degrade) allow_degrade=1 ;;
     --no-isolate) isolate=0 ;;
+    --run-dir)
+      shift
+      [[ -n "$1" ]] || { print -u2 "claude-agent: --run-dir requires a directory"; exit 2; }
+      run_dir_override="$1"
+      ;;
+    --run-dir=*) run_dir_override="${1#--run-dir=}" ;;
     *) print -u2 "claude-agent: unknown option '$1'"; exit 2 ;;
   esac
   shift
@@ -124,17 +131,71 @@ run_timed() {
   return $rc
 }
 
-repo_root=""
+args=("$@")
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 repo_subdir=""
-if (( isolate )); then
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
-  if [[ -n "$repo_root" ]]; then
-    repo_subdir="${PWD#$repo_root}"
-  else
-    isolate=0
-    print -u2 "[claude-agent] warning: current directory is not a Git repository; running in-place"
-  fi
+if [[ -n "$repo_root" ]]; then
+  repo_subdir="${PWD#$repo_root}"
+elif (( isolate )); then
+  isolate=0
+  print -u2 "[claude-agent] warning: current directory is not a Git repository; running in-place"
 fi
+
+RUN_WORKER=""
+RUN_WORKTREE=""
+RUN_GIT_BEFORE=""
+init_run_dir() {
+  local stamp brief="" i
+  stamp="$(date +%Y%m%dT%H%M%S)-$$"
+  if [[ -n "$run_dir_override" ]]; then
+    RUN_DIR="${run_dir_override:A}"
+  else
+    RUN_DIR="$HOME/.local/state/workjet/runs/${stamp}-${role}"
+  fi
+  mkdir -p "$RUN_DIR" || { print -u2 "claude-agent: cannot create run directory: $RUN_DIR"; exit 2; }
+  chmod 700 "$RUN_DIR" 2>/dev/null || true
+  for (( i=1; i <= ${#args}; i++ )); do
+    if [[ "${args[$i]}" == -p ]] && (( i < ${#args} )); then
+      brief="${args[$(( i + 1 ))]}"
+      break
+    fi
+  done
+  print -rn -- "$brief" > "$RUN_DIR/brief.txt"
+  : > "$RUN_DIR/stdout"
+  : > "$RUN_DIR/stderr"
+  : > "$RUN_DIR/worker"
+  : > "$RUN_DIR/worktree-path"
+  if [[ -n "$repo_root" ]]; then
+    RUN_GIT_BEFORE="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null)"
+    print -r -- "$RUN_GIT_BEFORE" > "$RUN_DIR/git-head-before"
+  fi
+}
+
+record_attempt() {  # worker stdout stderr
+  RUN_WORKER="$1"
+  print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
+  print -rn -- "$2" > "$RUN_DIR/stdout"
+  print -rn -- "$3" > "$RUN_DIR/stderr"
+}
+
+finalize_run() {
+  local final_rc="$1" git_target git_after diffstat
+  print -r -- "$final_rc" > "$RUN_DIR/rc"
+  print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
+  print -r -- "$RUN_WORKTREE" > "$RUN_DIR/worktree-path"
+  if [[ -n "$repo_root" ]]; then
+    git_target="$repo_root"
+    [[ -n "$RUN_WORKTREE" && -d "$RUN_WORKTREE" ]] && git_target="$RUN_WORKTREE"
+    git_after="$(git -C "$git_target" rev-parse HEAD 2>/dev/null)"
+    print -r -- "$git_after" > "$RUN_DIR/git-head-after"
+    diffstat="$(git -C "$git_target" diff --stat "$RUN_GIT_BEFORE" -- 2>/dev/null)"
+    print -rn -- "$diffstat" > "$RUN_DIR/diffstat"
+  fi
+  print -u2 "[claude-agent] run directory: $RUN_DIR"
+}
+
+init_run_dir
+trap 'finalize_run $?' EXIT
 
 cleanup_stale_worktrees() {
   (( isolate )) || return 0
@@ -174,6 +235,7 @@ remove_worktree() {
 
 report_worktree() {
   local wt="$1" base="$2" wt_status diffstat
+  RUN_WORKTREE="$wt"
   wt_status="$(git -C "$wt" status --short 2>/dev/null | head)"
   diffstat="$(git -C "$wt" diff --stat "$base" -- 2>/dev/null)"
   print -u2 "[claude-agent] worktree retained: $wt"
@@ -197,7 +259,9 @@ probe_available() {  # $1 worker -> 0 available, 1 unavailable, 4 task failure
   ensure_proxy "$w"
   local of=$(mktemp) ef=$(mktemp) rc out err
   run_timed $PROBE_TIMEOUT "$of" "$ef" ~/.local/bin/$w -p "Reply with the token: OK"; rc=$?
-  out="$(<"$of")"; err="$(<"$ef")"; rm -f "$of" "$ef"
+  out="$(<"$of")"; err="$(<"$ef")"
+  record_attempt "$w" "$out" "$err"
+  rm -f "$of" "$ef"
   (( rc == 124 )) && { print -u2 "[claude-agent] $w probe timed out (${PROBE_TIMEOUT}s) — treating as unavailable"; return 1; }
   if (( rc == 0 )); then
     has_output "$out" && return 0
@@ -221,7 +285,9 @@ deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 unavailable / 4 ta
   fi
   run_timed $TASK_TIMEOUT "$of" "$ef" ~/.local/bin/$w "$@"; rc=$?
   cd "$oldpwd"
-  REPLY="$(<"$of")"; err="$(<"$ef")"; rm -f "$of" "$ef"
+  REPLY="$(<"$of")"; err="$(<"$ef")"
+  record_attempt "$w" "$REPLY" "$err"
+  rm -f "$of" "$ef"
   if (( rc == 124 )); then
     remove_worktree "$wt"
     print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — aborting worker"
@@ -247,7 +313,6 @@ deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 unavailable / 4 ta
   return 4
 }
 
-args=("$@")
 degrade_candidate=""
 
 # The required worker is the only non-degraded delivery for this role.

@@ -179,6 +179,8 @@ Legacy aliases remain temporarily available and print a deprecation notice: `har
 
 Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached `.workjet/wt-*` worktree by default. Successful worktrees are retained for orchestrator inspection and integration; failed or timed-out worktrees are discarded before another worker starts. Use `--no-isolate` only when in-place execution is intentional.
 
+Every invocation records its brief and final worker attempt under `~/.local/state/workjet/runs/<timestamp>-<role>/`: `brief.txt`, `stdout`, `stderr`, `rc`, `worker`, and `worktree-path`, plus `git-head-before`, `git-head-after`, and `diffstat` when launched from a Git repository. The path is printed on stderr at exit. Use `--run-dir DIR` to select an explicit location.
+
 | Exit | Meaning |
 |---|---|
 | 0 | Delivered by the role's required worker; stderr names it |
