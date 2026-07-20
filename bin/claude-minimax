@@ -1,0 +1,23 @@
+#!/bin/zsh
+# Claude Code CLI routed to MiniMax M3 (api.minimax.io, Anthropic-compatible).
+# Uses the MiniMax coding/flat subscription key from the secret store.
+# Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session stays untouched.
+source ~/.config/secrets/minimax.env
+export CLAUDE_CONFIG_DIR="$HOME/.config/claude-minimax"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+export ANTHROPIC_BASE_URL="https://api.minimax.io/anthropic"
+export ANTHROPIC_API_KEY="$MINIMAX_API_KEY"
+export ANTHROPIC_AUTH_TOKEN="$MINIMAX_API_KEY"
+export ANTHROPIC_MODEL="${MINIMAX_MODEL:-MiniMax-M3}"
+export ANTHROPIC_SMALL_FAST_MODEL="${MINIMAX_MODEL:-MiniMax-M3}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Leaf-worker isolation: `--bare` skips CLAUDE.md auto-discovery, so the global
+# ~/.claude/CLAUDE.md orchestrator prompt never leaks into this worker. That leak is
+# model-independent (Claude resolves ~/.claude via the system user db, so neither
+# CLAUDE_CONFIG_DIR nor HOME suppresses it) and a system-prompt override is not
+# reliably honored by weaker models — `--bare` not loading the file is the only
+# robust fix. Auth is strictly ANTHROPIC_API_KEY (set above). --bare also drops
+# project CLAUDE.md, hooks, and plugins: pass task context in the brief (or
+# --add-dir) when needed. Set CLAUDE_WORKER_FULL=1 for a full interactive session.
+BARE=(--bare); [[ -n "$CLAUDE_WORKER_FULL" ]] && BARE=()
+exec claude "${BARE[@]}" "$@"

@@ -1,0 +1,33 @@
+#!/bin/zsh
+# Claude Code CLI routed to GPT-5.6 Sol via CLIProxyAPI, a local Anthropic<->Codex
+# proxy (127.0.0.1:8317) that authenticates with your ChatGPT Pro subscription
+# (OAuth, no API key). Own CLAUDE_CONFIG_DIR so the normal Anthropic login/session
+# stays untouched. Run exactly like `claude`.
+#
+# Reasoning effort is pinned HIGH: the proxy maps the Anthropic "thinking" budget
+# to the Codex reasoning-effort level, and a budget of ~10k+ maps to "high".
+#
+# Requires the proxy to be running:  brew services start cliproxyapi
+# (or) /opt/homebrew/opt/cliproxyapi/bin/cliproxyapi -config /opt/homebrew/etc/cliproxyapi.conf
+export CLAUDE_CONFIG_DIR="$HOME/.config/claude-sol"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+export ANTHROPIC_BASE_URL="http://127.0.0.1:8317"
+export ANTHROPIC_API_KEY="sol-local-CHANGE-ME"
+export ANTHROPIC_AUTH_TOKEN="sol-local-CHANGE-ME"
+export ANTHROPIC_MODEL="${SOL_MODEL:-gpt-5.6-sol}"
+export ANTHROPIC_SMALL_FAST_MODEL="${SOL_SMALL_MODEL:-gpt-5.6-sol}"
+# reasoning HIGH via thinking budget (proxy: budget -> codex effort level)
+export MAX_THINKING_TOKENS="${SOL_THINKING:-32000}"
+export CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+# Leaf-worker isolation: `--bare` skips CLAUDE.md auto-discovery, so the global
+# ~/.claude/CLAUDE.md orchestrator prompt never leaks into this worker. That leak is
+# model-independent (Claude resolves ~/.claude via the system user db, so neither
+# CLAUDE_CONFIG_DIR nor HOME suppresses it) and a system-prompt override is not
+# reliably honored by weaker models — `--bare` not loading the file is the only
+# robust fix. Auth is strictly ANTHROPIC_API_KEY (set above); effort=high is
+# preserved (proxy maps MAX_THINKING_TOKENS). --bare also drops project CLAUDE.md,
+# hooks, and plugins: pass task context in the brief (or --add-dir) when needed.
+# Set CLAUDE_WORKER_FULL=1 for a full interactive session instead.
+BARE=(--bare); [[ -n "$CLAUDE_WORKER_FULL" ]] && BARE=()
+exec claude "${BARE[@]}" "$@"

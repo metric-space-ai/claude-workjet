@@ -1,0 +1,151 @@
+#!/bin/zsh
+# claude-agent: capability-aware, hang-proof dispatcher over the flat-sub wrappers
+# (claude-sol / claude-kimi / claude-minimax).
+#
+# CORE RULE: a fallback is a RE-PLANNING TRIGGER, never a silent substitution.
+# A DOWNGRADE to a lower-capability model never happens transparently — it either
+# refuses (default, exit 3) or is loudly banner-tagged (--degrade, exit 10).
+#
+# Usage:  claude-agent [--degrade] <role> [claude args...]
+#   role = hard | normal | simple
+#   --degrade : permit delivering a LOWER-tier result than the role requires,
+#               with a loud banner on stdout and exit code 10.
+#
+# Tiers:  minimax=1  kimi=2  sol=3     Required: simple=1 normal=2 hard=3
+#   - fallback tier >= required  -> safe (equal/upgrade) swap, taken automatically
+#   - fallback tier <  required  -> DEGRADE: refused unless --degrade
+#
+# HANG-PROOF: each worker is first PROBED with a short timeout (AGENT_PROBE_TIMEOUT,
+# default 25s) so a dead-auth/stalled worker can't block the chain (Claude retries
+# auth errors and would otherwise hang). The real task then runs with a GENEROUS cap
+# (AGENT_TIMEOUT, default 1800s) that only catches true hangs, never legit long work.
+#
+# Exit: 0 safe worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
+#       10 degraded result (provisional; verify+disclose) | 1 chain exhausted w/ --degrade |
+#       2 usage error
+emulate -L zsh
+setopt pipe_fail
+
+PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-25}
+TASK_TIMEOUT=${AGENT_TIMEOUT:-1800}
+
+allow_degrade=0
+[[ "$1" == "--degrade" ]] && { allow_degrade=1; shift; }
+role="$1"; shift 2>/dev/null
+case "$role" in
+  hard)   chain=(claude-sol claude-kimi claude-minimax); need=3 ;;
+  normal) chain=(claude-kimi claude-sol claude-minimax); need=2 ;;
+  simple) chain=(claude-minimax claude-kimi claude-sol); need=1 ;;
+  *) print -u2 "claude-agent: unknown role '${role:-}' (use: [--degrade] hard|normal|simple)"; exit 2 ;;
+esac
+
+tier() { case "$1" in claude-minimax) print 1;; claude-kimi) print 2;; claude-sol) print 3;; *) print 0;; esac }
+
+unavailable_re='usage limit|out of quota|quota exceeded|quota.*exhaust|membership/subscription|purchase extra usage|upgrade your plan|insufficient (quota|credit|balance)|invalid authentication|invalid api key|authentication_error|unauthorized|401 |403 |429 |rate limit|too many requests|overloaded|connection refused|econnrefused|dial tcp|502 bad gateway|503 service|service unavailable'
+
+is_unavailable() {  # $1 combined output, $2 exit code
+  local out="$1" rc="$2"
+  [[ -z "${out//[[:space:]]/}" ]] && return 0
+  print -r -- "$out" | grep -qiE "$unavailable_re" && return 0
+  [[ "$rc" -ne 0 ]] && print -r -- "$out" | grep -qiE 'api error|request failed|fetch failed|network' && return 0
+  return 1
+}
+
+# run_timed <secs> <outfile> <errfile> <cmd...> ; returns cmd rc, or 124 on timeout
+run_timed() {
+  local secs=$1 of=$2 ef=$3; shift 3
+  "$@" </dev/null >"$of" 2>"$ef" &
+  local pid=$! n=0
+  while kill -0 $pid 2>/dev/null; do
+    sleep 1
+    if (( ++n >= secs )); then
+      kill -TERM $pid 2>/dev/null; sleep 1; kill -KILL $pid 2>/dev/null; pkill -P $pid 2>/dev/null
+      wait $pid 2>/dev/null; return 124
+    fi
+  done
+  wait $pid 2>/dev/null; return $?
+}
+
+ensure_proxy() {  # start the local proxy if Sol is the target and it's not listening
+  [[ "$1" == claude-sol ]] || return 0
+  lsof -nP -iTCP:8317 -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  print -u2 "[claude-agent] cliproxyapi not listening — starting it (restores the intended worker)"
+  brew services start cliproxyapi >/dev/null 2>&1; sleep 3
+}
+
+probe_available() {  # $1 worker -> 0 available, 1 unavailable (fast, timeout-guarded)
+  ensure_proxy "$1"
+  local of=$(mktemp) ef=$(mktemp) rc
+  run_timed $PROBE_TIMEOUT "$of" "$ef" ~/.local/bin/$1 -p "Reply with the token: OK"; rc=$?
+  local out="$(<"$of")"$'\n'"$(<"$ef")"; rm -f "$of" "$ef"
+  (( rc == 124 )) && { print -u2 "[claude-agent] $1 probe timed out (${PROBE_TIMEOUT}s) — treating as unavailable"; return 1; }
+  is_unavailable "$out" "$rc" && return 1
+  return 0
+}
+
+deliver() {  # $1 worker, rest = args -> sets REPLY; 0 ok / 1 failed
+  local w=$1; shift
+  ensure_proxy "$w"
+  local of=$(mktemp) ef=$(mktemp) rc
+  run_timed $TASK_TIMEOUT "$of" "$ef" ~/.local/bin/$w "$@"; rc=$?
+  REPLY="$(<"$of")"; local err="$(<"$ef")"; rm -f "$of" "$ef"
+  (( rc == 124 )) && { print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — aborting worker"; REPLY=""; return 1; }
+  is_unavailable "$REPLY"$'\n'"$err" "$rc" && return 1
+  return 0
+}
+
+args=("$@")
+degrade_candidate=""
+
+# Pass 1: first AVAILABLE worker whose tier >= need (safe/primary/upgrade) delivers.
+for w in $chain; do
+  if probe_available "$w"; then
+    if (( $(tier "$w") >= need )); then
+      if deliver "$w" "${args[@]}"; then
+        [[ "$w" == "${chain[1]}" ]] && print -u2 "[claude-agent] answered by: $w (primary)" \
+                                     || print -u2 "[claude-agent] answered by: $w (safe fallback, tier>=required)"
+        print -r -- "$REPLY"; exit 0
+      fi
+      print -u2 "[claude-agent] $w passed probe but failed on the task — continuing"
+    else
+      [[ -z "$degrade_candidate" ]] && degrade_candidate="$w"   # available but LOWER tier
+    fi
+  else
+    print -u2 "[claude-agent] $w unavailable — skipping"
+  fi
+done
+
+# Pass 2: no safe worker. Downgrade only with explicit --degrade, loudly.
+reqname=${chain[1]}
+if (( allow_degrade )) && [[ -n "$degrade_candidate" ]]; then
+  if deliver "$degrade_candidate" "${args[@]}"; then
+    banner="⚠️⚠️ DEGRADED FALLBACK — role=$role required=$reqname(tier$need) DELIVERED=$degrade_candidate(tier$(tier $degrade_candidate)). LOWER-capability model. Result is PROVISIONAL: re-scope/verify before trusting, and disclose the substitution to the user."
+    print -r -- "$banner"; print -r -- "----- degraded output below -----"; print -r -- "$REPLY"
+    print -u2 "$banner"; exit 10
+  fi
+  print -u2 "[claude-agent] degrade candidate $degrade_candidate also failed."
+fi
+
+# Pass 3: refuse to silently downgrade.
+print -u2 "════════════════════════════════════════════════════════════════"
+print -u2 "[claude-agent] PRIMARY_UNAVAILABLE  role=$role  required=$reqname (tier$need)"
+if [[ -n "$degrade_candidate" ]]; then
+  print -u2 "  Only LOWER-tier workers are available (e.g. $degrade_candidate). A blind model-swap"
+  print -u2 "  would be catastrophic for a '$role' task."
+else
+  print -u2 "  No worker in the chain is available at all."
+fi
+print -u2 "  ORCHESTRATOR MUST RE-PLAN — do NOT just swap models. Options:"
+print -u2 "    • decompose the task so a lower-tier model can do it reliably, then re-delegate;"
+print -u2 "    • deliberately accept a degraded result via: claude-agent --degrade $role ... (then verify hard);"
+print -u2 "    • wait for the primary's quota/auth window to recover;"
+print -u2 "    • do the work yourself, or (only if the user allowed it) escalate to Opus/Fable."
+if [[ "$reqname" == claude-sol ]]; then
+  print -u2 "  ── Sol (ChatGPT Pro OAuth) note: if this is AUTH (not quota), the token expired."
+  print -u2 "     You CANNOT fix it — the browser login is the user's step. TELL THE USER to run:"
+  print -u2 "         cliproxyapi -codex-login"
+  print -u2 "     Do not attempt the login yourself and do not silently route around it."
+fi
+print -u2 "  SURFACE this to the user if the primary stays down across the session."
+print -u2 "════════════════════════════════════════════════════════════════"
+exit 3
