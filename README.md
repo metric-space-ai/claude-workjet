@@ -170,6 +170,8 @@ Brief format (defined in `AGENTS.md`): hard file whitelist, acceptance criteria 
 claude-agent <role> [claude args...]
 claude-agent --degrade <role> [claude args...]
 claude-agent --no-isolate <role> [claude args...]
+claude-agent --include-dirty <role> [claude args...]
+claude-agent runs mark <run-id> integrated|abandoned
 ```
 
 The first worker in each chain is **required**: it is the only worker that fully satisfies the role. Every later worker is provisional and is invoked only with `--degrade`.
@@ -185,9 +187,16 @@ The first worker in each chain is **required**: it is the only worker that fully
 
 Legacy aliases remain temporarily available and print a deprecation notice: `hard` → `implementation-hard`, `normal` → `research`, `simple` → `bulk-generation`.
 
-Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached `.workjet/wt-*` worktree by default. Successful worktrees are retained for orchestrator inspection and integration; failed or timed-out worktrees are discarded before another worker starts. Use `--no-isolate` only when in-place execution is intentional.
+Workers are probed with a short timeout (default 25 s, `AGENT_PROBE_TIMEOUT`) before the job runs under a generous cap (default 1800 s, `AGENT_TIMEOUT`). In a Git repository, each delivery runs in a detached worktree under `~/.local/state/workjet/worktrees/<repo-id>/<run-id>`; the repository checkout is never populated with dispatcher state. The main checkout must be clean. To transfer staged, unstaged, and untracked changes intentionally, pass `--include-dirty`; the dispatcher archives a binary patch in the run directory and applies it to the worker worktree. Use `--no-isolate` only when in-place execution is intentional.
 
-Every invocation records its brief and final worker attempt under `~/.local/state/workjet/runs/<timestamp>-<role>/`: `brief.txt`, `stdout`, `stderr`, `rc`, `worker`, and `worktree-path`, plus `git-head-before`, `git-head-after`, and `diffstat` when launched from a Git repository. The path is printed on stderr at exit. Use `--run-dir DIR` to select an explicit location.
+After a successful isolated delivery, all worktree changes are committed and protected by `refs/workjet/<run-id>`. The worktree remains for inspection and integration. Automatic stale cleanup removes it only after the run is explicitly marked `integrated` or `abandoned`; unmarked worktrees are warned about and retained:
+
+```sh
+claude-agent runs mark <run-id> integrated
+claude-agent runs mark <run-id> abandoned
+```
+
+Every invocation records its brief and final worker attempt under `~/.local/state/workjet/runs/<timestamp>-<role>/`: `brief.txt`, `stdout`, `stderr`, `rc`, `worker`, `run-id`, and `worktree-path`, plus `git-head-before`, `git-head-after`, `diffstat`, `protected-ref`, and `protected-sha` when applicable. The path is printed on stderr at exit. Use `--run-dir DIR` to select an explicit location.
 
 | Exit | Meaning |
 |---|---|

@@ -159,8 +159,12 @@ Legacy aliases print a deprecation notice: `hard`→`implementation-hard`,
 
 Hang-proof: each worker is probed with a short timeout (`AGENT_PROBE_TIMEOUT`, 25s)
 and the real task runs under `AGENT_TIMEOUT` (1800s). In Git repositories, deliveries
-run in isolated `.workjet/wt-*` worktrees by default; successful worktrees remain for
-inspection, while failed/timed-out worktrees are removed before another worker starts.
+run in isolated worktrees under `~/.local/state/workjet/worktrees/<repo-id>/<run-id>`.
+The main checkout must be clean unless `--include-dirty` explicitly snapshots it into
+the run. Successful results are committed on `refs/workjet/<run-id>`. Worktrees remain
+until the orchestrator marks the run `integrated` or `abandoned` with
+`claude-agent runs mark <run-id> integrated|abandoned`; unmarked worktrees are never
+automatically deleted.
 
 For a **fleet** (waves-of-N over many parallel briefs), keep using the
 wrappers directly but STOP on a 403 rather than burning failed attempts, and never
