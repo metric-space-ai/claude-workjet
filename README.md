@@ -33,7 +33,7 @@ Any subset works; install only the wrappers you have subscriptions for.
 
 ## Design
 
-- **One process per job.** Briefs and reports are files; every run can be inspected and replayed. MiniMax and Kimi talk directly to their Anthropic-compatible endpoints — key file, nothing else. Sol is the exception: ChatGPT Pro has no Anthropic-compatible API, so it needs one piece of infrastructure — [CLIProxyAPI](https://github.com/luispater/CLIProxyAPI), a local service that bridges the Anthropic API to the Codex API and holds the ChatGPT OAuth login (setup step 4).
+- **One process per job.** Briefs and reports are files; every run can be inspected and replayed. MiniMax and Kimi talk directly to their Anthropic-compatible endpoints — key file, nothing else. Sol is the exception: ChatGPT Pro has no Anthropic-compatible API, so it needs one piece of infrastructure — [CLIProxyAPI](https://github.com/search?q=CLIProxyAPI&type=repositories), a local service that bridges the Anthropic API to the Codex API and holds the ChatGPT OAuth login (setup step 4). The search link is intentional: the upstream repository owner has changed; verify the current project and pin a known-good release.
 - **Isolation via `--bare`.** Workers load no global or project `CLAUDE.md`, no hooks, no plugins, and use no interactive login. `CLAUDE_CONFIG_DIR` alone does not prevent prompt auto-discovery (`~/.claude` is resolved through the system user database); `--bare` does. Task context goes into the brief.
 - **Subscription billing.** All workers run on flat-rate plans through their Anthropic-compatible APIs.
 - **Explicit failure.** Quota and auth walls surface as distinct dispatcher exit codes. A weaker model is never substituted for a stronger one without an explicit `--degrade` flag and a marked result.
@@ -85,11 +85,27 @@ Check: `claude-kimi -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
 ### 4. Sol (skip without ChatGPT Pro)
 
-CLIProxyAPI bridges the Anthropic API to the Codex API using the ChatGPT login.
+CLIProxyAPI bridges the Anthropic API to the Codex API using the ChatGPT login. Find the current upstream through the neutral [GitHub repository search](https://github.com/search?q=CLIProxyAPI&type=repositories); old owner-specific links are stale. Install a known-good Homebrew release, record the installed version, and pin it after verification so an unattended upgrade cannot silently change the local authentication boundary.
 
 ```sh
 brew install cliproxyapi
+brew info cliproxyapi                 # record the installed version
+brew pin cliproxyapi                  # after the smoke test is green
 ```
+
+Before starting the service, edit `/opt/homebrew/etc/cliproxyapi.conf`. The following security settings are mandatory:
+
+```yaml
+host: "127.0.0.1"
+port: 8317
+remote-management:
+  allow-remote: false
+disable-control-panel: true
+plugins:
+  enabled: false
+```
+
+The upstream default `host: ""` binds on all interfaces. Explicit loopback binding prevents exposing the subscription-backed proxy to the LAN; remote management, the control panel, and plugins are disabled to minimize the local attack surface.
 
 **HUMAN:** `cliproxyapi -codex-login` (browser OAuth; not possible headlessly).
 
@@ -98,7 +114,7 @@ brew services start cliproxyapi
 lsof -nP -iTCP:8317 -sTCP:LISTEN
 ```
 
-Check: listener on `127.0.0.1:8317`.
+Check: the listener is specifically on `127.0.0.1:8317`, not `*:8317` or `[::]:8317`.
 
 Choose a random local secret and set the same value in the CLIProxyAPI config (`/opt/homebrew/etc/cliproxyapi.conf`) and as the single line in `~/.config/secrets/sol-key`; then run `chmod 600 ~/.config/secrets/sol-key`. It is only used on loopback.
 
