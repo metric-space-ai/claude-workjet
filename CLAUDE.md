@@ -39,10 +39,9 @@ Kimi-K3
 - Only then give Kimi both positions neutrally and ask it to identify the stronger position, missing evidence, or a decisive test.
 - Kimi may also be used for a valuable independent second opinion, but it is not the default worker or co-orchestrator.
 
-Review model (three tiers, in order):
+Review model (two tiers):
 1. **Orchestrator self-review is always legitimate and is the default.** Review adversarially: work the artifact (read the actual code, run the tests, check diff scope), never the report. A self-review that finds real defects counts — this happened and worked.
-2. **Kimi is the independent reviewer** for substantial integrations and final edits (the list above).
-3. **Claude CLI (Opus 4.8) normally does not come into play at all.** It is the rare fallback third opinion, only when there is a large discrepancy — self-review and Kimi disagree, or a finding would trigger expensive rework and confidence is low. Give it both positions neutrally, like a Kimi dispute brief. **When used, it MUST run on the subscription (logged-in `claude` CLI), never on API-key billing.**
+2. **Kimi is the independent reviewer** for substantial integrations and final edits (the list above), and the resolver when self-review and a worker's position collide.
 
 Your preferred workflow is:
 
@@ -59,7 +58,7 @@ Your preferred workflow is:
    - improve coherence and elegance,
    - preserve every required behavior,
    - reduce Sol's 150% output to the best 100%.
-8. Review: self-review adversarially first; send substantial final edits to Kimi; escalate to the Opus third opinion only on large discrepancy.
+8. Review: self-review adversarially first; send substantial final edits to Kimi.
 9. Send concrete remaining defects to Sol for targeted repair.
 10. Finish only when the user's requirements are satisfied and the final result is clean, complete, and verified.
 
@@ -130,18 +129,10 @@ wrapper. **The hard rule: a capability DOWNGRADE never happens silently.** A deg
 result masquerading as the requested worker's result is catastrophic — the
 orchestrator must re-plan, not just accept a weaker model's answer.
 
-**Set fallback: if Kimi K3 is down (quota/auth), the fallback is the plain
-`claude` CLI with Opus 4.8 (`claude --model claude-opus-4-8 -p ... < /dev/null`,
-headless) — explicitly authorized, no re-ask needed.** Opus 4.8 normally does not
-come into play at all; it is the rare fallback third opinion on large review
-discrepancies (see review model) and **MUST use the subscription (logged-in
-`claude` CLI) — never API-key billing.**
-**Known limitation (proven 20.07.2026): headless `claude` children spawned from
-a Claude-Code session cannot reach the macOS Keychain/OAuth login. Consequence:
-an Opus fallback run happens in the USER'S own terminal — you prepare the exact
-one-liner and hand it to the user; you cannot spawn it yourself. Until then,
-treat the review leg as: adversarial self-review now + independent re-review
-deferred to when Kimi is reachable, and say so explicitly in your report.** Sol keeps its own chain.
+**If Kimi K3 is down (quota/auth): review adversarially yourself now, and
+defer the independent re-review to when Kimi is reachable again — state that
+deferral explicitly in your report. There is no other review fallback.**
+Sol keeps its own chain.
 
 Tiers: `minimax`=1, `kimi`=2, `sol`=3. Required by role: `simple`=1, `normal`=2,
 `hard`=3. Chains: hard=sol→kimi→minimax, normal=kimi→sol→minimax, simple=minimax→kimi→sol.
@@ -152,7 +143,7 @@ Tiers: `minimax`=1, `kimi`=2, `sol`=3. Required by role: `simple`=1, `normal`=2,
   The dispatcher **REFUSES**, delivers no output, and prints `PRIMARY_UNAVAILABLE`
   guidance on stderr. **exit 3** → you MUST re-plan: decompose the task so a lower
   tier can do it reliably and re-delegate; or wait for the primary to recover; or do
-  it yourself; or (only if the user allowed it) escalate to Opus/Fable. **Never** just
+  it yourself; **Never** just
   re-run with a weaker model. **Surface a persistently-down primary to the user.**
   - **Sol auth expiry is a USER-ACTION case, not a re-plan case.** If Sol is down
     because its ChatGPT OAuth token expired (not quota), the only fix is the user

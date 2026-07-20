@@ -139,7 +139,7 @@ print -u2 "  ORCHESTRATOR MUST RE-PLAN — do NOT just swap models. Options:"
 print -u2 "    • decompose the task so a lower-tier model can do it reliably, then re-delegate;"
 print -u2 "    • deliberately accept a degraded result via: claude-agent --degrade $role ... (then verify hard);"
 print -u2 "    • wait for the primary's quota/auth window to recover;"
-print -u2 "    • do the work yourself, or (only if the user allowed it) escalate to Opus/Fable."
+print -u2 "    • do the work yourself."
 if [[ "$reqname" == claude-sol ]]; then
   print -u2 "  ── Sol (ChatGPT Pro OAuth) note: if this is AUTH (not quota), the token expired."
   print -u2 "     You CANNOT fix it — the browser login is the user's step. TELL THE USER to run:"
