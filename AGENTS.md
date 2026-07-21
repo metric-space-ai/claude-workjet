@@ -131,12 +131,19 @@ automatic substitute.
 
 | Role | Chain (required first) |
 |---|---|
-| `implementation-hard` | Sol → Kimi |
-| `frontend-greenfield` | Kimi → Sol |
-| `frontend-integration` | Sol → Kimi |
-| `bulk-generation` | MiniMax → Kimi → Sol |
+| `implementation-hard` | Sol → Kimi → Opus |
+| `frontend-greenfield` | Kimi → Sol → Opus |
+| `frontend-integration` | Sol → Kimi → Opus |
+| `bulk-generation` | MiniMax → Kimi → Sol → Opus |
 | `review` | Kimi only |
-| `research` | Kimi → Sol → MiniMax |
+| `research` | Kimi → Sol → MiniMax → Opus |
+
+**QUOTA FALLBACK (owner rule, 21.07.2026):** when a role's required worker is
+down on quota/auth, the dispatcher automatically hands the task to Claude Code
+CLI on Opus 4.8 (`claude-opus`) as a SAFE substitute — announced loudly in the
+run output, never silently. Auth: a long-lived subscription token from
+`claude setup-token`, stored at `~/.config/secrets/claude-oauth` (0600).
+Subscription billing only — never API keys.
 
 Legacy aliases print a deprecation notice: `hard`→`implementation-hard`,
 `normal`→`research`, `simple`→`bulk-generation`.

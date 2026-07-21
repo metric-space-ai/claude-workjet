@@ -14,6 +14,7 @@ Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its
 | **GPT-5.6 "Sol"** — `claude-sol` | **Completion engine.** Hard, detail-heavy, must-not-fail implementation work. Follows a precise brief relentlessly; tends to over-deliver, which the brief's whitelist bounds. Also owns edits to existing frontend and frontend↔backend wiring. |
 | **MiniMax M3** — `claude-minimax` | **Bulk worker.** Clear, repetitive, high-volume work: generation, classification, judging, test writing. Write-only on files, never Edit, never git. |
 | **Kimi K3** — `claude-kimi` | **Frontend lead and independent reviewer.** Greenfield UI/design work from scratch; reviews substantial integrations and the orchestrator's final edits; resolves disputes between agents. |
+| **Claude Opus 4.8** — `claude-opus` | **Quota fallback.** Steps in automatically when a role's worker is down on quota/auth; long-lived subscription token via `claude setup-token`. Announced loudly, never silent. |
 Review model: the orchestrator self-reviews adversarially by default; Kimi reviews independently and resolves disputes. The full role split, brief format, and operating rules are the content of [AGENTS.md](AGENTS.md).
 
 ## Components
