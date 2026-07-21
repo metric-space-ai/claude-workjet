@@ -1,0 +1,21 @@
+#!/bin/zsh
+# Claude Code CLI on Opus 4.8 — the QUOTA FALLBACK worker for the fleet.
+# Auth: long-lived headless token from `claude setup-token`, stored at
+# ~/.config/secrets/claude-oauth (0600). Subscription billing, never API keys.
+KEY_FILE="$HOME/.config/secrets/claude-oauth"
+if [[ ! -f "$KEY_FILE" ]]; then
+  print -u2 "claude-opus: $KEY_FILE fehlt. Einmalig im Terminal: claude setup-token"
+  print -u2 "  danach: printf '%s\n' '<TOKEN>' > $KEY_FILE && chmod 600 $KEY_FILE"
+  exit 4
+fi
+perms=$(stat -f '%Lp' "$KEY_FILE" 2>/dev/null || stat -c '%a' "$KEY_FILE" 2>/dev/null)
+[[ "$perms" == "600" ]] || { print -u2 "claude-opus: $KEY_FILE braucht chmod 600 (ist $perms)"; exit 4; }
+TOKEN="$(<"$KEY_FILE")"
+[[ -n "$TOKEN" && "$TOKEN" != *CHANGE-ME* ]] || { print -u2 "claude-opus: Token leer/Platzhalter"; exit 4; }
+export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+export CLAUDE_CONFIG_DIR="$HOME/.config/claude-opus"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+export ANTHROPIC_MODEL="${OPUS_MODEL:-claude-opus-4-8}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+BARE=(--bare); [[ -n "$CLAUDE_WORKER_FULL" ]] && BARE=()
+exec claude "${BARE[@]}" --model "$ANTHROPIC_MODEL" "$@"

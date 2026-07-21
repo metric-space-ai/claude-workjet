@@ -84,12 +84,12 @@ case "$role" in
   simple) print -u2 "[claude-agent] deprecated role 'simple'; use 'bulk-generation'"; role=bulk-generation ;;
 esac
 case "$role" in
-  implementation-hard)  chain=(claude-sol claude-kimi) ;;
-  frontend-greenfield)  chain=(claude-kimi claude-sol) ;;
-  frontend-integration) chain=(claude-sol claude-kimi) ;;
-  bulk-generation)      chain=(claude-minimax claude-kimi claude-sol) ;;
-  review)               chain=(claude-kimi) ;;
-  research)             chain=(claude-kimi claude-sol claude-minimax) ;;
+  implementation-hard)  chain=(claude-sol claude-kimi claude-opus) ;;
+  frontend-greenfield)  chain=(claude-kimi claude-sol claude-opus) ;;
+  frontend-integration) chain=(claude-sol claude-kimi claude-opus) ;;
+  bulk-generation)      chain=(claude-minimax claude-kimi claude-sol claude-opus) ;;
+  review)               chain=(claude-kimi claude-opus) ;;
+  research)             chain=(claude-kimi claude-sol claude-minimax claude-opus) ;;
   *)
     print -u2 "claude-agent: unknown role '${role:-}'"
     print -u2 "use: implementation-hard|frontend-greenfield|frontend-integration|bulk-generation|review|research"
@@ -557,6 +557,26 @@ if (( probe_rc == 0 )); then
   print -u2 "[claude-agent] $required_worker passed probe but hit a provider failure on the task"
 else
   print -u2 "[claude-agent] $required_worker unavailable"
+fi
+
+# QUOTA FALLBACK (owner rule): if the required worker is down on quota/auth,
+# Claude Opus 4.8 (claude-opus, subscription token) steps in as a SAFE
+# substitute for any role — announced loudly, never silently.
+if [[ "$required_worker" != "claude-opus" ]] && (( ! allow_degrade )); then
+  if probe_available claude-opus; then
+    print -u2 "[claude-agent] QUOTA FALLBACK: $required_worker down — claude-opus (Opus 4.8) takes the task"
+    deliver claude-opus "${task_args[@]}"
+    opus_rc=$?
+    if (( opus_rc == 0 )); then
+      print -u2 "[claude-agent] answered by: claude-opus (quota fallback for $required_worker)"
+      print -r -- "$REPLY"
+      exit 0
+    fi
+    (( opus_rc == 4 )) && exit 4
+    print -u2 "[claude-agent] claude-opus fallback also failed — continuing to degrade/refusal path"
+  else
+    print -u2 "[claude-agent] claude-opus fallback not available (token file? quota?)"
+  fi
 fi
 
 if (( allow_degrade )); then

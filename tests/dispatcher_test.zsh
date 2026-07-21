@@ -68,6 +68,18 @@ case "$STUB_SCENARIO:$name:$kind" in
     print 'explicit degraded result'
     exit 0
     ;;
+  opus-quota:claude-minimax:probe)
+    print -u2 '429 quota exceeded'
+    exit 1
+    ;;
+  opus-quota:claude-opus:probe)
+    print OK
+    exit 0
+    ;;
+  opus-quota:claude-opus:task)
+    print 'opus quota fallback delivery'
+    exit 0
+    ;;
   task-failed:claude-minimax:task)
     print '429 quota exceeded in stdout must not classify provider failure'
     print -u2 'compiler exited while applying requested edit'
@@ -87,7 +99,7 @@ esac
 STUB
   chmod +x "$TMP_ROOT/bin/$name"
 }
-for worker in claude-minimax claude-kimi claude-sol; do make_stub "$worker"; done
+for worker in claude-minimax claude-kimi claude-sol claude-opus; do make_stub "$worker"; done
 
 failures=0
 LAST_RC=0
@@ -362,4 +374,11 @@ else
 fi
 
 (( failures == 0 )) || exit 1
+run_agent opus-quota bulk-generation -p task
+if [[ $LAST_RC -eq 0 ]] && grep -Fq 'QUOTA FALLBACK' "$LAST_ERR" && grep -Fq 'opus quota fallback delivery' "$LAST_OUT"; then
+  pass 'quota-walled required worker falls back to claude-opus automatically'
+else
+  fail 'quota-walled required worker falls back to claude-opus automatically'
+fi
+
 print 'dispatcher tests: PASS'
