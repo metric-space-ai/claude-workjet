@@ -48,7 +48,8 @@ run_agent() {
   local dir="$TMP_ROOT/$label"
   mkdir -p "$dir/run"
   (cd "$REPO" && HOME="$TMP_ROOT/home" WORKJET_STATE_DIR="$TMP_ROOT/state" \
-    AGENT_BIN_DIR="$TMP_ROOT/bin" AGENT_PROBE_TIMEOUT=2 AGENT_TIMEOUT=2 \
+    AGENT_BIN_DIR="$TMP_ROOT/bin" OPUS_TOKEN_FILE="$TMP_ROOT/opus-token" \
+    AGENT_PROBE_TIMEOUT=10 AGENT_TIMEOUT=2 \
     AGENT_HEARTBEAT_INTERVAL=1 AGENT_DIFFSTAT_INTERVAL=1 \
     STUB_PROMPT="$dir/prompt" MAIN_REPO="$REPO" STUB_MODE="${CASE_MODE:-normal}" \
     "$ROOT/bin/claude-agent" --run-dir "$dir/run" "$@" >"$dir/out" 2>"$dir/err")
@@ -62,7 +63,7 @@ run_agent() {
 print token > "$TMP_ROOT/opus-token"
 chmod 600 "$TMP_ROOT/opus-token"
 HOME="$TMP_ROOT/home" WORKJET_STATE_DIR="$TMP_ROOT/state" AGENT_BIN_DIR="$TMP_ROOT/bin" \
-  OPUS_TOKEN_FILE="$TMP_ROOT/opus-token" AGENT_PROBE_TIMEOUT=2 \
+  OPUS_TOKEN_FILE="$TMP_ROOT/opus-token" AGENT_PROBE_TIMEOUT=10 \
   "$ROOT/bin/claude-agent" doctor > "$TMP_ROOT/doctor.out" 2> "$TMP_ROOT/doctor.err"
 doctor_rc=$?
 if [[ $doctor_rc -eq 0 ]] && grep -Fq $'WORKER\tSTATUS\tDETAIL' "$TMP_ROOT/doctor.out" && \
@@ -70,6 +71,15 @@ if [[ $doctor_rc -eq 0 ]] && grep -Fq $'WORKER\tSTATUS\tDETAIL' "$TMP_ROOT/docto
   pass 'doctor prints a health table covering every documented rung'
 else
   fail 'doctor prints a health table covering every documented rung'
+fi
+
+mv "$TMP_ROOT/bin/claude-minimax" "$TMP_ROOT/bin/claude-minimax.off"
+run_agent dead-warning research -p "$(printf 'health warning prompt %.0s' {1..12})"
+mv "$TMP_ROOT/bin/claude-minimax.off" "$TMP_ROOT/bin/claude-minimax"
+if [[ $RUN_RC -eq 0 ]] && grep -Fq 'doctor warning: documented rung(s) dead: claude-minimax' "$RUN_ERR"; then
+  pass 'launcher warns on every start while a documented rung is dead'
+else
+  fail 'launcher warns on every start while a documented rung is dead'
 fi
 
 print short > "$TMP_ROOT/short.md"

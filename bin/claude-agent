@@ -22,7 +22,7 @@ STATE_ROOT=${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}
 OPUS_TOKEN_FILE=${OPUS_TOKEN_FILE:-$HOME/.config/secrets/claude-oauth}
 
 run_doctor() {
-  local probe_prompt worker of ef pid watchdog rc out err status detail failures=0
+  local probe_prompt worker of ef pid watchdog rc out err health_state detail failures=0
   local cache_tmp="$STATE_ROOT/.doctor.$$"
   mkdir -p "$STATE_ROOT"
   probe_prompt="You are in an isolated worktree at ${PWD:A}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
@@ -57,24 +57,24 @@ run_doctor() {
     out="$(<"$of")"; err="$(<"$ef")"
     rm -f "$of" "$ef"
     if (( rc == 0 )) && [[ -n "${out//[[:space:]]/}" ]]; then
-      status=OK; detail=probe
+      health_state=OK; detail=probe
     else
-      status=DEAD
+      health_state=DEAD
       detail="${${err//$'\n'/ }[1,160]}"
       [[ -n "$detail" ]] || detail="probe failed (rc=$rc)"
       (( ++failures ))
     fi
-    printf '%s\t%s\t%s\n' "$worker" "$status" "$detail"
-    printf '%s\t%s\t%s\n' "$worker" "$status" "$detail" >> "$cache_tmp"
+    printf '%s\t%s\t%s\n' "$worker" "$health_state" "$detail"
+    printf '%s\t%s\t%s\n' "$worker" "$health_state" "$detail" >> "$cache_tmp"
   done
   if [[ -f "$OPUS_TOKEN_FILE" && -r "$OPUS_TOKEN_FILE" && -s "$OPUS_TOKEN_FILE" ]]; then
-    status=OK; detail="token present: $OPUS_TOKEN_FILE"
+    health_state=OK; detail="token present: $OPUS_TOKEN_FILE"
   else
-    status=DEAD; detail="token missing or empty: $OPUS_TOKEN_FILE"
+    health_state=DEAD; detail="token missing or empty: $OPUS_TOKEN_FILE"
     (( ++failures ))
   fi
-  printf '%s\t%s\t%s\n' claude-opus "$status" "$detail"
-  printf '%s\t%s\t%s\n' claude-opus "$status" "$detail" >> "$cache_tmp"
+  printf '%s\t%s\t%s\n' claude-opus "$health_state" "$detail"
+  printf '%s\t%s\t%s\n' claude-opus "$health_state" "$detail" >> "$cache_tmp"
   mv "$cache_tmp" "$STATE_ROOT/doctor.tsv"
   (( failures == 0 ))
 }
@@ -288,12 +288,12 @@ if (( ! caller_sets_tools )); then
 fi
 
 launcher_health_warning() {
-  local worker line
+  local worker health_state detail
   local -a dead
   local -A seen
   if [[ -f "$STATE_ROOT/doctor.tsv" ]]; then
-    while IFS=$'\t' read -r worker status detail; do
-      [[ "$status" == DEAD ]] && dead+=("$worker")
+    while IFS=$'\t' read -r worker health_state detail; do
+      [[ "$health_state" == DEAD ]] && dead+=("$worker")
     done < "$STATE_ROOT/doctor.tsv"
   fi
   for worker in claude-sol claude-kimi claude-minimax; do
