@@ -19,6 +19,71 @@ HEARTBEAT_INTERVAL=${AGENT_HEARTBEAT_INTERVAL:-60}
 DIFFSTAT_INTERVAL=${AGENT_DIFFSTAT_INTERVAL:-600}
 AGENT_BIN_DIR=${AGENT_BIN_DIR:-$HOME/.local/bin}
 STATE_ROOT=${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}
+OPUS_TOKEN_FILE=${OPUS_TOKEN_FILE:-$HOME/.config/secrets/claude-oauth}
+
+run_doctor() {
+  local probe_prompt worker of ef pid watchdog rc out err status detail failures=0
+  local cache_tmp="$STATE_ROOT/.doctor.$$"
+  mkdir -p "$STATE_ROOT"
+  probe_prompt="You are in an isolated worktree at ${PWD:A}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
+  probe_prompt+=$'\n\nReply with the token: OK'
+  print "WORKER\tSTATUS\tDETAIL"
+  : > "$cache_tmp"
+  for worker in claude-sol claude-kimi claude-minimax; do
+    of="$(mktemp)"; ef="$(mktemp)"
+    if [[ ! -x "$AGENT_BIN_DIR/$worker" ]]; then
+      rc=127
+      print -r -- "worker executable missing: $AGENT_BIN_DIR/$worker" > "$ef"
+    else
+      if (( $+commands[setsid] )); then
+        setsid "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
+      else
+        python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+          "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
+      fi
+      pid=$!
+      (
+        sleep "$PROBE_TIMEOUT"
+        if kill -0 "$pid" 2>/dev/null; then
+          kill -TERM -- -"$pid" 2>/dev/null
+          sleep 1
+          kill -KILL -- -"$pid" 2>/dev/null
+        fi
+      ) &
+      watchdog=$!
+      wait "$pid" 2>/dev/null; rc=$?
+      kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+    fi
+    out="$(<"$of")"; err="$(<"$ef")"
+    rm -f "$of" "$ef"
+    if (( rc == 0 )) && [[ -n "${out//[[:space:]]/}" ]]; then
+      status=OK; detail=probe
+    else
+      status=DEAD
+      detail="${${err//$'\n'/ }[1,160]}"
+      [[ -n "$detail" ]] || detail="probe failed (rc=$rc)"
+      (( ++failures ))
+    fi
+    printf '%s\t%s\t%s\n' "$worker" "$status" "$detail"
+    printf '%s\t%s\t%s\n' "$worker" "$status" "$detail" >> "$cache_tmp"
+  done
+  if [[ -f "$OPUS_TOKEN_FILE" && -r "$OPUS_TOKEN_FILE" && -s "$OPUS_TOKEN_FILE" ]]; then
+    status=OK; detail="token present: $OPUS_TOKEN_FILE"
+  else
+    status=DEAD; detail="token missing or empty: $OPUS_TOKEN_FILE"
+    (( ++failures ))
+  fi
+  printf '%s\t%s\t%s\n' claude-opus "$status" "$detail"
+  printf '%s\t%s\t%s\n' claude-opus "$status" "$detail" >> "$cache_tmp"
+  mv "$cache_tmp" "$STATE_ROOT/doctor.tsv"
+  (( failures == 0 ))
+}
+
+if [[ "$1" == doctor ]]; then
+  [[ $# -eq 1 ]] || { print -u2 "use: claude-agent doctor"; exit 2; }
+  run_doctor
+  exit $?
+fi
 
 mark_run() {
   local run_id="$1" state="$2" index_file run_dir
@@ -221,6 +286,31 @@ if (( ! caller_sets_tools )); then
       ;;
   esac
 fi
+
+launcher_health_warning() {
+  local worker line
+  local -a dead
+  local -A seen
+  if [[ -f "$STATE_ROOT/doctor.tsv" ]]; then
+    while IFS=$'\t' read -r worker status detail; do
+      [[ "$status" == DEAD ]] && dead+=("$worker")
+    done < "$STATE_ROOT/doctor.tsv"
+  fi
+  for worker in claude-sol claude-kimi claude-minimax; do
+    [[ -x "$AGENT_BIN_DIR/$worker" ]] || dead+=("$worker")
+  done
+  [[ -f "$OPUS_TOKEN_FILE" && -r "$OPUS_TOKEN_FILE" && -s "$OPUS_TOKEN_FILE" ]] || dead+=(claude-opus)
+  local -a unique
+  for worker in "${dead[@]}"; do
+    [[ -n "${seen[$worker]}" ]] && continue
+    seen[$worker]=1
+    unique+=("$worker")
+  done
+  if (( ${#unique} )); then
+    print -u2 "[claude-agent] doctor warning: documented rung(s) dead: ${(j:, :)unique} (run: claude-agent doctor)"
+  fi
+}
+launcher_health_warning
 
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
 repo_subdir=""

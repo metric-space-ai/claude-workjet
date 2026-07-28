@@ -59,6 +59,19 @@ run_agent() {
   RUN_PROMPT="$dir/prompt"
 }
 
+print token > "$TMP_ROOT/opus-token"
+chmod 600 "$TMP_ROOT/opus-token"
+HOME="$TMP_ROOT/home" WORKJET_STATE_DIR="$TMP_ROOT/state" AGENT_BIN_DIR="$TMP_ROOT/bin" \
+  OPUS_TOKEN_FILE="$TMP_ROOT/opus-token" AGENT_PROBE_TIMEOUT=2 \
+  "$ROOT/bin/claude-agent" doctor > "$TMP_ROOT/doctor.out" 2> "$TMP_ROOT/doctor.err"
+doctor_rc=$?
+if [[ $doctor_rc -eq 0 ]] && grep -Fq $'WORKER\tSTATUS\tDETAIL' "$TMP_ROOT/doctor.out" && \
+   [[ "$(grep -c $'^claude-.*\tOK\t' "$TMP_ROOT/doctor.out")" == 4 ]]; then
+  pass 'doctor prints a health table covering every documented rung'
+else
+  fail 'doctor prints a health table covering every documented rung'
+fi
+
 print short > "$TMP_ROOT/short.md"
 run_agent short --brief "$TMP_ROOT/short.md" bulk-generation
 if [[ $RUN_RC -eq 2 ]] && grep -Fq 'brief is too short' "$RUN_ERR" && [[ ! -s "$RUN_PROMPT" ]]; then
