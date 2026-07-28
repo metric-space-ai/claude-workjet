@@ -20,6 +20,9 @@ fi
 print -rn -- "$prompt" > "$STUB_PROMPT"
 if [[ "$STUB_MODE" == tamper ]]; then
   print intruder > "$MAIN_REPO/tampered.txt"
+elif [[ "$STUB_MODE" == timeout ]]; then
+  print partial > partial.txt
+  sleep 30
 fi
 print delivered
 STUB
@@ -46,6 +49,7 @@ run_agent() {
   mkdir -p "$dir/run"
   (cd "$REPO" && HOME="$TMP_ROOT/home" WORKJET_STATE_DIR="$TMP_ROOT/state" \
     AGENT_BIN_DIR="$TMP_ROOT/bin" AGENT_PROBE_TIMEOUT=2 AGENT_TIMEOUT=2 \
+    AGENT_HEARTBEAT_INTERVAL=1 AGENT_DIFFSTAT_INTERVAL=1 \
     STUB_PROMPT="$dir/prompt" MAIN_REPO="$REPO" STUB_MODE="${CASE_MODE:-normal}" \
     "$ROOT/bin/claude-agent" --run-dir "$dir/run" "$@" >"$dir/out" 2>"$dir/err")
   RUN_RC=$?
@@ -83,6 +87,25 @@ else
   fail 'main checkout tampering overrides a successful worker result'
 fi
 rm -f "$REPO/tampered.txt"
+
+CASE_MODE=timeout run_agent timeout --brief "$TMP_ROOT/brief.md" bulk-generation
+run_id="$(<"$RUN_DIR/run-id")"
+protected_ref="$(<"$RUN_DIR/protected-ref")"
+protected_subject="$(git -C "$REPO" show -s --format=%s "$protected_ref" 2>/dev/null)"
+if [[ $RUN_RC -eq 3 && "$protected_ref" == "refs/workjet/$run_id" && "$protected_subject" == "wip: $run_id" ]] && \
+   [[ -s "$RUN_DIR/timeout.diff" ]] && git -C "$REPO" show "$protected_ref:partial.txt" | grep -Fq partial; then
+  pass 'timeout commits partial work on the protected ref and writes a diff report'
+else
+  fail 'timeout commits partial work on the protected ref and writes a diff report'
+fi
+
+if [[ -s "$RUN_DIR/brief.sha256" && -s "$RUN_DIR/pid" && -f "$RUN_DIR/heartbeat" && -s "$RUN_DIR/exit" ]] && \
+   [[ -f "$RUN_DIR/exit-code" && "$(<"$RUN_DIR/exit-code")" == 3 ]] && \
+   find "$RUN_DIR/journal" -name 'diffstat-[0-9][0-9][0-9][0-9]' -type f | grep -q .; then
+  pass 'run journal records hash, pid, heartbeat, diffstat snapshots, and exit marker'
+else
+  fail 'run journal records hash, pid, heartbeat, diffstat snapshots, and exit marker'
+fi
 
 (( failures == 0 )) || exit 1
 print 'wrapper rework tests: PASS'

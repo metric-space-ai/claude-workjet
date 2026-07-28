@@ -14,7 +14,9 @@ emulate -L zsh
 setopt pipe_fail
 
 PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-25}
-TASK_TIMEOUT=${AGENT_TIMEOUT:-1800}
+TASK_TIMEOUT=${AGENT_TIMEOUT:-5400}
+HEARTBEAT_INTERVAL=${AGENT_HEARTBEAT_INTERVAL:-60}
+DIFFSTAT_INTERVAL=${AGENT_DIFFSTAT_INTERVAL:-600}
 AGENT_BIN_DIR=${AGENT_BIN_DIR:-$HOME/.local/bin}
 STATE_ROOT=${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}
 
@@ -136,14 +138,20 @@ run_timed() {
   else
     python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" </dev/null >"$of" 2>"$ef" &
   fi
-  local pid=$! timeout_marker="${of}.timeout.$$" watchdog rc
+  local pid=$! timeout_marker="${of}.timeout.$$" watchdog rc pid_tmp
+  pid_tmp="$RUN_DIR/.pid.$$"
+  print -r -- "$pid" > "$pid_tmp" && mv "$pid_tmp" "$RUN_DIR/pid"
   (
+    local target
     sleep "$secs"
-    if kill -0 $pid 2>/dev/null; then
+    [[ -f "$RUN_DIR/pid" ]] || return 0
+    target="$(<"$RUN_DIR/pid")"
+    [[ "$target" == "$pid" ]] || return 0
+    if kill -0 "$target" 2>/dev/null; then
       : > "$timeout_marker"
-      kill -TERM -- -$pid 2>/dev/null
+      kill -TERM -- -"$target" 2>/dev/null
       sleep 1
-      kill -KILL -- -$pid 2>/dev/null
+      kill -KILL -- -"$target" 2>/dev/null
     fi
   ) &
   watchdog=$!
@@ -238,12 +246,25 @@ FAILED_CHECKPOINT_COUNT=0
 ATTEMPT_COUNT=0
 MAIN_STATUS_BEFORE=""
 TAMPER_DETECTED=0
+JOURNAL_PID=""
+TASK_TIMED_OUT=0
 
 sha256_short() {
   if (( $+commands[shasum] )); then
     print -rn -- "$1" | shasum -a 256 | awk '{print substr($1,1,16)}'
   elif (( $+commands[sha256sum] )); then
     print -rn -- "$1" | sha256sum | awk '{print substr($1,1,16)}'
+  else
+    print -u2 "claude-agent: shasum or sha256sum is required"
+    return 2
+  fi
+}
+
+sha256_file() {
+  if (( $+commands[shasum] )); then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif (( $+commands[sha256sum] )); then
+    sha256sum "$1" | awk '{print $1}'
   else
     print -u2 "claude-agent: shasum or sha256sum is required"
     return 2
@@ -262,7 +283,7 @@ init_run_dir() {
   fi
   RUN_ID="${raw_id//[^A-Za-z0-9._-]/_}"
   [[ -n "$RUN_ID" && "$RUN_ID" != .* ]] || RUN_ID="run-$stamp"
-  mkdir -p "$RUN_DIR/attempts" "$STATE_ROOT/run-index" || {
+  mkdir -p "$RUN_DIR/attempts" "$RUN_DIR/journal" "$STATE_ROOT/run-index" || {
     print -u2 "claude-agent: cannot create run directory: $RUN_DIR"
     exit 2
   }
@@ -271,6 +292,9 @@ init_run_dir() {
   print -r -- "$RUN_DIR" > "$index_tmp" && mv "$index_tmp" "$STATE_ROOT/run-index/$RUN_ID"
   print -rn -- "$ORIGINAL_BRIEF" > "$RUN_DIR/brief.txt"
   [[ -n "$brief_file" ]] && print -r -- "${brief_file:A}" > "$RUN_DIR/brief-path"
+  sha256_file "$RUN_DIR/brief.txt" > "$RUN_DIR/brief.sha256" || exit 2
+  date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RUN_DIR/started-at"
+  touch "$RUN_DIR/heartbeat"
   : > "$RUN_DIR/stdout"
   : > "$RUN_DIR/stderr"
   : > "$RUN_DIR/worker"
@@ -338,8 +362,46 @@ audit_allowed_paths() {
   fi
 }
 
+start_journal() {
+  (
+    local last_diff now seq=0 target worktree
+    last_diff="$(date +%s)"
+    while true; do
+      sleep "$HEARTBEAT_INTERVAL"
+      touch "$RUN_DIR/heartbeat"
+      now="$(date +%s)"
+      if (( now - last_diff >= DIFFSTAT_INTERVAL )); then
+        (( ++seq ))
+        target="$repo_root"
+        if [[ -s "$RUN_DIR/worktree-path" ]]; then
+          worktree="$(<"$RUN_DIR/worktree-path")"
+          [[ -d "$worktree" ]] && target="$worktree"
+        fi
+        if [[ -n "$target" ]]; then
+          git -C "$target" diff --stat "$RUN_GIT_BEFORE" -- > "$RUN_DIR/journal/diffstat-$(printf '%04d' $seq)" 2>/dev/null || \
+            : > "$RUN_DIR/journal/diffstat-$(printf '%04d' $seq)"
+        else
+          : > "$RUN_DIR/journal/diffstat-$(printf '%04d' $seq)"
+        fi
+        date -u '+%Y-%m-%dT%H:%M:%SZ' > "$RUN_DIR/journal/diffstat-$(printf '%04d' $seq).at"
+        last_diff=$now
+      fi
+    done
+  ) &
+  JOURNAL_PID=$!
+  print -r -- "$JOURNAL_PID" > "$RUN_DIR/journal-pid"
+}
+
+stop_journal() {
+  if [[ -n "$JOURNAL_PID" ]]; then
+    kill "$JOURNAL_PID" 2>/dev/null || true
+    wait "$JOURNAL_PID" 2>/dev/null || true
+  fi
+}
+
 finalize_run() {
   local final_rc="$1" git_target git_after diffstat
+  stop_journal
   print -r -- "$final_rc" > "$RUN_DIR/rc"
   print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
   print -r -- "$RUN_WORKTREE" > "$RUN_DIR/worktree-path"
@@ -352,10 +414,18 @@ finalize_run() {
     print -rn -- "$diffstat" > "$RUN_DIR/diffstat"
   fi
   audit_allowed_paths
+  print -r -- "$final_rc" > "$RUN_DIR/exit-code"
+  {
+    print -r -- "rc=$final_rc"
+    print -r -- "finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    (( TAMPER_DETECTED )) && print -r -- "tamper=true"
+    (( TASK_TIMED_OUT )) && print -r -- "timeout=true"
+  } > "$RUN_DIR/exit"
   print -u2 "[claude-agent] run directory: $RUN_DIR"
 }
 
 init_run_dir
+start_journal
 trap 'finalize_run $?' EXIT
 
 capture_dirty_patch() {
@@ -465,6 +535,7 @@ create_worktree() {
     return 4
   fi
   RUN_WORKTREE="$WORKTREE_PATH"
+  print -r -- "$RUN_WORKTREE" > "$RUN_DIR/worktree-path"
   WORKER_CWD="$WORKTREE_PATH$repo_subdir"
   if [[ ! -d "$WORKER_CWD" ]]; then
     print -u2 "[claude-agent] warning: matching subdirectory absent at HEAD; worker starts at worktree root"
@@ -519,6 +590,26 @@ protect_successful_worktree() {
   print -r -- "$ref" > "$RUN_DIR/protected-ref"
   print -r -- "$sha" > "$RUN_DIR/protected-sha"
   print -u2 "[claude-agent] protected successful result: $ref ($sha)"
+}
+
+salvage_timeout() {
+  local wt="$1" base="$2" ref="refs/workjet/$RUN_ID" sha
+  TASK_TIMED_OUT=1
+  : > "$RUN_DIR/timeout"
+  git -C "$wt" add -A -- . || return 4
+  git -C "$wt" -c user.name=workjet -c user.email=workjet@localhost \
+    -c commit.gpgsign=false commit --allow-empty --no-verify -q -m "wip: $RUN_ID" || return 4
+  sha="$(git -C "$wt" rev-parse HEAD)" || return 4
+  git -C "$repo_root" update-ref "$ref" "$sha" || return 4
+  print -r -- "$ref" > "$RUN_DIR/protected-ref"
+  print -r -- "$sha" > "$RUN_DIR/protected-sha"
+  git -C "$wt" diff --binary --full-index "$base..$sha" -- > "$RUN_DIR/timeout.diff" 2>/dev/null || \
+    : > "$RUN_DIR/timeout.diff"
+  git -C "$wt" diff --stat "$base..$sha" -- > "$RUN_DIR/timeout.diffstat" 2>/dev/null || \
+    : > "$RUN_DIR/timeout.diffstat"
+  print -u2 "[claude-agent] TIMEOUT SALVAGE: committed worktree as 'wip: $RUN_ID'"
+  print -u2 "[claude-agent] TIMEOUT SALVAGE: protected $ref at $sha"
+  print -u2 "[claude-agent] TIMEOUT SALVAGE: diff report $RUN_DIR/timeout.diff"
 }
 
 report_worktree() {
@@ -598,9 +689,17 @@ deliver() {
     return 4
   fi
   if (( rc == 124 )); then
-    print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — retaining worktree for inspection"
+    print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap"
+    if [[ -n "$wt" ]]; then
+      salvage_timeout "$wt" "$wt_base" || {
+        print_task_failed "$w timeout salvage" "could not commit and protect timed-out worktree $wt"
+        REPLY=""
+        return 4
+      }
+      report_worktree "$wt" "$wt_base"
+    fi
     REPLY=""
-    return 1
+    return 5
   fi
   if (( rc == 0 )); then
     if has_output "$REPLY"; then
@@ -631,6 +730,10 @@ if (( probe_rc == 0 )); then
   deliver "$required_worker" "${task_args[@]}"
   deliver_rc=$?
   (( deliver_rc == 4 )) && exit 4
+  if (( deliver_rc == 5 )); then
+    print -u2 "[claude-agent] PRIMARY_UNAVAILABLE: timed-out task was salvaged; no fallback will overwrite its protected ref"
+    exit 3
+  fi
   if (( deliver_rc == 0 )); then
     print -u2 "[claude-agent] answered by: $required_worker (required for $role)"
     print -r -- "$REPLY"
@@ -649,6 +752,10 @@ if [[ "$required_worker" != "claude-opus" ]] && (( ! allow_degrade )); then
     print -u2 "[claude-agent] QUOTA FALLBACK: $required_worker down — claude-opus (Opus 4.8) takes the task"
     deliver claude-opus "${task_args[@]}"
     opus_rc=$?
+    if (( opus_rc == 5 )); then
+      print -u2 "[claude-agent] claude-opus timed out; salvaged result remains on the protected ref"
+      exit 3
+    fi
     if (( opus_rc == 0 )); then
       print -u2 "[claude-agent] answered by: claude-opus (quota fallback for $required_worker)"
       print -r -- "$REPLY"
@@ -675,6 +782,10 @@ if (( allow_degrade )); then
     deliver "$w" "${task_args[@]}"
     deliver_rc=$?
     (( deliver_rc == 4 )) && exit 4
+    if (( deliver_rc == 5 )); then
+      print -u2 "[claude-agent] degraded candidate timed out; salvaged result remains on the protected ref"
+      exit 3
+    fi
     if (( deliver_rc == 0 )); then
       banner="⚠️⚠️ DEGRADED FALLBACK — role=$role required=$required_worker DELIVERED=$w. This worker does not fully satisfy the requested role. Result is PROVISIONAL: re-scope/verify before trusting, and disclose the substitution to the user."
       print -r -- "$banner"
