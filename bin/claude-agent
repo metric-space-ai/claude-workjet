@@ -3,7 +3,8 @@
 # (claude-sol / claude-kimi / claude-minimax).
 #
 # Usage: claude-agent [--degrade] [--no-isolate] [--include-dirty]
-#                     [--allowed-paths GLOBS] [--run-dir DIR] <role> [claude args...]
+#                     [--brief FILE] [--allowed-paths GLOBS] [--run-dir DIR]
+#                     <role> [claude args...]
 #        claude-agent runs mark <run-id> integrated|abandoned
 #
 # Exit: 0 required worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
@@ -56,11 +57,18 @@ isolate=1
 include_dirty=0
 run_dir_override=""
 allowed_paths=""
+brief_file=""
 while [[ "$1" == --* ]]; do
   case "$1" in
     --degrade) allow_degrade=1 ;;
     --no-isolate) isolate=0 ;;
     --include-dirty) include_dirty=1 ;;
+    --brief)
+      shift
+      [[ -n "$1" ]] || { print -u2 "claude-agent: --brief requires a file"; exit 2; }
+      brief_file="$1"
+      ;;
+    --brief=*) brief_file="${1#--brief=}" ;;
     --allowed-paths)
       shift
       [[ -n "$1" ]] || { print -u2 "claude-agent: --allowed-paths requires comma-separated globs"; exit 2; }
@@ -151,6 +159,40 @@ run_timed() {
 }
 
 args=("$@")
+ORIGINAL_BRIEF=""
+if [[ -n "$brief_file" ]]; then
+  [[ -f "$brief_file" && -r "$brief_file" ]] || {
+    print -u2 "claude-agent: brief is not a readable file: $brief_file"
+    exit 2
+  }
+  brief_bytes="$(wc -c < "$brief_file" | tr -d '[:space:]')"
+  [[ "$brief_bytes" == <-> ]] || brief_bytes=0
+  if (( brief_bytes < 200 )); then
+    print -u2 "claude-agent: brief is too short (${brief_bytes} bytes; minimum 200): $brief_file"
+    exit 2
+  fi
+  for arg in "${args[@]}"; do
+    [[ "$arg" == -p ]] && {
+      print -u2 "claude-agent: use either --brief FILE or -p TEXT, not both"
+      exit 2
+    }
+  done
+  ORIGINAL_BRIEF="$(<"$brief_file")"
+  args=(-p "$ORIGINAL_BRIEF" "${args[@]}")
+else
+  for (( arg_i=1; arg_i <= ${#args}; arg_i++ )); do
+    if [[ "${args[$arg_i]}" == -p ]] && (( arg_i < ${#args} )); then
+      ORIGINAL_BRIEF="${args[$(( arg_i + 1 ))]}"
+      prompt_bytes="$(print -rn -- "$ORIGINAL_BRIEF" | wc -c | tr -d '[:space:]')"
+      [[ "$prompt_bytes" == <-> ]] || prompt_bytes=0
+      if (( prompt_bytes < 200 )); then
+        print -u2 "[claude-agent] warning: ad-hoc -p prompt is short (${prompt_bytes} bytes; briefs should be at least 200 bytes)"
+      fi
+      break
+    fi
+  done
+fi
+
 task_args=("${args[@]}")
 caller_sets_tools=0
 for arg in "${args[@]}"; do
@@ -194,6 +236,8 @@ WORKER_CWD=""
 WORKTREE_USE_COUNT=0
 FAILED_CHECKPOINT_COUNT=0
 ATTEMPT_COUNT=0
+MAIN_STATUS_BEFORE=""
+TAMPER_DETECTED=0
 
 sha256_short() {
   if (( $+commands[shasum] )); then
@@ -207,7 +251,7 @@ sha256_short() {
 }
 
 init_run_dir() {
-  local stamp brief="" i raw_id index_tmp
+  local stamp raw_id index_tmp
   stamp="$(date +%Y%m%dT%H%M%S)-$$"
   if [[ -n "$run_dir_override" ]]; then
     RUN_DIR="${run_dir_override:A}"
@@ -225,13 +269,8 @@ init_run_dir() {
   chmod 700 "$RUN_DIR" 2>/dev/null || true
   index_tmp="$STATE_ROOT/run-index/.${RUN_ID}.$$"
   print -r -- "$RUN_DIR" > "$index_tmp" && mv "$index_tmp" "$STATE_ROOT/run-index/$RUN_ID"
-  for (( i=1; i <= ${#args}; i++ )); do
-    if [[ "${args[$i]}" == -p ]] && (( i < ${#args} )); then
-      brief="${args[$(( i + 1 ))]}"
-      break
-    fi
-  done
-  print -rn -- "$brief" > "$RUN_DIR/brief.txt"
+  print -rn -- "$ORIGINAL_BRIEF" > "$RUN_DIR/brief.txt"
+  [[ -n "$brief_file" ]] && print -r -- "${brief_file:A}" > "$RUN_DIR/brief-path"
   : > "$RUN_DIR/stdout"
   : > "$RUN_DIR/stderr"
   : > "$RUN_DIR/worker"
@@ -354,6 +393,27 @@ capture_dirty_patch() {
 }
 
 capture_dirty_patch || exit 4
+if [[ -n "$repo_root" ]]; then
+  MAIN_STATUS_BEFORE="$(git -C "$repo_root" status --porcelain --untracked-files=all)"
+  print -rn -- "$MAIN_STATUS_BEFORE" > "$RUN_DIR/main-status-before"
+fi
+
+check_main_tamper() {
+  [[ -n "$repo_root" ]] || return 0
+  local after
+  after="$(git -C "$repo_root" status --porcelain --untracked-files=all)"
+  print -rn -- "$after" > "$RUN_DIR/main-status-after"
+  [[ "$after" == "$MAIN_STATUS_BEFORE" ]] && return 0
+  TAMPER_DETECTED=1
+  : > "$RUN_DIR/tamper"
+  print -u2 ""
+  print -u2 "████████████████████████ TAMPER DETECTED ████████████████████████"
+  print -u2 "[claude-agent] FAILED: the main checkout changed while the worker ran."
+  print -u2 "[claude-agent] protected checkout: $repo_root"
+  print -u2 "[claude-agent] before/after snapshots: $RUN_DIR/main-status-before $RUN_DIR/main-status-after"
+  print -u2 "████████████████████████████████████████████████████████████████"
+  return 1
+}
 
 run_dir_for_id() {
   local id="$1" index_file="$STATE_ROOT/run-index/$id"
@@ -474,6 +534,21 @@ report_worktree() {
   print -u2 -r -- "${diffstat:-<no diff>}"
 }
 
+inject_preamble() {
+  local isolated_path="$1" i prompt
+  shift
+  INVOKE_ARGS=("$@")
+  for (( i=1; i <= ${#INVOKE_ARGS}; i++ )); do
+    if [[ "${INVOKE_ARGS[$i]}" == -p ]] && (( i < ${#INVOKE_ARGS} )); then
+      prompt="You are in an isolated worktree at ${isolated_path}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
+      prompt+=$'\n\n'"${INVOKE_ARGS[$(( i + 1 ))]}"
+      INVOKE_ARGS[$(( i + 1 ))]="$prompt"
+      print -rn -- "$prompt" > "$RUN_DIR/prompt.txt"
+      return 0
+    fi
+  done
+}
+
 ensure_proxy() {
   [[ "$1" == claude-sol ]] || return 0
   lsof -nP -iTCP:8317 -sTCP:LISTEN >/dev/null 2>&1 && return 0
@@ -485,10 +560,12 @@ probe_available() {
   local w="$1" of ef rc out err
   ensure_proxy "$w"
   of=$(mktemp); ef=$(mktemp)
-  run_timed $PROBE_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" -p "Reply with the token: OK"; rc=$?
+  inject_preamble "${WORKER_CWD:-${PWD:A}}" -p "Reply with the token: OK"
+  run_timed $PROBE_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "${INVOKE_ARGS[@]}"; rc=$?
   out="$(<"$of")"; err="$(<"$ef")"
   record_attempt "$w" "$out" "$err" "$rc" probe
   rm -f "$of" "$ef"
+  check_main_tamper || return 4
   (( rc == 124 )) && { print -u2 "[claude-agent] $w probe timed out (${PROBE_TIMEOUT}s) — treating as unavailable"; return 1; }
   if (( rc == 0 )); then
     has_output "$out" && return 0
@@ -510,11 +587,16 @@ deliver() {
     wt="$WORKTREE_PATH"; wt_base="$WORKTREE_BASE"
     cd "$WORKER_CWD" || { rm -f "$of" "$ef"; print_task_failed "$w" "cannot enter worktree $WORKER_CWD"; return 4; }
   fi
-  run_timed $TASK_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"; rc=$?
+  inject_preamble "${WORKER_CWD:-${PWD:A}}" "$@"
+  run_timed $TASK_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "${INVOKE_ARGS[@]}"; rc=$?
   cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"
   record_attempt "$w" "$REPLY" "$err" "$rc" task
   rm -f "$of" "$ef"
+  if ! check_main_tamper; then
+    REPLY=""
+    return 4
+  fi
   if (( rc == 124 )); then
     print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap — retaining worktree for inspection"
     REPLY=""
