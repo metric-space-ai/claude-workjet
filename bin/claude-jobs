@@ -1,0 +1,27 @@
+#!/bin/zsh
+# Show every claude-run launch and its true state.
+#   claude-jobs            the last 15 runs
+#   claude-jobs <run-dir>  one run in detail (tail of report/errors)
+# States: RUNNING (pid alive) · DONE:<code> (exit marker) · KILLED (dead, no marker)
+set -u
+RUNS="$HOME/.workjet/runs"
+state() {
+  local d="$1"
+  if [[ -f "$d/exit-code" ]]; then echo "DONE:$(cat "$d/exit-code")"
+  elif [[ -f "$d/pid" ]] && kill -0 "$(cat "$d/pid")" 2>/dev/null; then echo "RUNNING"
+  else echo "KILLED"
+  fi
+}
+if [[ $# -ge 1 ]]; then
+  d="${1%/}"
+  [[ -d "$d" ]] || d="$RUNS/$d"
+  echo "$(state "$d")  $d"
+  [[ -f "$d/meta.json" ]] && cat "$d/meta.json"
+  echo "── stdout (tail) ──"; tail -20 "$d/stdout.log" 2>/dev/null
+  echo "── stderr (tail) ──"; tail -10 "$d/stderr.log" 2>/dev/null
+  exit 0
+fi
+ls -1dt "$RUNS"/*/ 2>/dev/null | head -15 | while read -r d; do
+  d="${d%/}"
+  printf "%-10s %6sB  %s\n" "$(state "$d")" "$(wc -c < "$d/stdout.log" 2>/dev/null | tr -d ' ')" "${d##*/}"
+done

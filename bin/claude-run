@@ -1,0 +1,46 @@
+#!/bin/zsh
+# Launch a workjet worker in the background WITHOUT losing sight of it.
+#
+# Fire-and-forget stays the principle — but a fired worker must be knowable:
+# is it running, when did it finish, with what exit code. The wrappers
+# `exec claude`, so their command line never contains the role name; matching
+# by name finds only their tool-call shells and lies in both directions
+# (invisible between tool calls, "alive" via orphaned children). The only
+# reliable signals are the launch PID and an exit marker — this script owns
+# both, in a per-run directory.
+#
+#   claude-run <role> [claude args...]         role: sol | kimi | minimax | opus
+#   -> prints the run directory; poll it with claude-jobs
+#
+# Layout of ~/.workjet/runs/<stamp>-<role>/:
+#   meta.json   role, argv, cwd, started_at, pid
+#   stdout.log  the worker's report (written at the end by the CLI)
+#   stderr.log  errors — a silent death leaves its cause here
+#   exit-code   written the moment the worker ends; absence + dead pid = killed
+set -u
+ROLE="${1:?usage: claude-run <sol|kimi|minimax|opus> [claude args...]}"
+shift
+WRAPPER="$HOME/.local/bin/claude-$ROLE"
+[[ -x "$WRAPPER" ]] || { print -u2 "claude-run: no wrapper $WRAPPER"; exit 1; }
+
+RUN_DIR="$HOME/.workjet/runs/$(date +%Y%m%d-%H%M%S)-$ROLE-$RANDOM"
+mkdir -p "$RUN_DIR"
+
+# argv as JSON array, safely quoted
+python3 - "$ROLE" "$PWD" "$RUN_DIR" "$@" <<'PY'
+import json, sys, time
+role, cwd, run_dir, *argv = sys.argv[1:]
+json.dump({"role": role, "cwd": cwd, "argv": argv,
+           "started_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+          open(f"{run_dir}/meta.json", "w"), indent=1)
+PY
+
+# The subshell's own stdio must be detached too: a caller using $(claude-run …)
+# reads our stdout until EOF, and an inherited write end would keep that pipe
+# open for the worker's whole lifetime — the launcher would hang, not launch.
+( "$WRAPPER" "$@" > "$RUN_DIR/stdout.log" 2> "$RUN_DIR/stderr.log" </dev/null
+  echo $? > "$RUN_DIR/exit-code" ) </dev/null >/dev/null 2>&1 &
+PID=$!
+echo "$PID" > "$RUN_DIR/pid"
+disown
+echo "$RUN_DIR"
