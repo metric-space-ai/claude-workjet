@@ -130,5 +130,51 @@ else
   fail 'run journal records hash, pid, heartbeat, diffstat snapshots, and exit marker'
 fi
 
+ACCEPT_REPO="$TMP_ROOT/accept-repo"
+ACCEPT_STATE="$TMP_ROOT/accept-state"
+ACCEPT_RUN="$ACCEPT_STATE/runs/accept-violation"
+mkdir -p "$ACCEPT_REPO/.workjet" "$ACCEPT_RUN" "$ACCEPT_STATE/run-index"
+git -C "$ACCEPT_REPO" init -q
+git -C "$ACCEPT_REPO" config user.name test
+git -C "$ACCEPT_REPO" config user.email test@example.com
+cat > "$ACCEPT_REPO/.workjet/checks.sh" <<'CHECKS'
+#!/bin/sh
+printf checked > "$CHECK_MARKER"
+CHECKS
+chmod +x "$ACCEPT_REPO/.workjet/checks.sh"
+print base > "$ACCEPT_REPO/base.txt"
+git -C "$ACCEPT_REPO" add .workjet/checks.sh base.txt
+git -C "$ACCEPT_REPO" commit -qm base
+accept_branch="$(git -C "$ACCEPT_REPO" branch --show-current)"
+git -C "$ACCEPT_REPO" checkout -qb accept-result
+print allowed > "$ACCEPT_REPO/allowed.txt"
+print forbidden > "$ACCEPT_REPO/forbidden.txt"
+git -C "$ACCEPT_REPO" add allowed.txt forbidden.txt
+git -C "$ACCEPT_REPO" commit -qm result
+accept_sha="$(git -C "$ACCEPT_REPO" rev-parse HEAD)"
+git -C "$ACCEPT_REPO" update-ref refs/workjet/accept-violation "$accept_sha"
+git -C "$ACCEPT_REPO" checkout -q "$accept_branch"
+python3 - <<'PY' > "$ACCEPT_RUN/brief.txt"
+print("Validate the protected result before integrating it. " * 8)
+print("## FILE WHITELIST")
+print("- ONLY allowed.txt. FORBIDDEN: forbidden.txt")
+print("## HARD RULES")
+print("Reject every path outside the verbatim whitelist block.")
+PY
+print refs/workjet/accept-violation > "$ACCEPT_RUN/protected-ref"
+print "$ACCEPT_RUN" > "$ACCEPT_STATE/run-index/accept-violation"
+(cd "$ACCEPT_REPO" && HOME="$TMP_ROOT/home" WORKJET_STATE_DIR="$ACCEPT_STATE" \
+  CHECK_MARKER="$TMP_ROOT/check-marker" "$ROOT/bin/claude-agent" accept accept-violation \
+  > "$TMP_ROOT/accept.out" 2> "$TMP_ROOT/accept.err")
+accept_rc=$?
+if [[ $accept_rc -ne 0 && "$(git -C "$ACCEPT_REPO" rev-parse HEAD)" == "$accept_sha" ]] && \
+   [[ -f "$TMP_ROOT/check-marker" ]] && grep -Fq 'MERGE: PASS' "$TMP_ROOT/accept.out" && \
+   grep -Fq 'CHECKS: PASS' "$TMP_ROOT/accept.out" && grep -Fq 'WHITELIST: FAIL' "$TMP_ROOT/accept.out" && \
+   grep -Fxq 'forbidden.txt' "$ACCEPT_RUN/accept-whitelist-violations.txt"; then
+  pass 'accept merges the protected ref, runs checks, and rejects whitelist violations'
+else
+  fail 'accept merges the protected ref, runs checks, and rejects whitelist violations'
+fi
+
 (( failures == 0 )) || exit 1
 print 'wrapper rework tests: PASS'

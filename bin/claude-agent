@@ -85,6 +85,165 @@ if [[ "$1" == doctor ]]; then
   exit $?
 fi
 
+accept_run() {
+  local run_id="$1" index_file run_dir repo_root protected_ref before_head after_head
+  local merge_state=FAIL checks_state=SKIP checks_detail=SKIP whitelist_state=FAIL result=FAILED checks_rc=0
+  local whitelist_file violations_file changed_file report_file pattern changed
+  local -a whitelist changed_paths violations
+
+  [[ -n "$run_id" && "$run_id" != */* && "$run_id" != .* ]] || {
+    print -u2 "claude-agent: invalid run id '${run_id:-}'"
+    return 2
+  }
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+    print -u2 "claude-agent: accept must run inside the target Git repository"
+    return 2
+  }
+  repo_root="${repo_root:A}"
+  index_file="$STATE_ROOT/run-index/$run_id"
+  if [[ -f "$index_file" ]]; then
+    run_dir="$(<"$index_file")"
+  else
+    run_dir="$STATE_ROOT/runs/$run_id"
+  fi
+  [[ -d "$run_dir" && -s "$run_dir/brief.txt" && -s "$run_dir/protected-ref" ]] || {
+    print -u2 "claude-agent: incomplete run journal for '$run_id': $run_dir"
+    return 2
+  }
+  if [[ -n "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]]; then
+    print -u2 "claude-agent: accept requires a clean current checkout"
+    return 4
+  fi
+  protected_ref="$(<"$run_dir/protected-ref")"
+  [[ "$protected_ref" == refs/workjet/* ]] && git -C "$repo_root" rev-parse --verify -q "$protected_ref^{commit}" >/dev/null || {
+    print -u2 "claude-agent: protected ref is missing or invalid: $protected_ref"
+    return 4
+  }
+
+  whitelist_file="$run_dir/accept-whitelist.txt"
+  violations_file="$run_dir/accept-whitelist-violations.txt"
+  changed_file="$run_dir/accept-changed-files.txt"
+  report_file="$run_dir/accept-report.txt"
+  python3 - "$run_dir/brief.txt" > "${whitelist_file}.tmp" <<'PY'
+import re
+import sys
+
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+entries = []
+collecting = False
+for line in lines:
+    marker = re.match(r"^\s*(?:#{1,6}\s*)?FILE WHITELIST\s*:?\s*(.*)$", line, re.I)
+    if marker:
+        collecting = True
+        if marker.group(1).strip():
+            entries.append(marker.group(1).strip())
+        continue
+    if not collecting:
+        continue
+    stripped = line.strip()
+    if not stripped:
+        if entries:
+            break
+        continue
+    if re.match(r"^#{1,6}\s+", stripped) or re.match(
+        r"^(?:HARD RULES|ACCEPTANCE|REPORT TAIL|OUTPUT|TESTS|OPEN|COMMIT)\b", stripped, re.I
+    ):
+        break
+    entries.append(stripped)
+
+for entry in entries:
+    entry = re.sub(r"^[-*+]\s*", "", entry).strip()
+    entry = re.sub(r"^ONLY\s+", "", entry, flags=re.I)
+    entry = re.split(r"\bFORBIDDEN\s*:", entry, maxsplit=1, flags=re.I)[0]
+    entry = entry.strip().rstrip(".")
+    for item in entry.split(","):
+        item = item.strip().strip("`'\"")
+        if item:
+            print(item)
+PY
+  if [[ $? -ne 0 ]]; then
+    rm -f "${whitelist_file}.tmp"
+  else
+    mv "${whitelist_file}.tmp" "$whitelist_file"
+  fi
+  [[ -s "$whitelist_file" ]] && whitelist=("${(@f)$(<"$whitelist_file")}")
+
+  before_head="$(git -C "$repo_root" rev-parse HEAD)" || return 4
+  if git -C "$repo_root" merge --no-edit "$protected_ref" > "$run_dir/accept-merge.out" 2> "$run_dir/accept-merge.err"; then
+    merge_state=PASS
+  else
+    git -C "$repo_root" merge --abort >/dev/null 2>&1 || true
+  fi
+
+  if [[ "$merge_state" == PASS ]]; then
+    after_head="$(git -C "$repo_root" rev-parse HEAD)"
+    git -C "$repo_root" diff --name-only "$before_head..$after_head" -- > "$changed_file"
+    changed_paths=("${(@f)$(<"$changed_file")}")
+
+    if [[ -x "$repo_root/.workjet/checks.sh" ]]; then
+      (cd "$repo_root" && ./.workjet/checks.sh) > "$run_dir/accept-checks.out" 2> "$run_dir/accept-checks.err"
+      checks_rc=$?
+      (( checks_rc == 0 )) && checks_state=PASS || checks_state=FAIL
+    elif [[ -f "$repo_root/.workjet/checks.sh" ]]; then
+      (cd "$repo_root" && /bin/sh .workjet/checks.sh) > "$run_dir/accept-checks.out" 2> "$run_dir/accept-checks.err"
+      checks_rc=$?
+      (( checks_rc == 0 )) && checks_state=PASS || checks_state=FAIL
+    fi
+
+    : > "$violations_file"
+    if (( ${#whitelist} )); then
+      for changed in "${changed_paths[@]}"; do
+        local allowed=0
+        for pattern in "${whitelist[@]}"; do
+          [[ "$pattern" == */ ]] && pattern+="**"
+          if [[ "$changed" == ${~pattern} ]]; then
+            allowed=1
+            break
+          fi
+        done
+        (( allowed )) || { print -r -- "$changed" >> "$violations_file"; violations+=("$changed"); }
+      done
+      (( ${#violations} == 0 )) && whitelist_state=PASS
+    else
+      print -r -- "<missing FILE WHITELIST block>" > "$violations_file"
+    fi
+  fi
+
+  if [[ "$merge_state" == PASS && "$checks_state" != FAIL && "$whitelist_state" == PASS ]]; then
+    result=ACCEPTED
+    rm -f "$run_dir/abandoned"
+    : > "$run_dir/integrated"
+  fi
+  checks_detail="$checks_state"
+  [[ "$checks_state" == FAIL ]] && checks_detail="FAIL (rc=$checks_rc)"
+  {
+    print "ACCEPTANCE REPORT"
+    print -r -- "RUN-ID: $run_id"
+    print -r -- "RUN-DIR: $run_dir"
+    print -r -- "PROTECTED-REF: $protected_ref"
+    print -r -- "MERGE: $merge_state"
+    print -r -- "CHECKS: $checks_detail"
+    print -r -- "WHITELIST: $whitelist_state"
+    print -r -- "CHANGED-FILES: ${#changed_paths}"
+    for changed in "${changed_paths[@]}"; do print -r -- "  $changed"; done
+    if (( ${#violations} )); then
+      print "VIOLATIONS:"
+      for changed in "${violations[@]}"; do print -r -- "  $changed"; done
+    elif [[ "$whitelist_state" == FAIL && ! -s "$whitelist_file" ]]; then
+      print "VIOLATIONS:"
+      print "  <missing FILE WHITELIST block>"
+    fi
+    print -r -- "RESULT: $result"
+  } | tee "$report_file"
+  [[ "$result" == ACCEPTED ]]
+}
+
+if [[ "$1" == accept ]]; then
+  [[ $# -eq 2 ]] || { print -u2 "use: claude-agent accept <run-id>"; exit 2; }
+  accept_run "$2"
+  exit $?
+fi
+
 mark_run() {
   local run_id="$1" state="$2" index_file run_dir
   [[ -n "$run_id" && "$run_id" != */* && "$run_id" != .* ]] || {
