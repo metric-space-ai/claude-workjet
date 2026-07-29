@@ -13,16 +13,22 @@
 emulate -L zsh
 setopt pipe_fail
 
-PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-25}
+PROBE_TIMEOUT=${AGENT_PROBE_TIMEOUT:-120}
+PROBE_RETRIES=${AGENT_PROBE_RETRIES:-3}
+PROBE_BACKOFF=${AGENT_PROBE_BACKOFF:-2}
+PROBE_CACHE_TTL=${AGENT_PROBE_CACHE_TTL:-600}
 TASK_TIMEOUT=${AGENT_TIMEOUT:-5400}
 HEARTBEAT_INTERVAL=${AGENT_HEARTBEAT_INTERVAL:-60}
 DIFFSTAT_INTERVAL=${AGENT_DIFFSTAT_INTERVAL:-600}
 AGENT_BIN_DIR=${AGENT_BIN_DIR:-$HOME/.local/bin}
 STATE_ROOT=${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}
 OPUS_TOKEN_FILE=${OPUS_TOKEN_FILE:-$HOME/.config/secrets/claude-oauth}
+CLIPROXY_TOKEN_FILE=${CLIPROXY_TOKEN_FILE:-}
+CLIPROXY_RESTART_DELAY=${CLIPROXY_RESTART_DELAY:-3}
 
 run_doctor() {
   local probe_prompt worker of ef pid watchdog rc out err health_state detail failures=0
+  local attempt max_attempts delay
   local cache_tmp="$STATE_ROOT/.doctor.$$"
   mkdir -p "$STATE_ROOT"
   probe_prompt="You are in an isolated worktree at ${PWD:A}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
@@ -35,24 +41,39 @@ run_doctor() {
       rc=127
       print -r -- "worker executable missing: $AGENT_BIN_DIR/$worker" > "$ef"
     else
-      if (( $+commands[setsid] )); then
-        setsid "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
-      else
-        python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
-          "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
-      fi
-      pid=$!
-      (
-        sleep "$PROBE_TIMEOUT"
-        if kill -0 "$pid" 2>/dev/null; then
-          kill -TERM -- -"$pid" 2>/dev/null
-          sleep 1
-          kill -KILL -- -"$pid" 2>/dev/null
+      attempt=0
+      max_attempts=$(( PROBE_RETRIES + 1 ))
+      (( max_attempts > 0 )) || max_attempts=1
+      while (( attempt < max_attempts )); do
+        (( ++attempt ))
+        : > "$of"; : > "$ef"
+        if (( $+commands[setsid] )); then
+          setsid "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
+        else
+          python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+            "$AGENT_BIN_DIR/$worker" -p "$probe_prompt" </dev/null >"$of" 2>"$ef" &
         fi
-      ) &
-      watchdog=$!
-      wait "$pid" 2>/dev/null; rc=$?
-      kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+        pid=$!
+        (
+          sleep "$PROBE_TIMEOUT"
+          if kill -0 "$pid" 2>/dev/null; then
+            kill -TERM -- -"$pid" 2>/dev/null
+            sleep 1
+            kill -KILL -- -"$pid" 2>/dev/null
+          fi
+        ) &
+        watchdog=$!
+        wait "$pid" 2>/dev/null; rc=$?
+        kill "$watchdog" 2>/dev/null; wait "$watchdog" 2>/dev/null
+        out="$(<"$of")"
+        if (( rc == 0 )) && [[ -n "${out//[[:space:]]/}" ]]; then
+          break
+        fi
+        if (( attempt < max_attempts )); then
+          delay=$(( PROBE_BACKOFF * attempt ))
+          (( delay > 0 )) && sleep "$delay"
+        fi
+      done
     fi
     out="$(<"$of")"; err="$(<"$ef")"
     rm -f "$of" "$ef"
@@ -334,6 +355,12 @@ required_worker=${chain[1]}
 
 unavailable_re='usage limit|out of quota|quota exceeded|quota.*exhaust|membership/subscription|purchase extra usage|upgrade your plan|insufficient (quota|credit|balance)|invalid authentication|invalid api key|authentication_error|unauthorized|401 |403 |429 |rate limit|too many requests|overloaded|connection refused|econnrefused|dial tcp|502 bad gateway|503 service|service unavailable'
 
+is_auth_unavailable() {
+  local err="$1" rc="$2"
+  (( rc != 0 )) || return 1
+  print -r -- "$err" | grep -qiE 'auth_unavailable|invalid authentication|invalid api key|authentication_error|authentication failed|unauthorized|token (has )?expired|oauth.*(expired|invalid)'
+}
+
 is_unavailable() {
   local err="$1" rc="$2"
   (( rc != 0 )) || return 1
@@ -497,6 +524,8 @@ MAIN_STATUS_BEFORE=""
 TAMPER_DETECTED=0
 JOURNAL_PID=""
 TASK_TIMED_OUT=0
+PROXY_RESTARTED=0
+SOL_AUTH_UNAVAILABLE=0
 
 sha256_short() {
   if (( $+commands[shasum] )); then
@@ -889,38 +918,216 @@ inject_preamble() {
   done
 }
 
+file_epoch() {
+  stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1" 2>/dev/null
+}
+
+proxy_token_path() {
+  local candidate candidate_epoch newest="" newest_epoch=0
+  local -a candidates
+  if [[ -n "$CLIPROXY_TOKEN_FILE" ]]; then
+    [[ -f "$CLIPROXY_TOKEN_FILE" ]] && print -r -- "$CLIPROXY_TOKEN_FILE"
+    return
+  fi
+  candidates=("$HOME"/.cli-proxy-api/codex-*.json(N))
+  for candidate in "${candidates[@]}"; do
+    candidate_epoch="$(file_epoch "$candidate")"
+    [[ "$candidate_epoch" == <-> ]] || continue
+    if (( candidate_epoch > newest_epoch )); then
+      newest="$candidate"
+      newest_epoch=$candidate_epoch
+    fi
+  done
+  [[ -n "$newest" ]] && print -r -- "$newest"
+}
+
+proxy_listener_pid() {
+  if [[ -n "${CLIPROXY_PID:-}" ]]; then
+    print -r -- "$CLIPROXY_PID"
+  else
+    lsof -nP -iTCP:8317 -sTCP:LISTEN -t 2>/dev/null | head -n 1
+  fi
+}
+
+proxy_start_epoch() {
+  local pid="$1"
+  if [[ -n "${CLIPROXY_START_EPOCH:-}" ]]; then
+    print -r -- "$CLIPROXY_START_EPOCH"
+    return
+  fi
+  python3 - "$pid" <<'PY'
+import datetime
+import subprocess
+import sys
+
+try:
+    value = subprocess.check_output(
+        ["ps", "-o", "lstart=", "-p", sys.argv[1]], text=True
+    ).strip()
+    started = datetime.datetime.strptime(value, "%a %b %d %H:%M:%S %Y")
+    print(int(started.timestamp()))
+except Exception:
+    raise SystemExit(1)
+PY
+}
+
+restart_cliproxy() {
+  (( PROXY_RESTARTED )) && return 1
+  PROXY_RESTARTED=1
+  print -u2 "[claude-agent] restarting cliproxyapi once to load the newer OAuth token"
+  if ! brew services restart cliproxyapi >/dev/null 2>&1; then
+    print -u2 "[claude-agent] cliproxyapi restart command failed"
+    return 1
+  fi
+  sleep "$CLIPROXY_RESTART_DELAY"
+}
+
+restart_proxy_for_fresh_token() {
+  local token pid token_epoch started_epoch
+  [[ "$1" == claude-sol ]] || return 1
+  (( PROXY_RESTARTED )) && return 1
+  token="$(proxy_token_path)"
+  pid="$(proxy_listener_pid)"
+  [[ -n "$token" && "$pid" == <-> ]] || return 1
+  token_epoch="$(file_epoch "$token")"
+  started_epoch="$(proxy_start_epoch "$pid")"
+  [[ "$token_epoch" == <-> && "$started_epoch" == <-> ]] || return 1
+  if (( token_epoch > started_epoch )); then
+    print -u2 "[claude-agent] auth_unavailable: token is newer than proxy start ($token)"
+    restart_cliproxy
+    return 0
+  fi
+  return 1
+}
+
 ensure_proxy() {
   [[ "$1" == claude-sol ]] || return 0
   lsof -nP -iTCP:8317 -sTCP:LISTEN >/dev/null 2>&1 && return 0
   print -u2 "[claude-agent] cliproxyapi not listening — starting it (restores the intended worker)"
-  brew services start cliproxyapi >/dev/null 2>&1; sleep 3
+  brew services start cliproxyapi >/dev/null 2>&1
+  sleep "$CLIPROXY_RESTART_DELAY"
+}
+
+invoke_worker() {
+  local w="$1" timeout="$2" of="$3" ef="$4"
+  shift 4
+  ensure_proxy "$w"
+  run_timed "$timeout" "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"
+}
+
+probe_cache_file() {
+  print -r -- "$STATE_ROOT/probe-last-good/$1"
+}
+
+probe_cache_is_good() {
+  local cache age now cached_at
+  (( PROBE_CACHE_TTL > 0 )) || return 1
+  cache="$(probe_cache_file "$1")"
+  [[ -f "$cache" && -x "$AGENT_BIN_DIR/$1" ]] || return 1
+  cached_at="$(<"$cache")"
+  [[ "$cached_at" == <-> ]] || cached_at="$(file_epoch "$cache")"
+  [[ "$cached_at" == <-> ]] || return 1
+  now="$(date +%s)"
+  age=$(( now - cached_at ))
+  (( age >= 0 && age < PROBE_CACHE_TTL )) || return 1
+  print -u2 "[claude-agent] $1 probe last-good cache hit (${age}s old; skipping re-probe)"
+}
+
+mark_probe_good() {
+  local cache tmp
+  cache="$(probe_cache_file "$1")"
+  mkdir -p "${cache:h}"
+  tmp="${cache}.$$"
+  date +%s > "$tmp" && mv "$tmp" "$cache"
 }
 
 probe_available() {
-  local w="$1" of ef rc out err
-  ensure_proxy "$w"
-  of=$(mktemp); ef=$(mktemp)
-  inject_preamble "${WORKER_CWD:-${PWD:A}}" -p "Reply with the token: OK"
-  run_timed $PROBE_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "${INVOKE_ARGS[@]}"; rc=$?
-  out="$(<"$of")"; err="$(<"$ef")"
-  record_attempt "$w" "$out" "$err" "$rc" probe
-  rm -f "$of" "$ef"
-  check_main_tamper || return 4
-  (( rc == 124 )) && { print -u2 "[claude-agent] $w probe timed out (${PROBE_TIMEOUT}s) — treating as unavailable"; return 1; }
-  if (( rc == 0 )); then
-    has_output "$out" && return 0
-    print -u2 "[claude-agent] $w probe returned empty output — treating as unavailable"
+  local w="$1" of ef rc out err attempt=0 max_attempts
+  local last_kind=provider last_err="" delay
+  max_attempts=$(( PROBE_RETRIES + 1 ))
+  (( max_attempts > 0 )) || max_attempts=1
+
+  if probe_cache_is_good "$w"; then
+    return 0
+  fi
+  if [[ ! -x "$AGENT_BIN_DIR/$w" ]]; then
+    print -u2 "[claude-agent] $w probe provider_unavailable: worker executable missing: $AGENT_BIN_DIR/$w"
     return 1
   fi
-  is_unavailable "$err" "$rc" && return 1
-  print_task_failed "$w probe" "$err"
-  return 4
+
+  while (( attempt < max_attempts )); do
+    (( ++attempt ))
+    of=$(mktemp); ef=$(mktemp)
+    inject_preamble "${WORKER_CWD:-${PWD:A}}" -p "Reply with the token: OK"
+    invoke_worker "$w" "$PROBE_TIMEOUT" "$of" "$ef" "${INVOKE_ARGS[@]}"; rc=$?
+    out="$(<"$of")"; err="$(<"$ef")"
+    record_attempt "$w" "$out" "$err" "$rc" probe
+    rm -f "$of" "$ef"
+    check_main_tamper || return 4
+
+    if (( rc == 0 )) && has_output "$out"; then
+      mark_probe_good "$w"
+      return 0
+    elif (( rc == 124 )); then
+      last_kind=timeout
+      last_err="$err"
+      print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: timeout (${PROBE_TIMEOUT}s)"
+    elif is_auth_unavailable "$err" "$rc"; then
+      last_kind=auth
+      last_err="$err"
+      print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: auth_unavailable"
+      if restart_proxy_for_fresh_token "$w"; then
+        # A fresh token must always get one post-restart probe, even when auth
+        # was first recognized on the final scheduled retry.
+        (( attempt >= max_attempts )) && (( ++max_attempts ))
+      fi
+    elif (( rc == 0 )); then
+      last_kind=provider
+      last_err="empty probe output"
+      print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: empty output"
+    elif is_unavailable "$err" "$rc"; then
+      last_kind=provider
+      last_err="$err"
+      print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: provider_unavailable"
+    else
+      last_kind=task
+      last_err="$err"
+      print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: unclassified failure (rc=$rc)"
+    fi
+
+    if (( attempt < max_attempts )); then
+      delay=$(( PROBE_BACKOFF * attempt ))
+      (( delay > 0 )) && sleep "$delay"
+    fi
+  done
+
+  case "$last_kind" in
+    timeout)
+      print -u2 "[claude-agent] $w probe timeout_unavailable after $attempt attempt(s); timeout and auth are reported separately"
+      return 1
+      ;;
+    auth)
+      print -u2 "[claude-agent] $w probe auth_unavailable after $attempt attempt(s)"
+      if [[ "$w" == claude-sol ]]; then
+        SOL_AUTH_UNAVAILABLE=1
+        print -u2 "[claude-agent] USER ACTION REQUIRED: run: cliproxyapi -codex-login"
+      fi
+      return 1
+      ;;
+    provider)
+      print -u2 "[claude-agent] $w probe provider_unavailable after $attempt attempt(s)"
+      return 1
+      ;;
+    *)
+      print_task_failed "$w probe" "$last_err"
+      return 4
+      ;;
+  esac
 }
 
 deliver() {
   local w=$1; shift
   local of ef rc err oldpwd="$PWD" wt="" wt_base=""
-  ensure_proxy "$w"
   of=$(mktemp); ef=$(mktemp)
   if (( isolate )); then
     prepare_worktree || { rm -f "$of" "$ef"; return 4; }
@@ -928,7 +1135,7 @@ deliver() {
     cd "$WORKER_CWD" || { rm -f "$of" "$ef"; print_task_failed "$w" "cannot enter worktree $WORKER_CWD"; return 4; }
   fi
   inject_preamble "${WORKER_CWD:-${PWD:A}}" "$@"
-  run_timed $TASK_TIMEOUT "$of" "$ef" "$AGENT_BIN_DIR/$w" "${INVOKE_ARGS[@]}"; rc=$?
+  invoke_worker "$w" "$TASK_TIMEOUT" "$of" "$ef" "${INVOKE_ARGS[@]}"; rc=$?
   cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"
   record_attempt "$w" "$REPLY" "$err" "$rc" task
@@ -1064,11 +1271,8 @@ print -u2 "  ORCHESTRATOR MUST RE-PLAN — do NOT silently swap models. Options:
 print -u2 "    • decompose or re-scope the task for a later worker, then use --degrade deliberately;"
 print -u2 "    • wait for the required provider's quota/auth window to recover;"
 print -u2 "    • do the work yourself."
-if [[ "$required_worker" == claude-sol ]]; then
-  print -u2 "  ── Sol (ChatGPT Pro OAuth) note: if this is AUTH (not quota), the token expired."
-  print -u2 "     You CANNOT fix it — the browser login is the user's step. TELL THE USER to run:"
-  print -u2 "         cliproxyapi -codex-login"
-  print -u2 "     Do not attempt the login yourself and do not silently route around it."
+if [[ "$required_worker" == claude-sol && $SOL_AUTH_UNAVAILABLE -eq 1 ]]; then
+  print -u2 "  Sol authentication remained unavailable after retry and one eligible proxy restart."
 fi
 print -u2 "  SURFACE this to the user if the required worker stays down across the session."
 print -u2 "════════════════════════════════════════════════════════════════"

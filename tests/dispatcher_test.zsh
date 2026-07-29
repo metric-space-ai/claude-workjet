@@ -122,6 +122,8 @@ run_agent() {
     STUB_LOG="$LAST_LOG" \
     STUB_PID_FILE="$case_dir/pids" \
     AGENT_PROBE_TIMEOUT=10 \
+    AGENT_PROBE_RETRIES=0 \
+    AGENT_PROBE_CACHE_TTL=0 \
     AGENT_TIMEOUT="${CASE_TASK_TIMEOUT:-10}" \
     "$ROOT/bin/claude-agent" --run-dir "$case_dir/run" "$@" >"$LAST_OUT" 2>"$LAST_ERR")
   LAST_RC=$?
@@ -230,6 +232,8 @@ run_git_agent() {
     STUB_PID_FILE="$case_dir/pids" \
     EXPECT_DIRTY="$GIT_EXPECT_DIRTY" \
     AGENT_PROBE_TIMEOUT=10 \
+    AGENT_PROBE_RETRIES=0 \
+    AGENT_PROBE_CACHE_TTL=0 \
     AGENT_TIMEOUT=10 \
     "$ROOT/bin/claude-agent" --run-dir "$case_dir/run" "$@" >"$LAST_OUT" 2>"$LAST_ERR")
   LAST_RC=$?
