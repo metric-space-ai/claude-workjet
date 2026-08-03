@@ -169,16 +169,28 @@ public enum ManagedPrompt {
         } else {
             deployment = "Remote-Runner ist nicht bestätigt installiert (\(computer.deploymentStatus.rawValue)). Zuerst in Workjet „Prüfen & einrichten“ ausführen."
         }
-        return "\(deployment) Pi-Ereignisse kommen ausschließlich post-hoc in der finalen Antwort. Fable bleibt für lokale Integration und Verifikation verantwortlich. Remote-Echtmodell-Inferenz ist ohne separaten Loopback-Relay nicht verfügbar; es werden keine CLIProxy-, API-, OAuth- oder Keychain-Geheimnisse übertragen. Faux-/Offline-Turns sind zur Prüfung zulässig."
+        let sandbox: String
+        if computer.sandboxEnabled {
+            if let executable = computer.bubblewrapExecutablePath {
+                sandbox = "Agent-Dateiwerkzeuge sehen nur den projizierten In-Memory-Snapshot; der Daemon läuft zusätzlich über die bestätigte Bubblewrap-OS-Sandbox `\(safeInline(executable))` mit read-only Host-Dateisystem und ausschließlich privatem Turn-Verzeichnis als beschreibbarem Arbeitsbereich. Netzwerk bleibt für Modell-Gateway-Zugriff verfügbar."
+            } else {
+                sandbox = "Minimal-Sandbox ist angefordert, aber noch kein ausführbares `bwrap` bestätigt; eine unsandboxed Ausführung ist nicht zulässig."
+            }
+        } else {
+            sandbox = "Agent-Dateiwerkzeuge sehen nur den projizierten In-Memory-Snapshot. Die OS-Sandbox ist deaktiviert; der Daemon hat daher keine zusätzliche Betriebssystem-Dateisystemgrenze."
+        }
+        return "\(deployment) \(sandbox) Pi-Ereignisse kommen ausschließlich post-hoc in der finalen Antwort. Fable bleibt für lokale Integration und Verifikation verantwortlich. Remote-Echtmodell-Inferenz ist ohne separaten Loopback-Relay nicht verfügbar; es werden keine CLIProxy-, API-, OAuth- oder Keychain-Geheimnisse übertragen. Faux-/Offline-Turns sind zur Prüfung zulässig."
     }
 
     private static func remotePiInvocation(_ computer: Computer) -> String {
         guard computer.deploymentStatus == .installed,
               computer.installedSidecarVersion == PiSidecarRuntime.version,
+              (!computer.sandboxEnabled || computer.bubblewrapExecutablePath?.hasPrefix("/") == true),
               (try? RemoteCommandBuilder.validate(computer)) != nil else {
-            return "Nicht verfügbar, bis „Prüfen & einrichten“ eine gültige Installation bestätigt hat."
+            return "Nicht verfügbar, bis „Prüfen & einrichten“ eine gültige Installation und – falls aktiviert – ein ausführbares `bwrap` bestätigt hat."
         }
-        let remoteRunner = ["node", ".local/lib/workjet/current/workjet-pi-turn.mjs"]
+        var remoteRunner = ["node", ".local/lib/workjet/current/workjet-pi-turn.mjs"]
+        if computer.sandboxEnabled { remoteRunner.append("--sandbox") }
         let tokens: [String]
         switch computer.transport {
         case .ssh:
@@ -197,7 +209,10 @@ public enum ManagedPrompt {
             return "Nicht als Remote-Invocation verfügbar."
         }
         let transport = tokens.map(shellQuoted).joined(separator: " ")
-        return "Fable erzeugt den aktuellen `CtoxTurnRequest`-JSON-Snapshot als genau eine NDJSON-Zeile und leitet ihn über stdin an `\(transport)` weiter. Genau eine finale NDJSON-Antwort wird über stdout empfangen; darin enthaltene Pi-Ereignisse sind post-hoc."
+        let sandbox = computer.sandboxEnabled
+            ? "Die Invocation aktiviert `--sandbox` ausdrücklich; der Runner darf bei fehlendem Bubblewrap nicht unsandboxed degradieren."
+            : "Die Invocation aktiviert keine OS-Sandbox; diese deaktivierte Grenze wird ausdrücklich beibehalten."
+        return "Fable erzeugt den aktuellen `CtoxTurnRequest`-JSON-Snapshot als genau eine NDJSON-Zeile und leitet ihn über stdin an `\(transport)` weiter. \(sandbox) Genau eine finale NDJSON-Antwort wird über stdout empfangen; darin enthaltene Pi-Ereignisse sind post-hoc."
     }
 
     private static func shellQuoted(_ value: String) -> String {

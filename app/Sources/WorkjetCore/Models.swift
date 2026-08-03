@@ -40,6 +40,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var installedSidecarVersion: String?
     public var knownHostsPath: String
     public var tailscaleExecutablePath: String?
+    public var bubblewrapExecutablePath: String?
     public var lastSuccessfulPreflightAt: Date?
     public var lastSuccessfulDeploymentAt: Date?
 
@@ -60,6 +61,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         installedSidecarVersion: String? = nil,
         knownHostsPath: String = "",
         tailscaleExecutablePath: String? = nil,
+        bubblewrapExecutablePath: String? = nil,
         lastSuccessfulPreflightAt: Date? = nil,
         lastSuccessfulDeploymentAt: Date? = nil
     ) {
@@ -79,6 +81,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         self.installedSidecarVersion = installedSidecarVersion
         self.knownHostsPath = knownHostsPath
         self.tailscaleExecutablePath = tailscaleExecutablePath
+        self.bubblewrapExecutablePath = bubblewrapExecutablePath
         self.lastSuccessfulPreflightAt = lastSuccessfulPreflightAt
         self.lastSuccessfulDeploymentAt = lastSuccessfulDeploymentAt
     }
@@ -86,7 +89,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, transport, host, user, port, sandboxEnabled, pinnedSidecarVersion, telemetryEnabled
         case sidecarBundlePath, deploymentStatus, deploymentDetail, installedContentHash, installedSidecarVersion
-        case knownHostsPath, tailscaleExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
+        case knownHostsPath, tailscaleExecutablePath, bubblewrapExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +111,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         installedSidecarVersion = try values.decodeIfPresent(String.self, forKey: .installedSidecarVersion)
         knownHostsPath = try values.decodeIfPresent(String.self, forKey: .knownHostsPath) ?? ""
         tailscaleExecutablePath = try values.decodeIfPresent(String.self, forKey: .tailscaleExecutablePath)
+        bubblewrapExecutablePath = try values.decodeIfPresent(String.self, forKey: .bubblewrapExecutablePath)
         lastSuccessfulPreflightAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessfulPreflightAt)
         lastSuccessfulDeploymentAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessfulDeploymentAt)
     }
@@ -262,9 +266,31 @@ public enum ProviderKind: String, CaseIterable, Codable, Equatable, Sendable {
 }
 
 public enum ProviderStatus: String, Codable, Equatable, Sendable {
+    case unverified = "Nicht geprüft"
     case connected = "Verbunden"
     case degraded = "Eingeschränkt"
     case offline = "Offline"
+}
+
+public enum ProviderPresentationTone: Equatable, Sendable {
+    case neutral
+    case connected
+    case warning
+    case critical
+}
+
+public struct ProviderPresentation: Equatable, Sendable {
+    public var state: String
+    public var detail: String
+    public var tone: ProviderPresentationTone
+    public var capacity: CapacityStatus
+
+    public init(state: String, detail: String, tone: ProviderPresentationTone, capacity: CapacityStatus) {
+        self.state = state
+        self.detail = detail
+        self.tone = tone
+        self.capacity = capacity
+    }
 }
 
 public struct Provider: Identifiable, Equatable, Codable, Sendable {
@@ -278,7 +304,7 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
     public var loginExecutable: String?
     public var loginArguments: [String]
 
-    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, status: ProviderStatus = .offline, capacity: CapacityStatus = .unavailable(reason: "Keine kompatiblen Nutzungsdaten verfügbar."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
+    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, status: ProviderStatus = .unverified, capacity: CapacityStatus = .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
         self.id = id
         self.name = name
         self.kind = kind
@@ -292,6 +318,7 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
 }
 
 public enum CLIProxyConnectionState: String, Codable, Equatable, Sendable {
+    case unverified = "Nicht geprüft"
     case reachable = "Erreichbar"
     case authRequired = "Inferenz-Authentifizierung erforderlich"
     case unsafeEndpoint = "Unsicherer Endpunkt"

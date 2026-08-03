@@ -24,7 +24,7 @@ public final class NullWorkjetService: WorkjetService, @unchecked Sendable {
     public func runs(workers: [Worker]) -> [RunRecord] { [] }
     public func stop(_ run: ActiveRun) throws {}
     public func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus {
-        CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "Vorschau ohne lokale Dienste.", capacity: .unavailable(reason: "Vorschau ohne Kapazitätsdaten."))
+        CLIProxyStatus(endpoint: configuration.endpoint, state: .unverified, detail: "Vorschau prüft keine lokalen Dienste.", capacity: .unavailable(reason: "CLIProxy wurde in der Vorschau nicht geprüft."))
     }
     public func bootstrapRemotePi(_ computer: Computer) async -> Computer {
         var value = computer
@@ -110,7 +110,18 @@ public struct WorkjetBootstrap {
         if let existing = value.computers.first(where: \.isLocal) { local = existing }
         else { local = WorkjetDefaults.localComputer; value.computers.insert(local, at: 0) }
         if !value.computers.contains(where: { $0.id == value.selectedComputerID }) { value.selectedComputerID = local.id }
-        for index in value.computers.indices { value.computers[index].pinnedSidecarVersion = PiSidecarRuntime.version }
+        for index in value.computers.indices {
+            value.computers[index].pinnedSidecarVersion = PiSidecarRuntime.version
+            if !value.computers[index].isLocal,
+               value.computers[index].sandboxEnabled,
+               value.computers[index].deploymentStatus == .installed,
+               value.computers[index].bubblewrapExecutablePath?.hasPrefix("/") != true {
+                value.computers[index].deploymentStatus = .notConfigured
+                value.computers[index].deploymentDetail = "Die aktivierte Minimal-Sandbox hat noch kein verifiziertes Bubblewrap-Executable; erneut prüfen und einrichten."
+                value.computers[index].installedContentHash = nil
+                value.computers[index].installedSidecarVersion = nil
+            }
+        }
         return value
     }
 }

@@ -9,7 +9,7 @@ struct WorkerListView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(model.visibleWorkers) { worker in
-                    WorkerRow(worker: worker, onEdit: { onEditWorker(worker) })
+                    WorkerRow(worker: worker, capacity: model.effectiveCapacity(for: worker), onEdit: { onEditWorker(worker) })
                     if worker.id != model.visibleWorkers.last?.id { WJDivider().padding(.leading, 14) }
                 }
                 if model.visibleWorkers.isEmpty {
@@ -23,6 +23,7 @@ struct WorkerListView: View {
 
 struct WorkerRow: View {
     let worker: Worker
+    let capacity: CapacityStatus
     let onEdit: () -> Void
     var body: some View {
         HStack(spacing: 10) {
@@ -30,7 +31,7 @@ struct WorkerRow: View {
                 Text(worker.name).font(.system(size: 13, weight: .semibold)).lineLimit(1)
                 HStack(spacing: 6) {
                     Text("\(worker.model) · \(worker.harness.rawValue)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
-                    CapacityIndicator(capacity: worker.capacity, label: worker.name)
+                    CapacityIndicator(capacity: capacity, label: worker.name)
                 }
             }
             Spacer(minLength: 8)
@@ -57,17 +58,36 @@ struct CapacityIndicator: View {
         return "\(Int((fraction * 100).rounded())) Prozent belegt" + (capacity.rateLimited == true ? ", Rate-Limit aktiv" : "")
     }
     var body: some View {
-        HStack(spacing: 4) {
-            if let fraction = capacity.fraction {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.white.opacity(0.14))
-                    Capsule().fill(color).frame(width: 22 * fraction)
-                }.frame(width: 22, height: 4)
-            } else {
-                Capsule().stroke(WJTheme.secondaryText, lineWidth: 1).frame(width: 22, height: 4)
-            }
-            Circle().fill(color).frame(width: 5, height: 5)
+        HStack(spacing: 3) {
+            compactSignal(prefix: "Q", value: quotaValue, color: color)
+            compactSignal(prefix: "R", value: rateValue, color: rateColor)
         }
         .accessibilityElement(children: .ignore).accessibilityLabel("Kapazität \(label): \(detail)").help(detail)
+    }
+
+    private var quotaValue: String {
+        guard let fraction = capacity.fraction else { return "—" }
+        return "\(Int((fraction * 100).rounded()))%"
+    }
+
+    private var rateValue: String {
+        guard let limited = capacity.rateLimited else { return "—" }
+        return limited ? "Limit" : "frei"
+    }
+
+    private var rateColor: Color {
+        guard let limited = capacity.rateLimited else { return WJTheme.secondaryText }
+        return limited ? WJTheme.quotaCritical : WJTheme.quotaOK
+    }
+
+    private func compactSignal(prefix: String, value: String, color: Color) -> some View {
+        HStack(spacing: 2) {
+            Text(prefix).font(.system(size: 7, weight: .bold))
+            Text(value).font(.system(size: 8, design: .monospaced))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(color.opacity(0.12)))
     }
 }

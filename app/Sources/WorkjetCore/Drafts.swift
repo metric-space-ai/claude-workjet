@@ -31,6 +31,19 @@ public struct WorkerDraft: Equatable {
             && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    public static func defaultExecutable(for harness: Harness) -> String {
+        switch harness {
+        case .claudeCode: return "~/.local/bin/claude-sol"
+        case .piSidecar: return "node"
+        }
+    }
+
+    public mutating func selectHarness(_ harness: Harness) {
+        self.harness = harness
+        executable = Self.defaultExecutable(for: harness)
+        arguments = harness == .claudeCode ? "-p\n<WORKJET_BRIEF>" : ""
+    }
+
     /// Applies the draft to an existing worker or creates a new one.
     public func applied(to worker: Worker?) -> Worker? {
         guard isValid, let computerID else { return nil }
@@ -115,6 +128,7 @@ public struct ComputerDraft: Equatable {
                 || computer.host != result.host
                 || computer.user != result.user
                 || computer.port != result.port
+                || computer.sandboxEnabled != result.sandboxEnabled
                 || computer.sidecarBundlePath != result.sidecarBundlePath
                 || computer.knownHostsPath != result.knownHostsPath
             if routeChanged {
@@ -123,6 +137,7 @@ public struct ComputerDraft: Equatable {
                 result.installedContentHash = nil
                 result.installedSidecarVersion = nil
                 result.tailscaleExecutablePath = nil
+                result.bubblewrapExecutablePath = nil
                 result.lastSuccessfulPreflightAt = nil
                 result.lastSuccessfulDeploymentAt = nil
             }

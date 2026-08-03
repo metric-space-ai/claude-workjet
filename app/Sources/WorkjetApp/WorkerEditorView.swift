@@ -40,7 +40,7 @@ struct WorkerEditorView: View {
         }
         .onAppear {
             if draft.computerID == nil { draft.computerID = model.computers.first(where: \.isLocal)?.id }
-            if draft.executable.isEmpty { draft.executable = "~/.local/bin/claude-sol" }
+            if draft.executable.isEmpty { draft.selectHarness(draft.harness) }
         }
     }
 
@@ -93,7 +93,7 @@ struct WorkerEditorView: View {
                         isSelected: draft.harness == harness,
                         accessibilityLabel: "Harness \(harness.rawValue)"
                     ) {
-                        draft.harness = harness
+                        draft.selectHarness(harness)
                     }
                 }
             }
@@ -177,17 +177,45 @@ struct WorkerEditorView: View {
     private var invocationSection: some View {
         VStack(alignment: .leading, spacing: 7) {
             WJSectionHeader(title: "Stabile Invocation")
-            TextField("Absolute Datei oder ~/… Wrapper", text: $draft.executable)
-                .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
-                .padding(8).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
-            Text("Argumente (eine Zeile je Argument; <WORKJET_BRIEF> markiert den Brief)")
-                .font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
-            TextEditor(text: $draft.arguments).font(.system(size: 11, design: .monospaced)).scrollContentBackground(.hidden)
-                .padding(6).frame(minHeight: 70).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            if isRemotePi {
+                Text(remotePiRunnerTruth)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(WJTheme.secondaryText)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+                Text("Executable und Argumente werden für Remote-Pi generiert und sind deshalb hier nicht editierbar. Agent-Dateiwerkzeuge arbeiten nur auf dem projizierten In-Memory-Snapshot; kein beliebiges physisches Projektverzeichnis wird als schreibbar behauptet.")
+                    .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            } else {
+                TextField("Absolute Datei oder ~/… Wrapper", text: $draft.executable)
+                    .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
+                    .padding(8).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+                Text("Argumente (eine Zeile je Argument; <WORKJET_BRIEF> markiert den Brief)")
+                    .font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
+                TextEditor(text: $draft.arguments).font(.system(size: 11, design: .monospaced)).scrollContentBackground(.hidden)
+                    .padding(6).frame(minHeight: 70).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            }
             Text("Fähigkeiten (eine Zeile je Aussage)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
             TextEditor(text: $draft.capabilities).font(.system(size: 11)).scrollContentBackground(.hidden)
                 .padding(6).frame(minHeight: 70).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
         }
+    }
+
+    private var selectedComputer: Computer? {
+        guard let id = draft.computerID else { return nil }
+        return model.computer(for: id)
+    }
+
+    private var isRemotePi: Bool {
+        draft.harness == .piSidecar && selectedComputer?.isLocal == false
+    }
+
+    private var remotePiRunnerTruth: String {
+        let sandboxArgument = selectedComputer?.sandboxEnabled == true ? " --sandbox" : ""
+        let sandboxTruth = selectedComputer?.sandboxEnabled == true
+            ? "Bubblewrap-OS-Sandbox aktiviert"
+            : "OS-Sandbox deaktiviert"
+        return "node ~/.local/lib/workjet/current/workjet-pi-turn.mjs\(sandboxArgument)\n\(sandboxTruth) · eine finale NDJSON-Antwort · Pi-Events post-hoc"
     }
 
     private var computerSection: some View {

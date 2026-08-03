@@ -29,6 +29,13 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(worker?.invocation.arguments, ["-p", "<WORKJET_BRIEF>"])
         XCTAssertEqual(worker?.invocation.capabilities, ["Review", "Tests"])
         XCTAssertEqual(WorkerDraft(worker: worker).providerID, providerID)
+        draft.selectHarness(.piSidecar)
+        XCTAssertEqual(draft.executable, "node")
+        XCTAssertNotEqual(draft.executable, "~/.local/bin/claude-sol")
+        XCTAssertTrue(draft.arguments.isEmpty)
+        draft.selectHarness(.claudeCode)
+        XCTAssertEqual(draft.executable, "~/.local/bin/claude-sol")
+        XCTAssertEqual(draft.arguments, "-p\n<WORKJET_BRIEF>")
     }
 
     func testBootstrapNormalizesSkillOnlyAndDispatcherBounds() {
@@ -238,7 +245,7 @@ final class RemotePiBootstrapTests: XCTestCase {
     }
 
     private var successfulPreflight: CommandResult {
-        CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\n".utf8))
+        CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
     }
 
     private func sshComputer(bundle: String = "/audit/ctox-pi-sidecar.mjs") -> Computer {
@@ -287,7 +294,7 @@ final class RemotePiBootstrapTests: XCTestCase {
     }
 
     func testNodePreflightFailureIsBlockedWithoutInstallingAnything() async {
-        let unavailable = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=missing\nWORKJET_SHA=sha256sum\n".utf8))
+        let unavailable = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=missing\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
         let runner = Runner([unavailable])
         let result = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
         XCTAssertEqual(result.deploymentStatus, .blocked)
@@ -298,6 +305,63 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertEqual(commands.count, 1)
     }
 
+    func testSandboxEnabledPreflightBlocksWithoutBubblewrapAndDoesNotInstall() async {
+        let noBubblewrap = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))
+        let runner = Runner([noBubblewrap])
+        let result = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
+        XCTAssertEqual(result.deploymentStatus, .blocked)
+        XCTAssertTrue(result.deploymentDetail.contains("kein ausführbares Linux-`bwrap`"))
+        XCTAssertTrue(result.deploymentDetail.contains("niemals stillschweigend ohne OS-Sandbox"))
+        XCTAssertNil(result.bubblewrapExecutablePath)
+        XCTAssertNil(result.installedContentHash)
+        let commands = await runner.commands()
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertTrue(String(decoding: commands[0].standardInput, as: UTF8.self).contains("WORKJET_BWRAP"))
+    }
+
+    func testGeneratedSandboxInvocationAndRunnerUseExactBubblewrapBoundary() async {
+        let runner = Runner([successfulPreflight])
+        let installed = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
+        XCTAssertEqual(installed.deploymentStatus, .installed)
+        XCTAssertEqual(installed.bubblewrapExecutablePath, "/usr/bin/bwrap")
+
+        var config = WorkjetDefaults.configuration()
+        var worker = config.workers[0]
+        worker.harness = .piSidecar
+        worker.computerID = installed.id
+        config.workers = [worker]
+        config.computers.append(installed)
+        let prompt = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        XCTAssertTrue(prompt.contains("workjet-pi-turn.mjs' '--sandbox'"))
+        XCTAssertTrue(prompt.contains("aktiviert `--sandbox` ausdrücklich"))
+        XCTAssertTrue(prompt.contains("projizierten In-Memory-Snapshot"))
+        XCTAssertTrue(prompt.contains("read-only Host-Dateisystem"))
+
+        let source = RemotePiBootstrap.turnRunnerSource
+        for token in ["--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--ro-bind", "--bind", "--proc", "--dev"] {
+            XCTAssertTrue(source.contains("\"\(token)\""), "missing \(token)")
+        }
+        XCTAssertTrue(source.contains("daemon = spawn(sandboxExecutable, sandboxArguments"))
+        XCTAssertFalse(source.contains("--unshare-net"))
+        XCTAssertTrue(source.contains("no verified bubblewrap executable is recorded"))
+    }
+
+    func testSandboxDisabledInvocationIsExplicitlyUnsandboxed() async {
+        var computer = sshComputer()
+        computer.sandboxEnabled = false
+        let runner = Runner([CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))])
+        let installed = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(computer)
+        XCTAssertEqual(installed.deploymentStatus, .installed)
+        XCTAssertNil(installed.bubblewrapExecutablePath)
+        var config = WorkjetDefaults.configuration()
+        var worker = config.workers[0]; worker.harness = .piSidecar; worker.computerID = installed.id
+        config.workers = [worker]; config.computers.append(installed)
+        let prompt = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        XCTAssertFalse(prompt.contains("workjet-pi-turn.mjs' '--sandbox'"))
+        XCTAssertTrue(prompt.contains("OS-Sandbox ist deaktiviert"))
+        XCTAssertTrue(prompt.contains("keine zusätzliche Betriebssystem-Dateisystemgrenze"))
+    }
+
     func testSuccessfulContentAddressedDeploymentAndStatusRoundTrip() async throws {
         let runner = Runner([successfulPreflight])
         let files = Files(); files.values["/audit/ctox-pi-sidecar.mjs"] = Data("audited sidecar".utf8); files.values["/private/workjet-known-hosts"] = Data("host key".utf8)
@@ -305,6 +369,7 @@ final class RemotePiBootstrapTests: XCTestCase {
         let installed = await RemotePiBootstrap(runner: runner, files: files, tailscaleLocator: Locator(path: nil), now: { date }).deploy(sshComputer())
         XCTAssertEqual(installed.deploymentStatus, .installed)
         XCTAssertEqual(installed.installedSidecarVersion, "0.80.2")
+        XCTAssertEqual(installed.bubblewrapExecutablePath, "/usr/bin/bwrap")
         XCTAssertEqual(installed.installedContentHash?.count, 64)
         XCTAssertEqual(installed.lastSuccessfulPreflightAt, date)
         XCTAssertEqual(installed.lastSuccessfulDeploymentAt, date)
@@ -352,13 +417,40 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertTrue(prompt.contains("post-hoc"))
         XCTAssertTrue(prompt.contains("Loopback-Relay nicht verfügbar"))
         XCTAssertTrue(prompt.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(prompt.contains("--sandbox"))
         XCTAssertTrue(RemotePiBootstrap.turnRunnerSource.contains("env: cleanEnvironment"))
+        XCTAssertTrue(RemotePiBootstrap.turnRunnerSource.contains("spawn(sandboxExecutable"))
         XCTAssertFalse(RemotePiBootstrap.turnRunnerSource.contains("process.env.API"))
     }
 }
 
+final class ProcessCommandRunnerTests: XCTestCase {
+    func testEarlyChildExitDuringLargeStdinReturnsControlledFailureWithoutSIGPIPEOrHang() async {
+        let payload = Data(repeating: 0x41, count: 16 * 1_024 * 1_024)
+        let command = CommandSpec(executable: "/bin/sh", arguments: ["-c", "exit 0"], standardInput: payload, timeout: 2)
+        let started = Date()
+        do {
+            _ = try await ProcessCommandRunner().run(command)
+            XCTFail("Expected closed stdin to be reported")
+        } catch {
+            XCTAssertEqual(error as? CommandRunError, .standardInputClosed)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+    }
+}
+
 @MainActor final class ViewModelTests: XCTestCase {
-    private final class Service: WorkjetService, @unchecked Sendable { var saves: [(WorkjetConfiguration, Bool)] = []; func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws { saves.append((configuration, handwrittenRulesChanged)) }; func runs(workers: [Worker]) -> [RunRecord] { [] }; func stop(_ run: ActiveRun) throws {}; func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus { CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "test", capacity: .unavailable(reason: "test")) }; func storeCredential(_ secret: Data, reference: String) throws {} }
+    private final class Service: WorkjetService, @unchecked Sendable {
+        var saves: [(WorkjetConfiguration, Bool)] = []
+        var proxyStatus: CLIProxyStatus?
+        func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws { saves.append((configuration, handwrittenRulesChanged)) }
+        func runs(workers: [Worker]) -> [RunRecord] { [] }
+        func stop(_ run: ActiveRun) throws {}
+        func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus {
+            proxyStatus ?? CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "test", capacity: .unavailable(reason: "test"))
+        }
+        func storeCredential(_ secret: Data, reference: String) throws {}
+    }
     func testSelectionIsExclusiveAndDebouncedChangesCoalesceOnExplicitFlush() async {
         let service = Service(); let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id)
         model.providerSlots = 2; model.telemetryRetentionDays = 30; model.cliProxyConfiguration.usageStatisticsEnabled = true; model.skillRules = "n"; model.skillRules = "new rules"; model.addProvider(Provider(name: "API", kind: .apiKey, endpoint: "https://example.test"))
@@ -368,6 +460,99 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertEqual(service.saves.first?.1, true)
         XCTAssertEqual(service.saves.first?.0.skillRules, "new rules")
         XCTAssertEqual(service.saves.first?.0.providers.count, 2)
+    }
+
+    func testTelemetryDefaultsAndMaskingKeepAutomaticActiveRuns() {
+        let defaults = WorkjetDefaults.configuration()
+        let model = WorkjetViewModel(configuration: defaults, service: Service(), persistenceDelay: 60)
+        XCTAssertTrue(model.telemetryClaudeCodeEvents)
+        XCTAssertTrue(model.telemetrySidecarEvents)
+        XCTAssertFalse(Computer(name: "remote", transport: .ssh).telemetryEnabled)
+
+        let localClaude = defaults.workers[0]
+        let remoteComputer = Computer(name: "pi", transport: .ssh, telemetryEnabled: false)
+        var remotePi = defaults.workers[1]
+        remotePi.harness = .piSidecar
+        remotePi.computerID = remoteComputer.id
+        let claudeRun = activeRun(worker: localClaude, activity: "Claude liest Dateien", delivery: .live, pid: 300)
+        let piRun = activeRun(worker: remotePi, activity: "Pi bearbeitet Snapshot", delivery: .postHoc, pid: 301)
+
+        let claudeMasked = WorkjetViewModel.applyingTelemetryPolicy(to: [claudeRun], workers: [localClaude], computers: defaults.computers, claudeEventsEnabled: false, sidecarEventsEnabled: true)
+        XCTAssertEqual(claudeMasked.count, 1)
+        XCTAssertEqual(claudeMasked[0].activity, "läuft")
+        XCTAssertEqual(claudeMasked[0].delivery, .unavailable)
+
+        let remoteMasked = WorkjetViewModel.applyingTelemetryPolicy(to: [piRun], workers: [remotePi], computers: [remoteComputer], claudeEventsEnabled: true, sidecarEventsEnabled: true)
+        XCTAssertEqual(remoteMasked.count, 1)
+        XCTAssertEqual(remoteMasked[0].activity, "läuft")
+        XCTAssertEqual(remoteMasked[0].delivery, .unavailable)
+
+        var enabledComputer = remoteComputer; enabledComputer.telemetryEnabled = true
+        let remoteVisible = WorkjetViewModel.applyingTelemetryPolicy(to: [piRun], workers: [remotePi], computers: [enabledComputer], claudeEventsEnabled: true, sidecarEventsEnabled: true)
+        XCTAssertEqual(remoteVisible[0].activity, "Pi bearbeitet Snapshot")
+        XCTAssertEqual(remoteVisible[0].delivery, .postHoc)
+
+        let piGloballyMasked = WorkjetViewModel.applyingTelemetryPolicy(to: [piRun], workers: [remotePi], computers: [enabledComputer], claudeEventsEnabled: true, sidecarEventsEnabled: false)
+        XCTAssertEqual(piGloballyMasked[0].activity, "läuft")
+        XCTAssertEqual(piGloballyMasked[0].delivery, .unavailable)
+    }
+
+    func testCLIProxyProviderPresentationMatchesRouteAndDrivesWorkerCapacity() async {
+        var config = WorkjetDefaults.configuration()
+        let matching = Provider(name: "CLI", kind: .cliProxy, endpoint: "http://127.0.0.1:8317")
+        let mismatching = Provider(name: "Other CLI", kind: .cliProxy, endpoint: "http://127.0.0.1:9999")
+        config.providers = [matching, mismatching]
+        config.workers[0].providerID = matching.id
+        config.workers[0].capacity = .userConfigured(used: 99, limit: 100, unit: "stale", rateLimited: true)
+        config.workers[1].providerID = mismatching.id
+        let service = Service()
+        let measured = CapacityStatus.measured(used: 20, limit: 100, unit: "requests", rateLimited: false)
+        service.proxyStatus = CLIProxyStatus(endpoint: config.cliProxy.endpoint, state: .reachable, detail: "gemessen", capacity: measured)
+        let model = WorkjetViewModel(configuration: config, service: service, persistenceDelay: 60)
+        model.refreshCLIProxy()
+        for _ in 0..<50 where model.cliProxyStatus.state != .reachable { await Task.yield() }
+
+        let matchingPresentation = model.providerPresentation(for: matching)
+        XCTAssertEqual(matchingPresentation.state, CLIProxyConnectionState.reachable.rawValue)
+        XCTAssertEqual(matchingPresentation.capacity, measured)
+        XCTAssertEqual(matchingPresentation.tone, .connected)
+        XCTAssertEqual(model.effectiveCapacity(for: config.workers[0]), measured)
+        XCTAssertNotEqual(model.effectiveCapacity(for: config.workers[0]), config.workers[0].capacity)
+
+        let mismatchingPresentation = model.providerPresentation(for: mismatching)
+        XCTAssertEqual(mismatchingPresentation.state, "Nicht verfügbar")
+        XCTAssertNil(mismatchingPresentation.capacity.fraction)
+        XCTAssertTrue(mismatchingPresentation.capacity.reason?.contains("stimmt nicht") == true)
+        XCTAssertEqual(mismatchingPresentation.tone, .neutral)
+        XCTAssertEqual(model.effectiveCapacity(for: config.workers[1]), mismatchingPresentation.capacity)
+    }
+
+    func testUnprobedProviderDefaultsToNeutralInsteadOfOffline() {
+        let provider = Provider(name: "New", kind: .apiKey, endpoint: "https://example.test")
+        XCTAssertEqual(provider.status, .unverified)
+        let model = WorkjetViewModel(configuration: WorkjetDefaults.configuration(), service: Service(), persistenceDelay: 60)
+        let presentation = model.providerPresentation(for: provider)
+        XCTAssertEqual(presentation.state, ProviderStatus.unverified.rawValue)
+        XCTAssertEqual(presentation.tone, .neutral)
+        XCTAssertNil(presentation.capacity.fraction)
+    }
+
+    private func activeRun(worker: Worker, activity: String, delivery: HarnessDelivery, pid: Int32) -> ActiveRun {
+        ActiveRun(
+            sourceRunID: "run-\(pid)",
+            workerID: worker.id,
+            workerName: worker.name,
+            workerModel: worker.model,
+            activity: activity,
+            startedAt: Date(timeIntervalSince1970: 1_000),
+            observedAt: Date(timeIntervalSince1970: 1_100),
+            lastHeartbeat: Date(timeIntervalSince1970: 1_090),
+            delivery: delivery,
+            pid: pid,
+            processIdentity: ProcessIdentity(pid: pid, executablePath: "/usr/bin/worker", startToken: "start-\(pid)"),
+            runDirectory: URL(fileURLWithPath: "/tmp/run-\(pid)"),
+            indexFile: nil
+        )
     }
 }
 

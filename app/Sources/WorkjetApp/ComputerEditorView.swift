@@ -147,7 +147,9 @@ struct ComputerEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Minimal-Sandbox")
                     .font(.system(size: 13))
-                Text("Worker laufen eingeschränkt; nur der Arbeitsordner ist schreibbar.")
+                Text(draft.sandboxEnabled
+                     ? "Agent-Dateiwerkzeuge sehen nur den projizierten In-Memory-Snapshot; Bubblewrap hält das Host-Dateisystem read-only und lässt nur das private Turn-Verzeichnis schreibbar. Netzwerk bleibt verfügbar."
+                     : "Agent-Dateiwerkzeuge bleiben auf den projizierten In-Memory-Snapshot begrenzt; eine zusätzliche OS-Dateisystemgrenze ist deaktiviert.")
                     .font(.system(size: 11))
                     .foregroundStyle(WJTheme.secondaryText)
             }
@@ -172,7 +174,7 @@ struct ComputerEditorView: View {
                 Text("Installierter Inhalt: \(hash) · Version \(current.installedSidecarVersion ?? "unbekannt")")
                     .font(.system(size: 9, design: .monospaced)).foregroundStyle(WJTheme.tertiaryText).textSelection(.enabled)
             }
-            Text("Es werden nur Bundle, generierter Turn-Runner und Manifest übertragen. Node >=20 wird vorausgesetzt; Workjet installiert keine Pakete. Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar.")
+            Text("Es werden nur Bundle, generierter Turn-Runner und Manifest übertragen. Node >=20 und bei aktivierter Minimal-Sandbox ein vorhandenes Linux-bwrap werden vorausgesetzt; Workjet installiert keine Pakete. Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar.")
                 .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
         }
     }
@@ -191,7 +193,7 @@ struct ComputerEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Telemetrie einrichten")
                     .font(.system(size: 13))
-                Text("Pi-Ereignisse aus der finalen Antwort post-hoc erfassen; keine Live-Events.")
+                Text("Gibt post-hoc Pi-Aktivitätsdetails dieses Remote-Computers frei; laufende Worker werden unabhängig davon automatisch erkannt. Keine Live-Events.")
                     .font(.system(size: 11))
                     .foregroundStyle(WJTheme.secondaryText)
             }

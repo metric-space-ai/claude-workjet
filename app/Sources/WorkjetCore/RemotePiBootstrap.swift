@@ -149,6 +149,7 @@ public struct RemotePiBootstrap: Sendable {
     public func deploy(_ input: Computer) async -> Computer {
         var computer = input
         computer.pinnedSidecarVersion = PiSidecarRuntime.version
+        computer.bubblewrapExecutablePath = nil
         computer.deploymentStatus = .checking
         computer.deploymentDetail = "Lokales Bundle und Remote-Voraussetzungen werden geprüft."
         do {
@@ -189,6 +190,13 @@ public struct RemotePiBootstrap: Sendable {
             guard facts.hasShell else { throw RemotePiBootstrapError.preflightBlocked("`sh` fehlt.") }
             guard facts.nodeMajor >= 20 else { throw RemotePiBootstrapError.preflightBlocked("Node >=20 ist erforderlich; gefunden wurde \(facts.nodeVersion). Workjet installiert keine Pakete und lädt keinen Remote-Code nach.") }
             guard facts.shaTool == "sha256sum" || facts.shaTool == "shasum" else { throw RemotePiBootstrapError.preflightBlocked("weder sha256sum noch shasum ist verfügbar.") }
+            computer.bubblewrapExecutablePath = facts.bubblewrapExecutable
+            if computer.sandboxEnabled {
+                guard let executable = facts.bubblewrapExecutable else {
+                    throw RemotePiBootstrapError.preflightBlocked("Minimal-Sandbox ist aktiviert, aber kein ausführbares Linux-`bwrap` wurde gefunden. Workjet installiert keine Pakete und startet niemals stillschweigend ohne OS-Sandbox.")
+                }
+                guard executable.hasPrefix("/") else { throw RemotePiBootstrapError.invalidPreflight }
+            }
             computer.lastSuccessfulPreflightAt = now()
 
             try await requireSuccess(computer: computer, tailscaleExecutable: tailscaleExecutable, script: Self.prepareScript, positional: [contentHash], timeout: 20)
@@ -196,7 +204,7 @@ public struct RemotePiBootstrap: Sendable {
             let runnerData = Data(Self.turnRunnerSource.utf8)
             let bundleFileHash = Self.sha256(bundle)
             let runnerHash = Self.sha256(runnerData)
-            let manifestData = try Self.manifest(contentHash: contentHash, bundleHash: bundleFileHash, runnerHash: runnerHash)
+            let manifestData = try Self.manifest(contentHash: contentHash, bundleHash: bundleFileHash, runnerHash: runnerHash, sandboxEnabled: computer.sandboxEnabled, bubblewrapExecutable: computer.bubblewrapExecutablePath)
             let manifestHash = Self.sha256(manifestData)
 
             try await upload(bundle, named: "ctox-pi-sidecar.mjs", contentHash: contentHash, expectedHash: bundleFileHash, computer: computer, tailscaleExecutable: tailscaleExecutable)
@@ -212,7 +220,10 @@ public struct RemotePiBootstrap: Sendable {
             )
 
             computer.deploymentStatus = .installed
-            computer.deploymentDetail = "Pi-Sidecar \(PiSidecarRuntime.version) wurde inhaltadressiert installiert. Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar; Faux-/Offline-Turns können geprüft werden."
+            let sandboxDetail = computer.sandboxEnabled
+                ? "Der Daemon wird mit \(computer.bubblewrapExecutablePath ?? "bwrap") in einer OS-Sandbox gestartet: Host-Dateisystem read-only, nur das private Turn-Verzeichnis schreibbar; Netzwerk bleibt für den Modell-Gateway-Zugang verfügbar."
+                : "Die OS-Sandbox ist deaktiviert; nur die Agent-Dateiwerkzeuge bleiben auf den projizierten In-Memory-Snapshot begrenzt."
+            computer.deploymentDetail = "Pi-Sidecar \(PiSidecarRuntime.version) wurde inhaltadressiert installiert. \(sandboxDetail) Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar; Faux-/Offline-Turns können geprüft werden."
             computer.installedContentHash = contentHash
             computer.installedSidecarVersion = PiSidecarRuntime.version
             computer.lastSuccessfulDeploymentAt = now()
@@ -279,18 +290,19 @@ public struct RemotePiBootstrap: Sendable {
             let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
             if parts.count == 2 { values[parts[0]] = parts[1] }
         }
-        guard let os = values["WORKJET_OS"], let arch = values["WORKJET_ARCH"], let node = values["WORKJET_NODE"] else {
+        guard let os = values["WORKJET_OS"], let arch = values["WORKJET_ARCH"], let node = values["WORKJET_NODE"], let bubblewrap = values["WORKJET_BWRAP"] else {
             throw RemotePiBootstrapError.invalidPreflight
         }
         let major = Int(node.trimmingCharacters(in: CharacterSet(charactersIn: "vV")).split(separator: ".").first ?? "") ?? 0
-        return PreflightFacts(os: os, arch: arch, homeWritable: values["WORKJET_HOME_WRITABLE"] == "1", hasShell: values["WORKJET_SH"] == "1", nodeVersion: node, nodeMajor: major, shaTool: values["WORKJET_SHA"] ?? "")
+        let bubblewrapExecutable = bubblewrap == "missing" ? nil : bubblewrap
+        return PreflightFacts(os: os, arch: arch, homeWritable: values["WORKJET_HOME_WRITABLE"] == "1", hasShell: values["WORKJET_SH"] == "1", nodeVersion: node, nodeMajor: major, shaTool: values["WORKJET_SHA"] ?? "", bubblewrapExecutable: bubblewrapExecutable)
     }
 
     private static func sha256(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func manifest(contentHash: String, bundleHash: String, runnerHash: String) throws -> Data {
+    private static func manifest(contentHash: String, bundleHash: String, runnerHash: String, sandboxEnabled: Bool, bubblewrapExecutable: String?) throws -> Data {
         let value = DeploymentManifest(
             schema: 1,
             version: PiSidecarRuntime.version,
@@ -300,7 +312,9 @@ public struct RemotePiBootstrap: Sendable {
                 "workjet-pi-turn.mjs": runnerHash
             ],
             inference: "remote-real-model-unavailable-without-loopback-relay",
-            events: "post-hoc-final-response"
+            events: "post-hoc-final-response",
+            sandbox: sandboxEnabled ? "bubblewrap" : "disabled",
+            bubblewrapExecutable: sandboxEnabled ? bubblewrapExecutable : nil
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -341,6 +355,7 @@ if [ -n "${HOME:-}" ] && [ -d "$HOME" ] && [ -w "$HOME" ]; then printf 'WORKJET_
 if command -v sh >/dev/null 2>&1; then printf 'WORKJET_SH=1\n'; else printf 'WORKJET_SH=0\n'; fi
 if command -v node >/dev/null 2>&1; then printf 'WORKJET_NODE=%s\n' "$(node --version)"; else printf 'WORKJET_NODE=missing\n'; fi
 if command -v sha256sum >/dev/null 2>&1; then printf 'WORKJET_SHA=sha256sum\n'; elif command -v shasum >/dev/null 2>&1; then printf 'WORKJET_SHA=shasum\n'; else printf 'WORKJET_SHA=missing\n'; fi
+if command -v bwrap >/dev/null 2>&1; then bwrap_path="$(command -v bwrap)"; case "$bwrap_path" in /*) if [ -x "$bwrap_path" ]; then printf 'WORKJET_BWRAP=%s\n' "$bwrap_path"; else printf 'WORKJET_BWRAP=missing\n'; fi;; *) printf 'WORKJET_BWRAP=missing\n';; esac; else printf 'WORKJET_BWRAP=missing\n'; fi
 """#
 
     public static let prepareScript = #"""
@@ -407,7 +422,15 @@ const RESPONSE_LIMIT = 4 * 1024 * 1024;
 const TIMEOUT_MS = 120000;
 const release = path.dirname(new URL(import.meta.url).pathname);
 const daemonFile = path.join(release, "ctox-pi-sidecar.mjs");
-const privateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "workjet-pi-"));
+const manifestFile = path.join(release, "manifest.json");
+const invocationArguments = process.argv.slice(2);
+if (invocationArguments.length > 1 || (invocationArguments.length === 1 && invocationArguments[0] !== "--sandbox")) {
+  process.stderr.write("workjet-pi-turn: only --sandbox is accepted\n");
+  process.exit(64);
+}
+const sandboxRequested = invocationArguments[0] === "--sandbox";
+const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+const privateDirectory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "workjet-pi-")));
 fs.chmodSync(privateDirectory, 0o700);
 const socketPath = path.join(privateDirectory, "turn.sock");
 let daemon;
@@ -435,7 +458,23 @@ const lines = request.toString("utf8").split(/\r?\n/).filter(Boolean);
 if (lines.length !== 1) await fail("exactly one NDJSON request is required");
 try { JSON.parse(lines[0]); } catch { await fail("request is not JSON"); }
 const cleanEnvironment = {HOME: process.env.HOME ?? "", PATH: process.env.PATH ?? "/usr/bin:/bin", TMPDIR: privateDirectory};
-daemon = spawn(process.execPath, [daemonFile, "--socket", socketPath], {cwd: release, env: cleanEnvironment, stdio: ["ignore", "ignore", "ignore"]});
+if (sandboxRequested) {
+  const sandboxExecutable = manifest.bubblewrapExecutable;
+  if (manifest.sandbox !== "bubblewrap" || typeof sandboxExecutable !== "string" || !path.isAbsolute(sandboxExecutable)) {
+    await fail("sandbox was requested but no verified bubblewrap executable is recorded");
+  }
+  try { fs.accessSync(sandboxExecutable, fs.constants.X_OK); } catch { await fail("recorded bubblewrap executable is unavailable"); }
+  const sandboxArguments = [
+    "--die-with-parent", "--new-session", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+    "--ro-bind", "/", "/", "--bind", privateDirectory, privateDirectory,
+    "--proc", "/proc", "--dev", "/dev", "--chdir", release,
+    process.execPath, daemonFile, "--socket", socketPath
+  ];
+  // Network is intentionally not unshared because the model gateway must remain reachable.
+  daemon = spawn(sandboxExecutable, sandboxArguments, {cwd: release, env: cleanEnvironment, stdio: ["ignore", "ignore", "ignore"]});
+} else {
+  daemon = spawn(process.execPath, [daemonFile, "--socket", socketPath], {cwd: release, env: cleanEnvironment, stdio: ["ignore", "ignore", "ignore"]});
+}
 const deadline = Date.now() + 5000;
 while (!fs.existsSync(socketPath)) {
   if (daemon.exitCode !== null) await fail("sidecar exited before socket became ready");
@@ -474,6 +513,8 @@ private struct DeploymentManifest: Codable {
     var files: [String: String]
     var inference: String
     var events: String
+    var sandbox: String
+    var bubblewrapExecutable: String?
 }
 
 private struct PreflightFacts {
@@ -484,6 +525,7 @@ private struct PreflightFacts {
     var nodeVersion: String
     var nodeMajor: Int
     var shaTool: String
+    var bubblewrapExecutable: String?
 }
 
 private extension RemotePiBootstrapError {

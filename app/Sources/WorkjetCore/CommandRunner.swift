@@ -38,6 +38,7 @@ public struct CommandResult: Equatable, Sendable {
 public enum CommandRunError: LocalizedError, Equatable {
     case executableMustBeAbsolute
     case launch(String)
+    case standardInputClosed
     case timedOut
     case cancelled
 
@@ -45,6 +46,7 @@ public enum CommandRunError: LocalizedError, Equatable {
         switch self {
         case .executableMustBeAbsolute: return "Prozesse dürfen nur über absolute Executable-Pfade gestartet werden."
         case let .launch(detail): return "Prozess konnte nicht gestartet werden: \(detail)"
+        case .standardInputClosed: return "Der Kindprozess hat seine Standardeingabe geschlossen, bevor alle Eingabedaten übertragen waren."
         case .timedOut: return "Remote-Befehl hat sein Zeitlimit überschritten."
         case .cancelled: return "Remote-Befehl wurde abgebrochen."
         }
@@ -70,22 +72,30 @@ public struct ProcessCommandRunner: CommandRunning, Sendable {
         process.standardOutput = stdout
         process.standardError = stderr
 
+        let inputBox = InputBox(stdin.fileHandleForWriting)
+        guard fcntl(inputBox.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+            inputBox.close()
+            throw CommandRunError.launch(String(cString: strerror(errno)))
+        }
+
         do { try process.run() }
-        catch { throw CommandRunError.launch(error.localizedDescription) }
+        catch { inputBox.close(); throw CommandRunError.launch(error.localizedDescription) }
 
         let processBox = ProcessBox(process)
         return try await withTaskCancellationHandler {
             async let output = Self.drain(stdout.fileHandleForReading, limit: command.stdoutLimit)
             async let errors = Self.drain(stderr.fileHandleForReading, limit: command.stderrLimit)
-            async let input: Void = Self.write(command.standardInput, to: stdin.fileHandleForWriting)
+            async let input: Void = Self.write(command.standardInput, through: inputBox)
             do {
                 try await Self.wait(for: processBox, timeout: command.timeout)
                 try Task.checkCancellation()
+                inputBox.close()
                 _ = try await input
                 let (out, err) = try await (output, errors)
                 return CommandResult(exitCode: process.terminationStatus, standardOutput: out.data, standardError: err.data, stdoutTruncated: out.truncated, stderrTruncated: err.truncated)
             } catch {
                 processBox.terminate()
+                inputBox.close()
                 _ = try? await input
                 _ = try? await output
                 _ = try? await errors
@@ -93,13 +103,31 @@ public struct ProcessCommandRunner: CommandRunning, Sendable {
             }
         } onCancel: {
             processBox.terminate()
+            inputBox.close()
         }
     }
 
-    private static func write(_ data: Data, to handle: FileHandle) async throws {
-        defer { try? handle.close() }
+    private static func write(_ data: Data, through box: InputBox) async throws {
+        defer { box.close() }
         guard !data.isEmpty else { return }
-        try await Task.detached { try handle.write(contentsOf: data) }.value
+        try await Task.detached {
+            try data.withUnsafeBytes { bytes in
+                guard let baseAddress = bytes.baseAddress else { return }
+                var offset = 0
+                while offset < bytes.count {
+                    let written = Darwin.write(box.fileDescriptor, baseAddress.advanced(by: offset), bytes.count - offset)
+                    if written > 0 {
+                        offset += written
+                    } else if written < 0 && errno == EINTR {
+                        continue
+                    } else if written < 0 && (errno == EPIPE || errno == EBADF) {
+                        throw CommandRunError.standardInputClosed
+                    } else if written < 0 {
+                        throw CommandRunError.launch("Standardeingabe konnte nicht geschrieben werden: \(String(cString: strerror(errno)))")
+                    }
+                }
+            }
+        }.value
     }
 
     private static func drain(_ handle: FileHandle, limit: Int) async throws -> (data: Data, truncated: Bool) {
@@ -132,6 +160,23 @@ public struct ProcessCommandRunner: CommandRunning, Sendable {
             group.cancelAll()
             if !completed { box.terminate(); throw CommandRunError.timedOut }
         }
+    }
+}
+
+private final class InputBox: @unchecked Sendable {
+    private let handle: FileHandle
+    private let lock = NSLock()
+    private var closed = false
+
+    init(_ handle: FileHandle) { self.handle = handle }
+    var fileDescriptor: Int32 { handle.fileDescriptor }
+
+    func close() {
+        lock.lock()
+        guard !closed else { lock.unlock(); return }
+        closed = true
+        lock.unlock()
+        try? handle.close()
     }
 }
 

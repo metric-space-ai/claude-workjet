@@ -89,17 +89,18 @@ private struct AccessSettingsSection: View {
     }
 
     private func providerRow(_ provider: Provider) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        let presentation = model.providerPresentation(for: provider)
+        return VStack(alignment: .leading, spacing: 7) {
             Button { editingProviderID = editingProviderID == provider.id ? nil : provider.id } label: {
                 HStack(spacing: 8) {
-                    StatusDot(status: provider.status)
+                    StatusDot(tone: presentation.tone)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(provider.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary)
-                        Text("\(provider.kind.rawValue) · \(provider.endpoint)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
+                        Text("\(provider.kind.rawValue) · \(presentation.state) · \(provider.endpoint)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
                     }
-                    Spacer(); Text(capacityDetail(provider.capacity)).font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText).lineLimit(2); Image(systemName: "pencil").font(.system(size: 11))
+                    Spacer(); Text(capacityDetail(presentation.capacity)).font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText).lineLimit(2); Image(systemName: "pencil").font(.system(size: 11))
                 }
-            }.buttonStyle(.plain)
+            }.buttonStyle(.plain).help(presentation.detail)
             if editingProviderID == provider.id { providerEditor(provider) }
         }
     }
@@ -114,7 +115,7 @@ private struct AccessSettingsSection: View {
                 SecureField("API-Geheimnis im Keychain speichern", text: $providerSecret).textFieldStyle(.plain)
                 saveSecret(providerSecret, reference: provider.credentialReference) { providerSecret = "" }
             }.fieldSurface()
-            field("Login-Executable (nur Anzeige)", text: optionalProviderString(provider, \.loginExecutable))
+            field("Login-Executable", text: optionalProviderString(provider, \.loginExecutable))
             field("Login-Argumente, eine Zeile je Argument", text: providerArguments(provider))
             HStack {
                 Text("Login wird niemals automatisch oder headless ausgeführt.").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
@@ -133,12 +134,21 @@ private struct AccessSettingsSection: View {
     private func optionalCLIReference(_ keyPath: WritableKeyPath<CLIProxyConfiguration, String?>) -> Binding<String> { Binding(get: { model.cliProxyConfiguration[keyPath: keyPath] ?? "" }, set: { value in var copy = model.cliProxyConfiguration; copy[keyPath: keyPath] = value.isEmpty ? nil : value; model.cliProxyConfiguration = copy }) }
     private func saveSecret(_ secret: String, reference: String?, clear: @escaping () -> Void) -> some View { Button("Sichern") { if let reference, !reference.isEmpty { model.storeCredential(secret, reference: reference); clear() } }.buttonStyle(.bordered).controlSize(.mini).disabled(secret.isEmpty || reference?.isEmpty != false) }
     private func field(_ placeholder: String, text: Binding<String>) -> some View { TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 11)).fieldSurface() }
-    private var cliColor: Color { switch model.cliProxyStatus.state { case .reachable: WJTheme.quotaOK; case .usageDisabled, .managementUnavailable, .authRequired: WJTheme.quotaWarning; case .unsafeEndpoint, .offline: WJTheme.quotaCritical } }
+    private var cliColor: Color { switch model.cliProxyStatus.state { case .unverified: WJTheme.secondaryText; case .reachable: WJTheme.quotaOK; case .usageDisabled, .managementUnavailable, .authRequired: WJTheme.quotaWarning; case .unsafeEndpoint, .offline: WJTheme.quotaCritical } }
 }
 
 private struct StatusDot: View {
-    let status: ProviderStatus
-    var body: some View { Circle().fill(status == .connected ? WJTheme.quotaOK : status == .degraded ? WJTheme.quotaWarning : WJTheme.quotaCritical).frame(width: 7, height: 7) }
+    let tone: ProviderPresentationTone
+    var body: some View {
+        let color: Color
+        switch tone {
+        case .neutral: color = WJTheme.secondaryText
+        case .connected: color = WJTheme.quotaOK
+        case .warning: color = WJTheme.quotaWarning
+        case .critical: color = WJTheme.quotaCritical
+        }
+        return Circle().fill(color).frame(width: 7, height: 7)
+    }
 }
 
 private func capacityDetail(_ capacity: CapacityStatus) -> String {
@@ -166,9 +176,14 @@ private struct TelemetrySettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WJSectionHeader(title: "Telemetrie")
-            Toggle("Claude-Code-Stream-Artefakte (live, wenn vorhanden)", isOn: $model.telemetryClaudeCodeEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
-            Toggle("Pi-Antwort-Events (derzeit post-hoc)", isOn: $model.telemetrySidecarEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
-            Stepper(value: $model.telemetryRetentionDays, in: 1...90) { Text("Verlauf: \(model.telemetryRetentionDays) Tage").font(.system(size: 12)) }
+            Toggle("Claude-Code-Aktivitätsdetails anzeigen", isOn: $model.telemetryClaudeCodeEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Text("Aus: laufende Claude-Code-Worker bleiben automatisch sichtbar; Aktivität wird als „läuft“ angezeigt und Event-Zustellung als nicht verfügbar markiert.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            Toggle("Pi-Aktivitätsdetails anzeigen", isOn: $model.telemetrySidecarEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Text("Aus: laufende Pi-Worker bleiben automatisch sichtbar; Aktivität wird als „läuft“ angezeigt und post-hoc Event-Zustellung als nicht verfügbar markiert. Für Remote-Pi muss zusätzlich die Telemetrie am Computer aktiviert sein.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            Text("Diese Schalter ändern nur Aktivitätsdetails und Zustellungsanzeige. Dispatcher-Journale werden weder gelöscht noch gekürzt.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.tertiaryText)
         }
     }
 }

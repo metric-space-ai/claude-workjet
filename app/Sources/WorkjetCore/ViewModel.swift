@@ -13,8 +13,8 @@ public final class WorkjetViewModel: ObservableObject {
     @Published public var skillRules: String { didSet { persistIfReady(handwrittenRulesChanged: true) } }
     @Published public var skillActivation: SkillActivation { didSet { persistIfReady() } }
     @Published public var injectWorkerDeclarations: Bool { didSet { persistIfReady() } }
-    @Published public var telemetryClaudeCodeEvents: Bool { didSet { persistIfReady() } }
-    @Published public var telemetrySidecarEvents: Bool { didSet { persistIfReady() } }
+    @Published public var telemetryClaudeCodeEvents: Bool { didSet { persistIfReady(); if ready { refreshRuns() } } }
+    @Published public var telemetrySidecarEvents: Bool { didSet { persistIfReady(); if ready { refreshRuns() } } }
     @Published public var telemetryRetentionDays: Int { didSet { persistIfReady() } }
     @Published public var providerSlots: Int { didSet { persistIfReady() } }
     @Published public var probeTimeoutSeconds: Int { didSet { persistIfReady() } }
@@ -53,7 +53,7 @@ public final class WorkjetViewModel: ObservableObject {
         turnTimeoutSeconds = value.turnTimeoutSeconds
         degradationAllowed = value.degradationAllowed
         cliProxyConfiguration = value.cliProxy
-        cliProxyStatus = CLIProxyStatus(endpoint: value.cliProxy.endpoint, state: .offline, detail: "Status wird geprüft …", capacity: .unavailable(reason: "Status wird geprüft."))
+        cliProxyStatus = CLIProxyStatus(endpoint: value.cliProxy.endpoint, state: .unverified, detail: "Status wurde noch nicht geprüft.", capacity: .unavailable(reason: "CLIProxy wurde noch nicht geprüft."))
         statusMessages = messages
         ready = true
     }
@@ -74,6 +74,44 @@ public final class WorkjetViewModel: ObservableObject {
     public func computer(for id: UUID) -> Computer? { computers.first { $0.id == id } }
     public func toggleComputerSelection(_ id: UUID) { if computers.contains(where: { $0.id == id }) { selectedComputerID = id } }
 
+    public func providerPresentation(for provider: Provider) -> ProviderPresentation {
+        guard provider.kind == .cliProxy else {
+            let tone: ProviderPresentationTone
+            switch provider.status {
+            case .unverified: tone = .neutral
+            case .connected: tone = .connected
+            case .degraded: tone = .warning
+            case .offline: tone = .critical
+            }
+            return ProviderPresentation(state: provider.status.rawValue, detail: provider.status == .unverified ? "Für diesen Anbieter liegt keine App-Probe vor." : "Gespeicherter Anbieterstatus.", tone: tone, capacity: provider.capacity)
+        }
+
+        guard Self.sameEndpoint(provider.endpoint, cliProxyConfiguration.endpoint) else {
+            let reason = "Anbieter-Endpunkt stimmt nicht mit dem konfigurierten CLIProxy-Loopback-Endpunkt überein."
+            return ProviderPresentation(state: "Nicht verfügbar", detail: reason, tone: .neutral, capacity: .unavailable(reason: reason))
+        }
+        guard Self.sameEndpoint(cliProxyStatus.endpoint, cliProxyConfiguration.endpoint) else {
+            let reason = "CLIProxy-Status gehört zu einem anderen Endpunkt; erneut prüfen."
+            return ProviderPresentation(state: CLIProxyConnectionState.unverified.rawValue, detail: reason, tone: .neutral, capacity: .unavailable(reason: reason))
+        }
+        let tone: ProviderPresentationTone
+        switch cliProxyStatus.state {
+        case .unverified: tone = .neutral
+        case .reachable: tone = .connected
+        case .authRequired, .managementUnavailable, .usageDisabled: tone = .warning
+        case .unsafeEndpoint, .offline: tone = .critical
+        }
+        return ProviderPresentation(state: cliProxyStatus.state.rawValue, detail: cliProxyStatus.detail, tone: tone, capacity: cliProxyStatus.capacity)
+    }
+
+    public func effectiveCapacity(for worker: Worker) -> CapacityStatus {
+        guard let providerID = worker.providerID else { return worker.capacity }
+        guard let provider = providers.first(where: { $0.id == providerID }) else {
+            return .unavailable(reason: "Die gespeicherte Anbieterroute wurde gelöscht oder ist nicht verfügbar.")
+        }
+        return providerPresentation(for: provider).capacity
+    }
+
     public func upsertWorker(_ worker: Worker) {
         if let index = workers.firstIndex(where: { $0.id == worker.id }) { workers[index] = worker }
         else { workers.append(worker) }
@@ -82,6 +120,7 @@ public final class WorkjetViewModel: ObservableObject {
     public func upsertComputer(_ computer: Computer) {
         if let index = computers.firstIndex(where: { $0.id == computer.id }) { computers[index] = computer }
         else { computers.append(computer) }
+        if ready { refreshRuns() }
     }
 
     public func addProvider(_ provider: Provider) { providers.append(provider) }
@@ -115,10 +154,19 @@ public final class WorkjetViewModel: ObservableObject {
         runRefreshTask?.cancel()
         let service = self.service
         let workers = self.workers
+        let computers = self.computers
+        let claudeEventsEnabled = telemetryClaudeCodeEvents
+        let sidecarEventsEnabled = telemetrySidecarEvents
         runRefreshTask = Task { [weak self] in
             let records = await Task.detached(priority: .utility) { service.runs(workers: workers) }.value
             guard !Task.isCancelled, let self else { return }
-            self.activeRuns = records.compactMap { $0.state == .running ? $0.activeRun : nil }
+            self.activeRuns = Self.applyingTelemetryPolicy(
+                to: records.compactMap { $0.state == .running ? $0.activeRun : nil },
+                workers: workers,
+                computers: computers,
+                claudeEventsEnabled: claudeEventsEnabled,
+                sidecarEventsEnabled: sidecarEventsEnabled
+            )
         }
     }
     public func refreshCLIProxy() {
@@ -169,6 +217,48 @@ public final class WorkjetViewModel: ObservableObject {
     public func flushPersistence() async {
         guard ready else { return }
         await persistence.flush()
+    }
+
+    static func applyingTelemetryPolicy(
+        to runs: [ActiveRun],
+        workers: [Worker],
+        computers: [Computer],
+        claudeEventsEnabled: Bool,
+        sidecarEventsEnabled: Bool
+    ) -> [ActiveRun] {
+        let workersByID = Dictionary(uniqueKeysWithValues: workers.map { ($0.id, $0) })
+        let computersByID = Dictionary(uniqueKeysWithValues: computers.map { ($0.id, $0) })
+        return runs.map { run in
+            guard let workerID = run.workerID, let worker = workersByID[workerID] else { return run }
+            let detailsEnabled: Bool
+            switch worker.harness {
+            case .claudeCode:
+                detailsEnabled = claudeEventsEnabled
+            case .piSidecar:
+                let computer = computersByID[worker.computerID]
+                let computerAllowsRemoteDetails = computer?.isLocal == true || computer?.telemetryEnabled == true
+                detailsEnabled = sidecarEventsEnabled && computerAllowsRemoteDetails
+            }
+            guard !detailsEnabled else { return run }
+            var masked = run
+            masked.activity = "läuft"
+            masked.delivery = .unavailable
+            return masked
+        }
+    }
+
+    private static func sameEndpoint(_ lhs: String, _ rhs: String) -> Bool {
+        func normalized(_ value: String) -> String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard var components = URLComponents(string: trimmed), let scheme = components.scheme, let host = components.host else {
+                return trimmed
+            }
+            components.scheme = scheme.lowercased()
+            components.host = host.lowercased()
+            if components.path == "/" { components.path = "" }
+            return components.string ?? trimmed
+        }
+        return normalized(lhs) == normalized(rhs)
     }
 
     private func persistIfReady(handwrittenRulesChanged: Bool = false) {
