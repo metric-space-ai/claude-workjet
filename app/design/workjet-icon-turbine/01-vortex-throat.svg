@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet Vortex Throat mark</title>
+  <desc id="desc">Two broad intake curls compress around a dense core and release a narrow blunt jet.</desc>
+  <defs>
+    <linearGradient id="cool" x1="28" y1="48" x2="161" y2="176" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#20C7F4"/>
+      <stop offset="1" stop-color="#3154E8"/>
+    </linearGradient>
+    <linearGradient id="heat" x1="154" y1="128" x2="228" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7B5CFF"/>
+      <stop offset="1" stop-color="#FF5B4D"/>
+    </linearGradient>
+  </defs>
+  <g id="mark">
+    <path fill="url(#cool)" d="M28 51c42 0 78 13 103 39l-24 24C88 97 63 89 28 89V51Z"/>
+    <path fill="url(#cool)" d="M28 205c42 0 78-13 103-39l-24-24c-19 17-44 25-79 25v38Z"/>
+    <path fill="#3154E8" fill-rule="evenodd" d="M112 88h34l25 40-25 40h-34l-25-40 25-40Zm4 28-8 12 8 12h25l8-12-8-12h-25Z"/>
+    <path fill="url(#heat)" d="M156 105h33c10 0 18 7 19 16h20v14h-20c-1 9-9 16-19 16h-33l15-23-15-23Z"/>
+    <path id="core-detail" fill="#FFFFFF" d="M116 116h25l8 12-8 12h-25l-8-12 8-12Z" opacity=".88"/>
+  </g>
+</svg>
