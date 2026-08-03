@@ -9,6 +9,7 @@ public protocol WorkjetService: AnyObject, Sendable {
     func discoverTailscaleDevices() async throws -> [TailscaleDevice]
     func bootstrapRemotePi(_ computer: Computer) async -> Computer
     func storeCredential(_ secret: Data, reference: String) throws
+    func deleteCredential(reference: String) throws
     func hasCredential(reference: String) -> Bool
 }
 
@@ -17,6 +18,7 @@ public extension WorkjetService {
         ProviderProbeResult(status: .unverified, detail: "Dieser Dienst prüft keine Anbieter.")
     }
     func discoverTailscaleDevices() async throws -> [TailscaleDevice] { throw TailscaleDeviceError.unavailable }
+    func deleteCredential(reference: String) throws {}
     func hasCredential(reference: String) -> Bool { false }
     func bootstrapRemotePi(_ computer: Computer) async -> Computer {
         var value = computer
@@ -79,6 +81,7 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     public func discoverTailscaleDevices() async throws -> [TailscaleDevice] { try await tailscaleDiscovery.discover() }
     public func bootstrapRemotePi(_ computer: Computer) async -> Computer { await remoteBootstrap.deploy(computer) }
     public func storeCredential(_ secret: Data, reference: String) throws { try credentialStore.write(secret, reference: reference) }
+    public func deleteCredential(reference: String) throws { try credentialStore.delete(reference: reference) }
     public func hasCredential(reference: String) -> Bool { (try? credentialStore.read(reference: reference)) != nil }
 }
 

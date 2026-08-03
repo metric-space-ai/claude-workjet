@@ -186,7 +186,7 @@ public enum ManagedPrompt {
         if computer.deploymentStatus == .installed,
            computer.installedSidecarVersion == PiSidecarRuntime.version,
            let hash = computer.installedContentHash {
-            deployment = "Sidecar \(PiSidecarRuntime.version) ist als Inhalt `\(safeInline(hash))` bereitgestellt."
+            deployment = "Pi Code \(PiSidecarRuntime.version) ist als Inhalt `\(safeInline(hash))` bereitgestellt."
         } else {
             deployment = "Remote-Runner ist nicht bestätigt installiert (\(computer.deploymentStatus.rawValue)). Zuerst in Workjet „Prüfen & einrichten“ ausführen."
         }
@@ -245,6 +245,7 @@ public enum ManagedPrompt {
         value
             .replacingOccurrences(of: beginStem, with: "WORKJET-MANAGED-WORKERS-BEGIN")
             .replacingOccurrences(of: endMarker, with: "WORKJET-MANAGED-WORKERS-END")
+            .replacingOccurrences(of: "<!-- WORKJET WORKER INSTRUCTIONS", with: "WORKJET-WORKER-INSTRUCTIONS")
     }
 
     private static func safeInline(_ value: String) -> String {

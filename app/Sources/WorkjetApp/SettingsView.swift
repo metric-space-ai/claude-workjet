@@ -104,22 +104,41 @@ private struct AccessSettingsSection: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
                     ForEach(ProviderKind.allCases, id: \.self) { kind in
-                        WJChoiceButton(title: kind.rawValue, isSelected: provider.kind == kind) { update(provider) { $0.kind = kind; $0.status = .unverified; $0.statusDetail = "Noch nicht geprüft." } }
+                        WJChoiceButton(title: kind.rawValue, isSelected: provider.kind == kind) {
+                            update(provider) {
+                                $0.kind = kind
+                                if kind.isLocalGateway && $0.authentication == .apiKeyHeader { $0.authentication = .bearerToken }
+                                $0.status = .unverified
+                                $0.statusDetail = "Noch nicht geprüft."
+                            }
+                        }
                     }
                 }
             }
             field("Name", text: providerBinding(provider, \.name))
-            field(provider.kind.isLocalGateway ? "Loopback-Endpunkt" : "HTTPS-Endpunkt", text: providerBinding(provider, \.endpoint))
-            HStack {
-                SecureField("Zugang (optional)", text: $providerSecret).textFieldStyle(.plain)
-                Text(model.providerAccessStored.contains(provider.id) ? "Zugang gespeichert" : "Kein Zugang gespeichert")
-                    .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
-            }.fieldSurface()
+            field(provider.kind.isLocalGateway ? "Loopback-Endpunkt" : "HTTPS-Endpunkt", text: providerEndpointBinding(provider))
+            Text("Zugang zur Route").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(authenticationChoices(for: provider), id: \.self) { authentication in
+                        WJChoiceButton(title: authentication.rawValue, isSelected: provider.authentication == authentication) {
+                            update(provider) { $0.authentication = authentication; $0.status = .unverified; $0.statusDetail = "Zugang geändert; Verbindung erneut prüfen." }
+                        }
+                    }
+                }
+            }
+            if provider.authentication != .none {
+                HStack {
+                    SecureField(provider.kind.isLocalGateway ? "Lokaler Gateway-Schlüssel" : "API-Zugang", text: $providerSecret).textFieldStyle(.plain)
+                    Text(model.providerAccessStored.contains(provider.id) ? "Gespeichert" : "Nicht gespeichert")
+                        .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
+                }.fieldSurface()
+            }
             Text("Modelle (eine ID je Zeile)").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
             TextEditor(text: providerModels(provider)).font(.system(size: 11, design: .monospaced)).scrollContentBackground(.hidden)
                 .padding(6).frame(minHeight: 55).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
             HStack {
-                Button("Verbindung prüfen") {
+                Button(providerSecret.isEmpty ? "Verbindung prüfen" : "Speichern & prüfen") {
                     testingProviderID = provider.id
                     let secret = providerSecret
                     Task {
@@ -134,7 +153,7 @@ private struct AccessSettingsSection: View {
                 Text(provider.statusDetail).font(.system(size: 10)).foregroundStyle(provider.status == .offline ? WJTheme.quotaCritical : WJTheme.secondaryText)
             }
             if provider.kind.isLocalGateway {
-                Text("OAuth/Abonnement wird im lokalen Gateway verwaltet; Workjet prüft dessen kompatible /v1/models-Route.")
+                Text("Die Subscription-/OAuth-Anmeldung gehört zum gewählten lokalen Gateway. Workjet speichert hier nur dessen Loopback-Route und optionalen Gateway-Schlüssel und übernimmt die angebotenen Modelle aus /v1/models.")
                     .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
             }
             DisclosureGroup("Technische Details") {
@@ -156,11 +175,26 @@ private struct AccessSettingsSection: View {
     }
 
     private func update(_ provider: Provider, mutation: (inout Provider) -> Void) { var copy = provider; mutation(&copy); model.updateProvider(copy) }
+    private func authenticationChoices(for provider: Provider) -> [ProviderAuthentication] {
+        provider.kind.isLocalGateway ? [.bearerToken, .none] : ProviderAuthentication.allCases
+    }
     private func providerBinding(_ provider: Provider, _ keyPath: WritableKeyPath<Provider, String>) -> Binding<String> {
         Binding(get: { model.providers.first(where: { $0.id == provider.id })?[keyPath: keyPath] ?? provider[keyPath: keyPath] }, set: { value in updateCurrent(provider.id) { $0[keyPath: keyPath] = value } })
     }
     private func optionalProviderString(_ provider: Provider, _ keyPath: WritableKeyPath<Provider, String?>) -> Binding<String> {
         Binding(get: { model.providers.first(where: { $0.id == provider.id })?[keyPath: keyPath] ?? provider[keyPath: keyPath] ?? "" }, set: { value in updateCurrent(provider.id) { $0[keyPath: keyPath] = value.isEmpty ? nil : value } })
+    }
+    private func providerEndpointBinding(_ provider: Provider) -> Binding<String> {
+        Binding(
+            get: { model.providers.first(where: { $0.id == provider.id })?.endpoint ?? provider.endpoint },
+            set: { value in
+                updateCurrent(provider.id) {
+                    $0.endpoint = value
+                    $0.status = .unverified
+                    $0.statusDetail = "Endpunkt geändert; Verbindung erneut prüfen."
+                }
+            }
+        )
     }
     private func providerArguments(_ provider: Provider) -> Binding<String> {
         Binding(get: { (model.providers.first(where: { $0.id == provider.id })?.loginArguments ?? provider.loginArguments).joined(separator: "\n") }, set: { value in updateCurrent(provider.id) { $0.loginArguments = value.split(whereSeparator: \.isNewline).map(String.init) } })

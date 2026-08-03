@@ -121,6 +121,8 @@ final class ManagedPromptTests: XCTestCase {
         XCTAssertTrue(text.contains("Fable muss den konfigurierten Effort `xhigh`"))
         XCTAssertTrue(ManagedPrompt.unresolvedMentions(in: config.workers[0].instructions, workers: config.workers).isEmpty)
         XCTAssertEqual(ManagedPrompt.unresolvedMentions(in: "Frage @Missing und @Missing", workers: config.workers), ["@Missing"])
+        config.workers[0].instructions = "<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->"
+        XCTAssertFalse(String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self).contains("<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->\n<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->"))
     }
 
     func testReasoningCodableDraftAndLegacyDecode() throws {
@@ -262,6 +264,9 @@ final class CLIProxyTests: XCTestCase {
         if case .valid = ProviderEndpointValidator.validate("http://localhost:8317", kind: .cliProxyAPI) {} else { XCTFail("Loopback gateway should be allowed") }
         if case .invalid = ProviderEndpointValidator.validate("https://gateway.example.test", kind: .cliProxyRust) {} else { XCTFail("Remote gateway must be rejected") }
         if case .invalid = ProviderEndpointValidator.validate("https://user:secret@api.example.test", kind: .directAPI) {} else { XCTFail("URL credentials must be rejected") }
+        XCTAssertEqual(ProviderEndpointValidator.modelsURL(baseURL: URL(string: "https://api.example.test/v1")!).path, "/v1/models")
+        let legacyOAuth = Data("{\"id\":\"\(UUID().uuidString)\",\"name\":\"Legacy OAuth\",\"kind\":\"OAuth/Abo\",\"endpoint\":\"http://127.0.0.1:8317\"}".utf8)
+        XCTAssertEqual(try JSONDecoder().decode(Provider.self, from: legacyOAuth).kind, .cliProxyAPI)
     }
 
     func testProviderProbeSendsBearerOnlyWhenExplicitlyCalledAndDiscoversModels() async {
@@ -279,6 +284,21 @@ final class CLIProxyTests: XCTestCase {
         XCTAssertEqual(client.requests[0].value(forHTTPHeaderField: "Authorization"), "Bearer top-secret")
         XCTAssertFalse(result.detail.contains("top-secret"))
         XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: [Provider(id: provider.id, name: provider.name, kind: provider.kind, endpoint: provider.endpoint, modelIDs: result.modelIDs)]).prefix(2), result.modelIDs.prefix(2))
+    }
+
+    func testProviderProbeSupportsAPIKeyHeaderAuthentication() async {
+        let client = Client()
+        client.responses = [HTTPResponse(statusCode: 200, data: Data(#"{"data":[{"id":"claude-sonnet-5"}]}"#.utf8))]
+        let credentials = Credentials()
+        let provider = Provider(name: "Anthropic", kind: .directAPI, endpoint: "https://api.anthropic.com", authentication: .apiKeyHeader)
+        credentials.values[provider.credentialReference!] = Data("api-secret".utf8)
+
+        let result = await ProviderInspector(client: client, credentials: credentials).inspect(provider)
+
+        XCTAssertEqual(result.status, .connected)
+        XCTAssertEqual(client.requests[0].value(forHTTPHeaderField: "x-api-key"), "api-secret")
+        XCTAssertEqual(client.requests[0].value(forHTTPHeaderField: "anthropic-version"), "2023-06-01")
+        XCTAssertNil(client.requests[0].value(forHTTPHeaderField: "Authorization"))
     }
 
     func testGatewayProbeDoesNotSubstituteKindsAndParsesCompatibleModels() async {
@@ -582,6 +602,7 @@ final class ProcessCommandRunnerTests: XCTestCase {
         }
         func inspectProvider(_ provider: Provider) async -> ProviderProbeResult { providerProbe }
         func storeCredential(_ secret: Data, reference: String) throws { credentials[reference] = secret }
+        func deleteCredential(reference: String) throws { credentials[reference] = nil }
         func hasCredential(reference: String) -> Bool { credentials[reference] != nil }
     }
     func testSelectionIsExclusiveAndDebouncedChangesCoalesceOnExplicitFlush() async {
@@ -647,6 +668,9 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertTrue(model.providerAccessStored.contains(provider.id))
         XCTAssertEqual(model.providerPresentation(for: updated).tone, .connected)
         XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: model.providers).first, "gateway-model")
+        model.removeProvider(id: provider.id)
+        XCTAssertTrue(model.providers.isEmpty)
+        XCTAssertNil(service.credentials[Provider.credentialReference(for: provider.id)])
     }
 
     func testUnprobedProviderDefaultsToNeutralInsteadOfOffline() {

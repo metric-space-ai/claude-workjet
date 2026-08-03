@@ -1012,7 +1012,7 @@ invoke_worker() {
   local w="$1" timeout="$2" of="$3" ef="$4"
   shift 4
   ensure_proxy "$w"
-  run_timed "$timeout" "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"
+  run_timed "$timeout" "$of" "$ef" /usr/bin/env WORKJET_OBSERVER_BYPASS=1 "$AGENT_BIN_DIR/$w" "$@"
 }
 
 probe_cache_file() {

@@ -114,6 +114,10 @@ public final class WorkjetViewModel: ObservableObject {
         providers[index] = provider
     }
     public func removeProvider(id: UUID) {
+        if let reference = providers.first(where: { $0.id == id })?.credentialReference {
+            do { try service.deleteCredential(reference: reference) }
+            catch { expose(error); return }
+        }
         providers.removeAll { $0.id == id }
         providerAccessStored.remove(id)
         // Worker references intentionally remain stable and render as unavailable.

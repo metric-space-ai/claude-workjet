@@ -125,23 +125,14 @@ Check: `claude-sol -p "Reply with the token: OK" < /dev/null` returns `OK`.
 
 ### 5. Orchestrator mode
 
-The default install is **skill-only**. `install.sh` copies the rules to `~/.claude/workjet/AGENTS.md` (not auto-loaded) and installs `/workjet`. It does not modify the global `~/.claude/CLAUDE.md`.
+Workjet is **skill-only**. `install.sh` installs `/workjet` and preserves the app-managed rules at `~/.claude/workjet/AGENTS.md`. It never modifies the global `~/.claude/CLAUDE.md` or `~/.claude/AGENTS.md`.
 
 ```sh
 test -f ~/.claude/workjet/AGENTS.md
 test -f ~/.claude/skills/workjet/SKILL.md
 ```
 
-Check: start Claude Code and invoke `/workjet <task>`; the skill reads the workjet rules for that task only.
-
-To make workjet the global prompt for every Claude Code session, opt in explicitly:
-
-```sh
-cd /tmp/claude-workjet
-./install.sh --global-prompt
-```
-
-Global mode backs up existing `~/.claude/CLAUDE.md` and `~/.claude/AGENTS.md` with timestamped `.bak-workjet-*` names, installs the canonical prompt as `~/.claude/AGENTS.md`, and writes the one-line `@AGENTS.md` redirect. Merge any pre-existing rules from the backups into the new `AGENTS.md`, review the diff, and keep `CLAUDE.md` as the one-line import.
+Check: start Claude Code and invoke `/workjet <task>`; the skill reads the workjet rules for that task only. The Workjet app owns the editable general rules and the generated, read-only worker blocks in that file.
 
 ### 6. Smoke test
 
@@ -163,7 +154,7 @@ In any Claude Code session: `/workjet <task>` (or just say "workjet"). The skill
 claude-sol -p "$(cat brief.md)" --allowedTools "Read,Write,Edit,Grep,Glob,Bash" < /dev/null
 ```
 
-`< /dev/null` prevents a worker that asks a question from blocking forever. Direct calls create a minimal run journal without recording prompt contents or secrets. An outer dispatcher that owns the journal can set `WORKJET_OBSERVER_BYPASS=1`; `claude-agent` is also detected through the parent process chain. For long jobs, run in the background and read the output file.
+`< /dev/null` prevents a worker that asks a question from blocking forever. Direct calls create a minimal run journal without recording prompt contents or secrets. An outer dispatcher that owns the journal sets `WORKJET_OBSERVER_BYPASS=1`. For long jobs, run in the background and read the output file.
 
 Brief format (defined in `AGENTS.md`): hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause (stop and justify instead of widening scope), a structured report tail, no subagents. Workers cannot be steered mid-run; all precision goes into the brief.
 

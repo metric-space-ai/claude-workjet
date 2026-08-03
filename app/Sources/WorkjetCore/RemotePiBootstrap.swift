@@ -223,7 +223,7 @@ public struct RemotePiBootstrap: Sendable {
             let sandboxDetail = computer.sandboxEnabled
                 ? "Der Daemon wird mit \(computer.bubblewrapExecutablePath ?? "bwrap") in einer OS-Sandbox gestartet: Host-Dateisystem read-only, nur das private Turn-Verzeichnis schreibbar; Netzwerk bleibt für den Modell-Gateway-Zugang verfügbar."
                 : "Die OS-Sandbox ist deaktiviert; nur die Agent-Dateiwerkzeuge bleiben auf den projizierten In-Memory-Snapshot begrenzt."
-            computer.deploymentDetail = "Pi-Sidecar \(PiSidecarRuntime.version) wurde inhaltadressiert installiert. \(sandboxDetail) Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar; Faux-/Offline-Turns können geprüft werden."
+            computer.deploymentDetail = "Pi Code \(PiSidecarRuntime.version) wurde inhaltadressiert installiert. \(sandboxDetail) Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar; Faux-/Offline-Turns können geprüft werden."
             computer.installedContentHash = contentHash
             computer.installedSidecarVersion = PiSidecarRuntime.version
             computer.lastSuccessfulDeploymentAt = now()

@@ -23,7 +23,7 @@ inside_dispatcher() {
   return 1
 }
 
-if inside_dispatcher; then
+if [[ "${WORKJET_OBSERVER_BYPASS:-0}" == 1 ]]; then
   exec "$@"
 fi
 

@@ -120,7 +120,8 @@ public enum ProviderEndpointValidator {
     public static func modelsURL(baseURL: URL) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        components.path = "/" + ([basePath, "v1/models"].filter { !$0.isEmpty }.joined(separator: "/"))
+        let modelPath = basePath == "v1" || basePath.hasSuffix("/v1") ? "models" : "v1/models"
+        components.path = "/" + ([basePath, modelPath].filter { !$0.isEmpty }.joined(separator: "/"))
         components.query = nil
         components.fragment = nil
         return components.url!
@@ -152,11 +153,19 @@ public struct ProviderInspector: Sendable {
         var request = URLRequest(url: ProviderEndpointValidator.modelsURL(baseURL: baseURL))
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let reference = provider.credentialReference,
+        if provider.authentication != .none,
+           let reference = provider.credentialReference,
            let secret = try? credentials.read(reference: reference),
            let token = String(data: secret, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
            !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            switch provider.authentication {
+            case .none: break
+            case .bearerToken:
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            case .apiKeyHeader:
+                request.setValue(token, forHTTPHeaderField: "x-api-key")
+                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            }
         }
         let response: HTTPResponse
         do { response = try await client.request(request) }

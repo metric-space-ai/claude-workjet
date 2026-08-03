@@ -312,7 +312,8 @@ public enum ProviderKind: String, CaseIterable, Codable, Equatable, Sendable {
         switch value {
         case "Direkte API", "Direkter API-Key": self = .directAPI
         case "CLIProxyAPI", "CLIProxy OAuth/Abo": self = .cliProxyAPI
-        case "CLIProxy (Rust)", "OAuth/Abo": self = .cliProxyRust
+        case "CLIProxy (Rust)": self = .cliProxyRust
+        case "OAuth/Abo": self = .cliProxyAPI
         default: throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unbekannter Anbietertyp: \(value)")
         }
     }
@@ -323,6 +324,12 @@ public enum ProviderStatus: String, Codable, Equatable, Sendable {
     case connected = "Verbunden"
     case degraded = "Eingeschränkt"
     case offline = "Offline"
+}
+
+public enum ProviderAuthentication: String, CaseIterable, Codable, Equatable, Sendable {
+    case none = "Ohne Zugang"
+    case bearerToken = "Bearer-Token"
+    case apiKeyHeader = "API-Key (x-api-key)"
 }
 
 public enum ProviderPresentationTone: Equatable, Sendable {
@@ -351,6 +358,7 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
     public var name: String
     public var kind: ProviderKind
     public var endpoint: String
+    public var authentication: ProviderAuthentication
     public var modelIDs: [String]
     public var status: ProviderStatus
     public var statusDetail: String
@@ -359,11 +367,12 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
     public var loginExecutable: String?
     public var loginArguments: [String]
 
-    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, modelIDs: [String] = [], status: ProviderStatus = .unverified, statusDetail: String = "Noch nicht geprüft.", capacity: CapacityStatus = .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
+    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, authentication: ProviderAuthentication = .bearerToken, modelIDs: [String] = [], status: ProviderStatus = .unverified, statusDetail: String = "Noch nicht geprüft.", capacity: CapacityStatus = .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
         self.id = id
         self.name = name
         self.kind = kind
         self.endpoint = endpoint
+        self.authentication = authentication
         self.modelIDs = Self.normalizedModels(modelIDs)
         self.status = status
         self.statusDetail = statusDetail
@@ -374,7 +383,7 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, kind, endpoint, modelIDs, status, statusDetail, capacity, credentialReference, loginExecutable, loginArguments
+        case id, name, kind, endpoint, authentication, modelIDs, status, statusDetail, capacity, credentialReference, loginExecutable, loginArguments
     }
 
     public init(from decoder: Decoder) throws {
@@ -383,6 +392,7 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
         name = try values.decode(String.self, forKey: .name)
         kind = try values.decode(ProviderKind.self, forKey: .kind)
         endpoint = try values.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+        authentication = try values.decodeIfPresent(ProviderAuthentication.self, forKey: .authentication) ?? .bearerToken
         modelIDs = Self.normalizedModels(try values.decodeIfPresent([String].self, forKey: .modelIDs) ?? [])
         status = try values.decodeIfPresent(ProviderStatus.self, forKey: .status) ?? .unverified
         statusDetail = try values.decodeIfPresent(String.self, forKey: .statusDetail) ?? "Noch nicht geprüft."

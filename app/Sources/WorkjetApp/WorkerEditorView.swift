@@ -26,12 +26,15 @@ struct WorkerEditorView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     nameSection
                     harnessSection
+                    providerSection
                     modelSection
                     reasoningSection
-                    providerSection
                     instructionsSection
-                    invocationSection
                     computerSection
+                    DisclosureGroup("Technische Details") {
+                        invocationSection.padding(.top, 6)
+                    }
+                    .font(.system(size: 11))
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)
