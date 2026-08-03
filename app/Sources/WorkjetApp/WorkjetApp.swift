@@ -13,7 +13,11 @@ struct WorkjetMenuBarApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra("Workjet") { RootView().environmentObject(model) }
+        MenuBarExtra {
+            RootView().environmentObject(model)
+        } label: {
+            Label("Workjet", systemImage: "paperplane.fill")
+        }
             .menuBarExtraStyle(.window)
     }
 }
