@@ -305,5 +305,45 @@ else
   fail 'accept merges the protected ref, runs checks, and rejects whitelist violations'
 fi
 
+DIRECT_HOME="$TMP_ROOT/direct-home"
+DIRECT_STATE="$TMP_ROOT/direct-state"
+DIRECT_BIN="$TMP_ROOT/direct-bin"
+mkdir -p "$DIRECT_HOME/.config/secrets" "$DIRECT_BIN" "$DIRECT_STATE"
+print direct-key > "$DIRECT_HOME/.config/secrets/minimax-key"
+chmod 600 "$DIRECT_HOME/.config/secrets/minimax-key"
+cat > "$DIRECT_BIN/claude" <<'DIRECT_STUB'
+#!/bin/zsh
+print -r -- $$ > "$DIRECT_CHILD_PID"
+print -r -- 'direct stdout'
+print -u2 -r -- 'direct stderr'
+exit "${DIRECT_RC:-0}"
+DIRECT_STUB
+chmod +x "$DIRECT_BIN/claude"
+HOME="$DIRECT_HOME" PATH="$DIRECT_BIN:$PATH" WORKJET_STATE_DIR="$DIRECT_STATE" \
+  DIRECT_CHILD_PID="$TMP_ROOT/direct-child-pid" DIRECT_RC=7 \
+  "$ROOT/bin/claude-minimax" -p 'secret prompt must not be journaled' > "$TMP_ROOT/direct.out" 2> "$TMP_ROOT/direct.err"
+direct_rc=$?
+direct_run="$(find "$DIRECT_STATE/runs" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+if [[ $direct_rc -eq 7 && "$(<"$TMP_ROOT/direct.out")" == 'direct stdout' ]] && \
+   grep -Fq 'direct stderr' "$TMP_ROOT/direct.err" && [[ "$(<"$direct_run/pid")" == "$(<"$TMP_ROOT/direct-child-pid")" ]] && \
+   [[ "$(<"$direct_run/worker")" == claude-minimax && "$(<"$direct_run/exit-code")" == 7 && -f "$direct_run/heartbeat" && -s "$direct_run/exit" ]] && \
+   ! grep -R -Fq 'secret prompt must not be journaled' "$DIRECT_STATE"; then
+  pass 'direct wrappers preserve stdio and exit while recording the exact child PID'
+else
+  fail 'direct wrappers preserve stdio and exit while recording the exact child PID'
+fi
+
+before_bypass="$(find "$DIRECT_STATE/runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+HOME="$DIRECT_HOME" PATH="$DIRECT_BIN:$PATH" WORKJET_STATE_DIR="$DIRECT_STATE" WORKJET_OBSERVER_BYPASS=1 \
+  DIRECT_CHILD_PID="$TMP_ROOT/bypass-child-pid" DIRECT_RC=0 \
+  "$ROOT/bin/claude-minimax" -p bypass >/dev/null 2>/dev/null
+bypass_rc=$?
+after_bypass="$(find "$DIRECT_STATE/runs" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+if [[ $bypass_rc -eq 0 && "$before_bypass" == "$after_bypass" ]]; then
+  pass 'dispatcher-owned invocations can bypass direct observation without double-counting'
+else
+  fail 'dispatcher-owned invocations can bypass direct observation without double-counting'
+fi
+
 (( failures == 0 )) || exit 1
 print 'wrapper rework tests: PASS'

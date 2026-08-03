@@ -44,8 +44,10 @@ final class DefaultsAndLogicTests: XCTestCase {
         config.providerSlots = 9
         config.probeTimeoutSeconds = 1
         config.turnTimeoutSeconds = 99_999
+        config.injectWorkerDeclarations = false
         let normalized = WorkjetBootstrap.normalized(config)
         XCTAssertEqual(normalized.skillActivation, .skillOnly)
+        XCTAssertTrue(normalized.injectWorkerDeclarations)
         XCTAssertEqual(normalized.providerSlots, 3)
         XCTAssertEqual(normalized.probeTimeoutSeconds, 5)
         XCTAssertEqual(normalized.turnTimeoutSeconds, 10_800)
@@ -95,13 +97,45 @@ final class ManagedPromptTests: XCTestCase {
         let provider = Provider(name: "CLI Route", kind: .cliProxy, endpoint: "http://127.0.0.1:8317", credentialReference: "must-not-render")
         var routed = config; routed.providers = [provider]; routed.workers[0].providerID = provider.id
         let routedText = String(decoding: ManagedPrompt.workerBody(configuration: routed), as: UTF8.self)
-        XCTAssertTrue(routedText.contains(provider.id.uuidString.lowercased()))
-        XCTAssertTrue(routedText.contains("CLIProxy OAuth/Abo"))
+        XCTAssertTrue(routedText.contains("CLI Route"))
+        XCTAssertTrue(routedText.contains("CLIProxyAPI"))
         XCTAssertFalse(routedText.contains("must-not-render"))
         routed.providers = []
         let unavailable = String(decoding: ManagedPrompt.workerBody(configuration: routed), as: UTF8.self)
         XCTAssertTrue(unavailable.contains("gelöscht oder nicht verfügbar"))
         XCTAssertTrue(unavailable.contains(provider.id.uuidString.lowercased()))
+    }
+
+    func testMultilineInstructionsMentionsAndReasoningRenderExactlyOnce() throws {
+        var config = WorkjetDefaults.configuration()
+        config.workers[0].name = "Kimi-K3"
+        config.workers[0].instructions = "Erste Zeile\n\n- Markdown bleibt\nArbeite mit @UI-UX-Experte."
+        config.workers[0].reasoningEffort = .xhigh
+        XCTAssertEqual(config.workers[0].mentionTag, "@Kimi-K3")
+        XCTAssertEqual(config.workers[2].mentionTag, "@UI-UX-Experte")
+        let text = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        XCTAssertTrue(text.contains("### @Kimi-K3 — Kimi-K3"))
+        XCTAssertTrue(text.contains("Erste Zeile\n\n- Markdown bleibt\nArbeite mit @UI-UX-Experte."))
+        XCTAssertEqual(text.components(separatedBy: "Erste Zeile").count - 1, 1)
+        XCTAssertTrue(text.contains("Reasoning: `xhigh`"))
+        XCTAssertTrue(text.contains("Fable muss den konfigurierten Effort `xhigh`"))
+        XCTAssertTrue(ManagedPrompt.unresolvedMentions(in: config.workers[0].instructions, workers: config.workers).isEmpty)
+        XCTAssertEqual(ManagedPrompt.unresolvedMentions(in: "Frage @Missing und @Missing", workers: config.workers), ["@Missing"])
+    }
+
+    func testReasoningCodableDraftAndLegacyDecode() throws {
+        var worker = WorkjetDefaults.configuration().workers[0]
+        worker.reasoningEffort = .ultra
+        let encoded = try JSONEncoder().encode(worker)
+        XCTAssertEqual(try JSONDecoder().decode(Worker.self, from: encoded).reasoningEffort, .ultra)
+        var draft = WorkerDraft(worker: worker)
+        draft.reasoningEffort = .max
+        XCTAssertEqual(draft.applied(to: worker)?.reasoningEffort, .max)
+        let legacyObject = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        var legacy = legacyObject
+        legacy.removeValue(forKey: "reasoningEffort")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        XCTAssertNil(try JSONDecoder().decode(Worker.self, from: legacyData).reasoningEffort)
     }
 
     func testAppendReplaceAndHandwrittenEdit() throws {
@@ -171,7 +205,7 @@ final class RunTelemetryTests: XCTestCase {
             let run = runs.appendingPathComponent(id); try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true); try Data(run.path.utf8).write(to: index.appendingPathComponent(id)); try Data("\(pid)\n".utf8).write(to: run.appendingPathComponent("pid")); try Data(worker.utf8).write(to: run.appendingPathComponent("worker")); try Data("2026-08-03T09:00:00Z\n".utf8).write(to: run.appendingPathComponent("started-at")); FileManager.default.createFile(atPath: run.appendingPathComponent("heartbeat").path, contents: Data()); if let terminal { FileManager.default.createFile(atPath: run.appendingPathComponent(terminal).path, contents: Data()) }; return run
         }
     }
-    private func identity(_ pid: Int32) -> ProcessIdentity { ProcessIdentity(pid: pid, executablePath: "/usr/bin/worker", startToken: "start-\(pid)") }
+    private func identity(_ pid: Int32, start: String = "1785747600.000000") -> ProcessIdentity { ProcessIdentity(pid: pid, executablePath: "/usr/bin/worker", startToken: start) }
 
     func testRunningCompletedDeadUnknownMalformedAndDeliveryFixtures() throws {
         let f = try Fixture(); let run = try f.make("running", 100, "claude-sol"); try Data("safe title".utf8).write(to: run.appendingPathComponent("title")); FileManager.default.createFile(atPath: run.appendingPathComponent("stream-json").path, contents: Data()); f.probe.identities[100] = identity(100)
@@ -191,6 +225,16 @@ final class RunTelemetryTests: XCTestCase {
         f.probe.identities[105] = ProcessIdentity(pid: 105, executablePath: "/other", startToken: "reused"); XCTAssertThrowsError(try f.store.stop(active)) { XCTAssertEqual($0 as? StopError, .pidMismatch) }; XCTAssertTrue(f.probe.terminated.isEmpty)
         f.probe.identities[105] = identity(105); try f.store.stop(active); XCTAssertEqual(f.probe.terminated, [105])
     }
+
+    func testReusedPIDWithLaterProcessStartIsInterrupted() throws {
+        let f = try Fixture()
+        _ = try f.make("old-run", 691, "claude-sol")
+        f.probe.identities[691] = identity(691, start: "1785920400.000000")
+        let record = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first { $0.sourceRunID == "old-run" })
+        XCTAssertEqual(record.state, .interrupted)
+        XCTAssertNil(record.activeRun)
+        XCTAssertTrue(record.diagnostic?.contains("später gestarteten Prozess") == true)
+    }
 }
 
 final class CLIProxyTests: XCTestCase {
@@ -205,6 +249,49 @@ final class CLIProxyTests: XCTestCase {
         let managementClient = Client(); managementClient.responses = [HTTPResponse(statusCode: 200, data: Data())]; var config = CLIProxyConfiguration(); config.usageStatisticsEnabled = true; let management = await CLIProxyInspector(client: managementClient, credentials: Credentials()).inspect(config); XCTAssertEqual(management.state, .managementUnavailable)
     }
 
+    func testProviderBackwardsCodableAndEndpointPolicies() throws {
+        let id = UUID()
+        let legacy = Data("{\"id\":\"\(id.uuidString)\",\"name\":\"Legacy\",\"kind\":\"Direkter API-Key\",\"endpoint\":\"https://api.example.test\",\"status\":\"Nicht geprüft\",\"capacity\":{\"unavailable\":{\"reason\":\"n/a\"}},\"loginArguments\":[]}".utf8)
+        let provider = try JSONDecoder().decode(Provider.self, from: legacy)
+        XCTAssertEqual(provider.kind, .directAPI)
+        XCTAssertEqual(provider.modelIDs, [])
+        XCTAssertEqual(provider.credentialReference, Provider.credentialReference(for: id))
+        XCTAssertEqual(ProviderEndpointValidator.validate("https://api.example.test", kind: .directAPI), .valid(URL(string: "https://api.example.test")!))
+        if case .valid = ProviderEndpointValidator.validate("http://127.0.0.1:9000", kind: .directAPI) {} else { XCTFail("Loopback development endpoint should be allowed") }
+        if case .invalid = ProviderEndpointValidator.validate("http://api.example.test", kind: .directAPI) {} else { XCTFail("Remote direct HTTP must be rejected") }
+        if case .valid = ProviderEndpointValidator.validate("http://localhost:8317", kind: .cliProxyAPI) {} else { XCTFail("Loopback gateway should be allowed") }
+        if case .invalid = ProviderEndpointValidator.validate("https://gateway.example.test", kind: .cliProxyRust) {} else { XCTFail("Remote gateway must be rejected") }
+        if case .invalid = ProviderEndpointValidator.validate("https://user:secret@api.example.test", kind: .directAPI) {} else { XCTFail("URL credentials must be rejected") }
+    }
+
+    func testProviderProbeSendsBearerOnlyWhenExplicitlyCalledAndDiscoversModels() async {
+        let client = Client()
+        client.responses = [HTTPResponse(statusCode: 200, data: Data(#"{"data":[{"id":"gpt-5.6-sol"},{"id":"claude-sonnet-5"},{"id":"gpt-5.6-sol"}]}"#.utf8))]
+        let credentials = Credentials()
+        let provider = Provider(name: "Direct", kind: .directAPI, endpoint: "https://api.example.test")
+        credentials.values[provider.credentialReference!] = Data("top-secret".utf8)
+        XCTAssertTrue(client.requests.isEmpty)
+        let result = await ProviderInspector(client: client, credentials: credentials).inspect(provider)
+        XCTAssertEqual(result.status, .connected)
+        XCTAssertEqual(result.modelIDs, ["gpt-5.6-sol", "claude-sonnet-5"])
+        XCTAssertEqual(client.requests.count, 1)
+        XCTAssertEqual(client.requests[0].url?.path, "/v1/models")
+        XCTAssertEqual(client.requests[0].value(forHTTPHeaderField: "Authorization"), "Bearer top-secret")
+        XCTAssertFalse(result.detail.contains("top-secret"))
+        XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: [Provider(id: provider.id, name: provider.name, kind: provider.kind, endpoint: provider.endpoint, modelIDs: result.modelIDs)]).prefix(2), result.modelIDs.prefix(2))
+    }
+
+    func testGatewayProbeDoesNotSubstituteKindsAndParsesCompatibleModels() async {
+        for kind in [ProviderKind.cliProxyAPI, .cliProxyRust] {
+            let client = Client()
+            client.responses = [HTTPResponse(statusCode: 200, data: Data(#"{"data":[{"id":"gateway-model"}]}"#.utf8))]
+            let result = await ProviderInspector(client: client, credentials: Credentials()).inspect(Provider(name: kind.rawValue, kind: kind, endpoint: "http://127.0.0.1:8317"))
+            XCTAssertEqual(result.status, .connected)
+            XCTAssertEqual(result.modelIDs, ["gateway-model"])
+            XCTAssertTrue(result.detail.contains("lokalen Gateway"))
+        }
+    }
+
     func testManagementUsesDistinctCredentialAndParsesCapacity() async {
         let client = Client(); client.responses = [HTTPResponse(statusCode: 200, data: Data()), HTTPResponse(statusCode: 200, data: Data("{\"usage\":{\"used\":25,\"limit\":100,\"window\":\"monthly\",\"identity\":\"account-a\"}}".utf8))]
         let credentials = Credentials(); credentials.values["management"] = Data("mgmt-secret".utf8); credentials.values["inference"] = Data("inference-secret".utf8)
@@ -215,6 +302,48 @@ final class CLIProxyTests: XCTestCase {
         let aggregate = await CLIProxyInspector(client: aggregateClient, credentials: credentials).inspect(CLIProxyConfiguration(inferenceCredentialReference: "inference", managementCredentialReference: "management", usageStatisticsEnabled: true))
         XCTAssertNil(aggregate.capacity.fraction)
         XCTAssertTrue(aggregate.capacity.reason?.contains("identitäts") == true)
+    }
+}
+
+final class TailscaleDeviceTests: XCTestCase {
+    private actor Runner: CommandRunning {
+        var result: CommandResult
+        var commands: [CommandSpec] = []
+        init(_ result: CommandResult) { self.result = result }
+        func run(_ command: CommandSpec) async throws -> CommandResult { commands.append(command); return result }
+        func recorded() -> [CommandSpec] { commands }
+    }
+    private struct Locator: TailscaleLocating { var path: String?; func executablePath() -> String? { path } }
+
+    private var statusJSON: Data {
+        Data(#"{"BackendState":"Running","Self":{"ID":"self-id","HostName":"mac"},"Peer":{"node-off":{"ID":"off-id","HostName":"zeta","DNSName":"zeta.tailnet.ts.net.","TailscaleIPs":["fd7a::2","100.64.0.2"],"Online":false,"OS":"linux"},"node-on":{"ID":"on-id","HostName":"alpha","DNSName":"alpha.tailnet.ts.net.","TailscaleIPs":["100.64.0.1"],"Online":true,"OS":"linux"},"duplicate-self":{"ID":"self-id","HostName":"mac"}}}"#.utf8)
+    }
+
+    func testParserExcludesSelfTrimsDNSSelectsIPv4AndOrdersOnlineFirst() throws {
+        let devices = try TailscaleDeviceParser.parse(statusJSON)
+        XCTAssertEqual(devices.map(\.id), ["on-id", "off-id"])
+        XCTAssertEqual(devices[0].dnsName, "alpha.tailnet.ts.net")
+        XCTAssertEqual(devices[1].ipv4, "100.64.0.2")
+        XCTAssertTrue(devices[0].online)
+        XCTAssertFalse(devices[1].online)
+    }
+
+    func testDiscoveryUsesAllowlistedExecutableAndReportsErrors() async throws {
+        let runner = Runner(CommandResult(exitCode: 0, standardOutput: statusJSON))
+        let devices = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/usr/bin/tailscale")).discover()
+        XCTAssertEqual(devices.count, 2)
+        let commands = await runner.recorded()
+        XCTAssertEqual(commands.first?.executable, "/usr/bin/tailscale")
+        XCTAssertEqual(commands.first?.arguments, ["status", "--json"])
+        XCTAssertEqual(commands.first?.stdoutLimit, 1_048_576)
+
+        do {
+            _ = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/tmp/tailscale")).discover()
+            XCTFail("Expected unavailable executable")
+        } catch { XCTAssertEqual(error as? TailscaleDeviceError, .unavailable) }
+        XCTAssertThrowsError(try TailscaleDeviceParser.parse(Data(#"{"BackendState":"Stopped","Peer":{}}"#.utf8))) {
+            XCTAssertEqual($0 as? TailscaleDeviceError, .notConnected("Stopped"))
+        }
     }
 }
 
@@ -412,7 +541,7 @@ final class RemotePiBootstrapTests: XCTestCase {
         var config = WorkjetDefaults.configuration(); config.providers = [provider]; config.workers[0].providerID = provider.id; config.workers[0].harness = .piSidecar; config.workers[0].computerID = installed.id; config.computers.append(installed)
         let prompt = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
         XCTAssertFalse(prompt.contains(secret))
-        XCTAssertTrue(prompt.contains("Geheimnisse bleiben ausschließlich in der lokalen Keychain"))
+        XCTAssertTrue(prompt.contains("lokalen Keychain"))
         XCTAssertTrue(prompt.contains("CtoxTurnRequest"))
         XCTAssertTrue(prompt.contains("post-hoc"))
         XCTAssertTrue(prompt.contains("Loopback-Relay nicht verfügbar"))
@@ -443,13 +572,17 @@ final class ProcessCommandRunnerTests: XCTestCase {
     private final class Service: WorkjetService, @unchecked Sendable {
         var saves: [(WorkjetConfiguration, Bool)] = []
         var proxyStatus: CLIProxyStatus?
+        var providerProbe = ProviderProbeResult(status: .unverified, detail: "test")
+        var credentials: [String: Data] = [:]
         func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws { saves.append((configuration, handwrittenRulesChanged)) }
         func runs(workers: [Worker]) -> [RunRecord] { [] }
         func stop(_ run: ActiveRun) throws {}
         func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus {
             proxyStatus ?? CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "test", capacity: .unavailable(reason: "test"))
         }
-        func storeCredential(_ secret: Data, reference: String) throws {}
+        func inspectProvider(_ provider: Provider) async -> ProviderProbeResult { providerProbe }
+        func storeCredential(_ secret: Data, reference: String) throws { credentials[reference] = secret }
+        func hasCredential(reference: String) -> Bool { credentials[reference] != nil }
     }
     func testSelectionIsExclusiveAndDebouncedChangesCoalesceOnExplicitFlush() async {
         let service = Service(); let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id)
@@ -497,34 +630,23 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(piGloballyMasked[0].delivery, .unavailable)
     }
 
-    func testCLIProxyProviderPresentationMatchesRouteAndDrivesWorkerCapacity() async {
+    func testProviderConnectionTestStoresSecretModelsAndStatus() async {
         var config = WorkjetDefaults.configuration()
-        let matching = Provider(name: "CLI", kind: .cliProxy, endpoint: "http://127.0.0.1:8317")
-        let mismatching = Provider(name: "Other CLI", kind: .cliProxy, endpoint: "http://127.0.0.1:9999")
-        config.providers = [matching, mismatching]
-        config.workers[0].providerID = matching.id
-        config.workers[0].capacity = .userConfigured(used: 99, limit: 100, unit: "stale", rateLimited: true)
-        config.workers[1].providerID = mismatching.id
+        let provider = Provider(name: "CLI", kind: .cliProxyAPI, endpoint: "http://127.0.0.1:8317")
+        config.providers = [provider]
+        config.workers[0].providerID = provider.id
         let service = Service()
-        let measured = CapacityStatus.measured(used: 20, limit: 100, unit: "requests", rateLimited: false)
-        service.proxyStatus = CLIProxyStatus(endpoint: config.cliProxy.endpoint, state: .reachable, detail: "gemessen", capacity: measured)
+        service.providerProbe = ProviderProbeResult(status: .connected, detail: "verbunden", modelIDs: ["gateway-model"])
         let model = WorkjetViewModel(configuration: config, service: service, persistenceDelay: 60)
-        model.refreshCLIProxy()
-        for _ in 0..<50 where model.cliProxyStatus.state != .reachable { await Task.yield() }
-
-        let matchingPresentation = model.providerPresentation(for: matching)
-        XCTAssertEqual(matchingPresentation.state, CLIProxyConnectionState.reachable.rawValue)
-        XCTAssertEqual(matchingPresentation.capacity, measured)
-        XCTAssertEqual(matchingPresentation.tone, .connected)
-        XCTAssertEqual(model.effectiveCapacity(for: config.workers[0]), measured)
-        XCTAssertNotEqual(model.effectiveCapacity(for: config.workers[0]), config.workers[0].capacity)
-
-        let mismatchingPresentation = model.providerPresentation(for: mismatching)
-        XCTAssertEqual(mismatchingPresentation.state, "Nicht verfügbar")
-        XCTAssertNil(mismatchingPresentation.capacity.fraction)
-        XCTAssertTrue(mismatchingPresentation.capacity.reason?.contains("stimmt nicht") == true)
-        XCTAssertEqual(mismatchingPresentation.tone, .neutral)
-        XCTAssertEqual(model.effectiveCapacity(for: config.workers[1]), mismatchingPresentation.capacity)
+        await model.testProvider(id: provider.id, secret: "secret")
+        let updated = try! XCTUnwrap(model.providers.first)
+        XCTAssertEqual(updated.status, .connected)
+        XCTAssertEqual(updated.statusDetail, "verbunden")
+        XCTAssertEqual(updated.modelIDs, ["gateway-model"])
+        XCTAssertEqual(service.credentials[Provider.credentialReference(for: provider.id)], Data("secret".utf8))
+        XCTAssertTrue(model.providerAccessStored.contains(provider.id))
+        XCTAssertEqual(model.providerPresentation(for: updated).tone, .connected)
+        XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: model.providers).first, "gateway-model")
     }
 
     func testUnprobedProviderDefaultsToNeutralInsteadOfOffline() {

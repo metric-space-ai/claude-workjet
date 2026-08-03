@@ -19,7 +19,8 @@ public struct SystemProcessProbe: ProcessProbing, Sendable {
         let infoSize = MemoryLayout<proc_bsdinfo>.size
         guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(infoSize)) == infoSize else { return nil }
         let path = String(cString: pathBuffer)
-        return ProcessIdentity(pid: pid, executablePath: path, startToken: "\(info.pbi_start_tvsec).\(info.pbi_start_tvusec)")
+        let startToken = String(format: "%lld.%06d", Int64(info.pbi_start_tvsec), Int32(info.pbi_start_tvusec))
+        return ProcessIdentity(pid: pid, executablePath: path, startToken: startToken)
     }
 
     public func sendTERM(to pid: Int32) throws {
@@ -95,11 +96,14 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
         guard let pid = readPID(directory.appendingPathComponent("pid")), pid > 1 else {
             return RunRecord(sourceRunID: runID, state: .malformed, diagnostic: "PID fehlt oder ist ungültig")
         }
+        guard let startedAt = readDate(directory.appendingPathComponent("started-at")) else {
+            return RunRecord(sourceRunID: runID, state: .malformed, diagnostic: "Startzeit fehlt oder ist ungültig")
+        }
         guard let identity = processProbe.identity(for: pid) else {
             return RunRecord(sourceRunID: runID, state: .interrupted, diagnostic: "Prozess ist ohne Terminalmarker beendet")
         }
-        guard let startedAt = readDate(directory.appendingPathComponent("started-at")) else {
-            return RunRecord(sourceRunID: runID, state: .malformed, diagnostic: "Startzeit fehlt oder ist ungültig")
+        guard processStartMatches(identity.startToken, runStartedAt: startedAt) else {
+            return RunRecord(sourceRunID: runID, state: .interrupted, diagnostic: "PID gehört zu einem später gestarteten Prozess")
         }
         let wrapper = boundedString(at: directory.appendingPathComponent("worker"), maximumBytes: 256)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let worker = matchWorker(wrapper: wrapper, workers: workers)
@@ -127,7 +131,12 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
                 if !clean.isEmpty { return String(clean.prefix(160)) }
             }
         }
-        return "Workjet-Ausführung \(safeLabel(runID))"
+        return "Worker läuft"
+    }
+
+    private func processStartMatches(_ token: String, runStartedAt: Date, tolerance: TimeInterval = 5) -> Bool {
+        guard let processEpoch = Double(token), processEpoch.isFinite, processEpoch > 0 else { return false }
+        return abs(processEpoch - runStartedAt.timeIntervalSince1970) <= tolerance
     }
 
     private func deliveryKind(directory: URL, worker: Worker?) -> HarnessDelivery {

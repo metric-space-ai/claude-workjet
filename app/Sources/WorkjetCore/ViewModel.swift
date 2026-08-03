@@ -8,6 +8,10 @@ public final class WorkjetViewModel: ObservableObject {
     @Published public private(set) var providers: [Provider] { didSet { persistIfReady() } }
     @Published public private(set) var activeRuns: [ActiveRun] = []
     @Published public private(set) var cliProxyStatus: CLIProxyStatus
+    @Published public private(set) var providerAccessStored: Set<UUID> = []
+    @Published public private(set) var tailscaleDevices: [TailscaleDevice] = []
+    @Published public private(set) var tailscaleError: String?
+    @Published public private(set) var tailscaleLoading = false
     @Published public private(set) var statusMessages: [String]
 
     @Published public var skillRules: String { didSet { persistIfReady(handwrittenRulesChanged: true) } }
@@ -75,33 +79,14 @@ public final class WorkjetViewModel: ObservableObject {
     public func toggleComputerSelection(_ id: UUID) { if computers.contains(where: { $0.id == id }) { selectedComputerID = id } }
 
     public func providerPresentation(for provider: Provider) -> ProviderPresentation {
-        guard provider.kind == .cliProxy else {
-            let tone: ProviderPresentationTone
-            switch provider.status {
-            case .unverified: tone = .neutral
-            case .connected: tone = .connected
-            case .degraded: tone = .warning
-            case .offline: tone = .critical
-            }
-            return ProviderPresentation(state: provider.status.rawValue, detail: provider.status == .unverified ? "Für diesen Anbieter liegt keine App-Probe vor." : "Gespeicherter Anbieterstatus.", tone: tone, capacity: provider.capacity)
-        }
-
-        guard Self.sameEndpoint(provider.endpoint, cliProxyConfiguration.endpoint) else {
-            let reason = "Anbieter-Endpunkt stimmt nicht mit dem konfigurierten CLIProxy-Loopback-Endpunkt überein."
-            return ProviderPresentation(state: "Nicht verfügbar", detail: reason, tone: .neutral, capacity: .unavailable(reason: reason))
-        }
-        guard Self.sameEndpoint(cliProxyStatus.endpoint, cliProxyConfiguration.endpoint) else {
-            let reason = "CLIProxy-Status gehört zu einem anderen Endpunkt; erneut prüfen."
-            return ProviderPresentation(state: CLIProxyConnectionState.unverified.rawValue, detail: reason, tone: .neutral, capacity: .unavailable(reason: reason))
-        }
         let tone: ProviderPresentationTone
-        switch cliProxyStatus.state {
+        switch provider.status {
         case .unverified: tone = .neutral
-        case .reachable: tone = .connected
-        case .authRequired, .managementUnavailable, .usageDisabled: tone = .warning
-        case .unsafeEndpoint, .offline: tone = .critical
+        case .connected: tone = .connected
+        case .degraded: tone = .warning
+        case .offline: tone = .critical
         }
-        return ProviderPresentation(state: cliProxyStatus.state.rawValue, detail: cliProxyStatus.detail, tone: tone, capacity: cliProxyStatus.capacity)
+        return ProviderPresentation(state: provider.status.rawValue, detail: provider.statusDetail, tone: tone, capacity: provider.capacity)
     }
 
     public func effectiveCapacity(for worker: Worker) -> CapacityStatus {
@@ -130,13 +115,65 @@ public final class WorkjetViewModel: ObservableObject {
     }
     public func removeProvider(id: UUID) {
         providers.removeAll { $0.id == id }
+        providerAccessStored.remove(id)
         // Worker references intentionally remain stable and render as unavailable.
+    }
+
+    public func refreshProviderCredentialStatus() {
+        let service = self.service
+        providerAccessStored = Set(providers.compactMap { provider in
+            guard let reference = provider.credentialReference, service.hasCredential(reference: reference) else { return nil }
+            return provider.id
+        })
+    }
+
+    public func testProvider(id: UUID, secret: String = "") async {
+        guard let index = providers.firstIndex(where: { $0.id == id }) else { return }
+        var provider = providers[index]
+        let reference = provider.credentialReference ?? Provider.credentialReference(for: provider.id)
+        provider.credentialReference = reference
+        do {
+            if !secret.isEmpty { try service.storeCredential(Data(secret.utf8), reference: reference) }
+            let result = await service.inspectProvider(provider)
+            provider.status = result.status
+            provider.statusDetail = result.detail
+            if !result.modelIDs.isEmpty { provider.modelIDs = result.modelIDs }
+            providers[index] = provider
+            refreshProviderCredentialStatus()
+            await flushPersistence()
+        } catch {
+            provider.status = .offline
+            provider.statusDetail = error.localizedDescription
+            providers[index] = provider
+            expose(error)
+        }
+    }
+
+    public func refreshTailscaleDevices() {
+        guard !tailscaleLoading else { return }
+        tailscaleLoading = true
+        tailscaleError = nil
+        let service = self.service
+        Task { [weak self] in
+            do {
+                let devices = try await service.discoverTailscaleDevices()
+                guard let self else { return }
+                self.tailscaleDevices = devices
+                self.tailscaleLoading = false
+            } catch {
+                guard let self else { return }
+                self.tailscaleDevices = []
+                self.tailscaleError = error.localizedDescription
+                self.tailscaleLoading = false
+            }
+        }
     }
 
     public func startPolling() {
         guard pollingTask == nil else { return }
         refreshRuns()
         refreshCLIProxy()
+        refreshProviderCredentialStatus()
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))

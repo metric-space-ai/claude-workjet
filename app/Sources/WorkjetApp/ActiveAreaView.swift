@@ -37,17 +37,27 @@ struct ActiveRunRow: View {
                             .font(.system(size: 11, design: .monospaced)).foregroundStyle(WJTheme.secondaryText)
                     }
                 }
-                Text(run.activity).font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
-                Text("Run \(run.sourceRunID) · \(run.delivery.rawValue)" + heartbeatText)
-                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(WJTheme.tertiaryText).lineLimit(1)
+                Text("\(run.activity) · \(stateLabel)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
             }
             Spacer(minLength: 8)
             Button(action: onStop) { Image(systemName: "stop.fill") }.buttonStyle(WJIconButtonStyle(tint: Color(nsColor: .systemRed)))
                 .accessibilityLabel("\(run.workerName) stoppen").help("Exakt verifizierten Run-PID mit TERM stoppen")
-        }.padding(.vertical, 6)
+        }
+        .padding(.vertical, 6)
+        .help(technicalHelp)
+        .accessibilityHint(technicalHelp)
     }
-    private var heartbeatText: String {
-        guard let heartbeat = run.lastHeartbeat else { return " · Heartbeat unbekannt" }
-        return " · Heartbeat \(heartbeat.formatted(date: .omitted, time: .standard))"
+
+    private var stateLabel: String {
+        switch run.delivery {
+        case .live: return "Aktivität live"
+        case .postHoc: return "Details nach Abschluss"
+        case .unavailable: return "läuft"
+        }
+    }
+
+    private var technicalHelp: String {
+        let heartbeat = run.lastHeartbeat?.formatted(date: .numeric, time: .standard) ?? "unbekannt"
+        return "Run \(run.sourceRunID) · PID \(run.pid) · Heartbeat \(heartbeat)"
     }
 }

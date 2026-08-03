@@ -12,8 +12,6 @@ struct WorkerEditorView: View {
 
     @State private var draft: WorkerDraft
 
-    private let modelSuggestions = ["GPT-5.6", "Kimi K3", "MiniMax M3", "Claude Opus 4.8"]
-
     init(worker: Worker?, onClose: @escaping () -> Void) {
         self.worker = worker
         self.onClose = onClose
@@ -29,6 +27,7 @@ struct WorkerEditorView: View {
                     nameSection
                     harnessSection
                     modelSection
+                    reasoningSection
                     providerSection
                     instructionsSection
                     invocationSection
@@ -103,29 +102,47 @@ struct WorkerEditorView: View {
     private var modelSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             WJSectionHeader(title: "Modell")
-            TextField("z. B. gpt-5.6", text: $draft.model)
+            TextField("z. B. gpt-5.6-sol", text: $draft.model)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 7)
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
                 .accessibilityLabel("Modell des Workers")
-            HStack(spacing: 6) {
-                ForEach(modelSuggestions, id: \.self) { suggestion in
-                    Button(suggestion) {
-                        draft.model = suggestion
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(modelSuggestions, id: \.self) { suggestion in
+                        Button(suggestion) { draft.model = suggestion }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10))
+                            .foregroundStyle(draft.model == suggestion ? .white : WJTheme.secondaryText)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(draft.model == suggestion ? WJTheme.accent.opacity(0.85) : WJTheme.surface))
+                            .accessibilityLabel("Modell \(suggestion) wählen")
                     }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10))
-                    .foregroundStyle(draft.model == suggestion ? .white : WJTheme.secondaryText)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(draft.model == suggestion ? WJTheme.accent.opacity(0.85) : WJTheme.surface)
-                    )
-                    .accessibilityLabel("Modell \(suggestion) wählen")
                 }
             }
+        }
+    }
+
+    private var modelSuggestions: [String] {
+        WorkerModelSuggestions.values(providerID: draft.providerID, providers: model.providers)
+    }
+
+    private var reasoningSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WJSectionHeader(title: "Reasoning")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    WJChoiceButton(title: "Automatisch", isSelected: draft.reasoningEffort == nil) { draft.reasoningEffort = nil }
+                    ForEach(ReasoningEffort.allCases, id: \.self) { effort in
+                        WJChoiceButton(title: effort.label, isSelected: draft.reasoningEffort == effort) { draft.reasoningEffort = effort }
+                    }
+                }
+            }
+            Text("Fable gibt den gewählten Effort beim Harness-Aufruf weiter; Workjet verändert keine eigenen Executable-Argumente.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
         }
     }
 
@@ -155,7 +172,7 @@ struct WorkerEditorView: View {
                 Text("Die gespeicherte Anbieterreferenz \(selected.uuidString.lowercased()) wurde gelöscht. Sie bleibt unverändert und wird nie automatisch ersetzt.")
                     .font(.system(size: 10)).foregroundStyle(WJTheme.quotaCritical)
             } else {
-                Text("CLIProxy-Abos und direkte API-Key-Anbieter werden über ihre stabile Anbieter-ID referenziert; Geheimnisse bleiben in der lokalen Keychain.")
+                Text("Entdeckte Modelle des gewählten Anbieters stehen oben zuerst; freie Modelleingabe bleibt möglich. Geheimnisse bleiben in der lokalen Keychain.")
                     .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
             }
         }
@@ -163,15 +180,42 @@ struct WorkerEditorView: View {
 
     private var instructionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            WJSectionHeader(title: "Anweisungen (workerspezifisch)")
+            WJSectionHeader(title: "Rolle und Anweisungen")
+            Text("Dieser Text wird mit seinen Markdown-Zeilenumbrüchen in den verwalteten Systemprompt kopiert.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            if !otherWorkers.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        Text("Worker erwähnen:").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+                        ForEach(otherWorkers) { other in
+                            Button(other.mentionTag) { appendMention(other.mentionTag) }
+                                .buttonStyle(.plain).font(.system(size: 10, design: .monospaced))
+                                .padding(.horizontal, 7).padding(.vertical, 3)
+                                .background(Capsule().fill(WJTheme.surface))
+                        }
+                    }
+                }
+            }
             TextEditor(text: $draft.instructions)
                 .font(.system(size: 12))
                 .scrollContentBackground(.hidden)
                 .padding(6)
                 .frame(minHeight: 110)
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
-                .accessibilityLabel("Workerspezifische Anweisungen")
+                .accessibilityLabel("Rolle und Anweisungen")
+            if !unresolvedMentions.isEmpty {
+                Text("Unbekannte Worker-Erwähnung: \(unresolvedMentions.joined(separator: ", "))")
+                    .font(.system(size: 10)).foregroundStyle(WJTheme.quotaWarning)
+            }
         }
+    }
+
+    private var otherWorkers: [Worker] { model.workers.filter { $0.id != worker?.id } }
+    private var unresolvedMentions: [String] { ManagedPrompt.unresolvedMentions(in: draft.instructions, workers: model.workers) }
+
+    private func appendMention(_ mention: String) {
+        if !draft.instructions.isEmpty && !draft.instructions.hasSuffix(" ") && !draft.instructions.hasSuffix("\n") { draft.instructions.append(" ") }
+        draft.instructions.append(mention)
     }
 
     private var invocationSection: some View {

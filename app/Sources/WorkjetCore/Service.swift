@@ -5,11 +5,19 @@ public protocol WorkjetService: AnyObject, Sendable {
     func runs(workers: [Worker]) -> [RunRecord]
     func stop(_ run: ActiveRun) throws
     func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus
+    func inspectProvider(_ provider: Provider) async -> ProviderProbeResult
+    func discoverTailscaleDevices() async throws -> [TailscaleDevice]
     func bootstrapRemotePi(_ computer: Computer) async -> Computer
     func storeCredential(_ secret: Data, reference: String) throws
+    func hasCredential(reference: String) -> Bool
 }
 
 public extension WorkjetService {
+    func inspectProvider(_ provider: Provider) async -> ProviderProbeResult {
+        ProviderProbeResult(status: .unverified, detail: "Dieser Dienst prüft keine Anbieter.")
+    }
+    func discoverTailscaleDevices() async throws -> [TailscaleDevice] { throw TailscaleDeviceError.unavailable }
+    func hasCredential(reference: String) -> Bool { false }
     func bootstrapRemotePi(_ computer: Computer) async -> Computer {
         var value = computer
         value.deploymentStatus = .failed
@@ -40,16 +48,20 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     private let promptStore: any PromptSynchronizing
     private let telemetryStore: any RunTelemetryReading
     private let cliProxyInspector: CLIProxyInspector
+    private let providerInspector: ProviderInspector
     private let credentialStore: any CredentialStoring
+    private let tailscaleDiscovery: TailscaleDeviceDiscovery
     private let remoteBootstrap: RemotePiBootstrap
     private let persistenceBlock: Error?
 
-    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, credentialStore: any CredentialStoring, remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), persistenceBlock: Error? = nil) {
+    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, providerInspector: ProviderInspector? = nil, credentialStore: any CredentialStoring, tailscaleDiscovery: TailscaleDeviceDiscovery = TailscaleDeviceDiscovery(), remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), persistenceBlock: Error? = nil) {
         self.configurationStore = configurationStore
         self.promptStore = promptStore
         self.telemetryStore = telemetryStore
         self.cliProxyInspector = cliProxyInspector
+        self.providerInspector = providerInspector ?? ProviderInspector(credentials: credentialStore)
         self.credentialStore = credentialStore
+        self.tailscaleDiscovery = tailscaleDiscovery
         self.remoteBootstrap = remoteBootstrap
         self.persistenceBlock = persistenceBlock
     }
@@ -63,8 +75,11 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     public func runs(workers: [Worker]) -> [RunRecord] { telemetryStore.scan(workers: workers) }
     public func stop(_ run: ActiveRun) throws { try telemetryStore.stop(run) }
     public func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus { await cliProxyInspector.inspect(configuration) }
+    public func inspectProvider(_ provider: Provider) async -> ProviderProbeResult { await providerInspector.inspect(provider) }
+    public func discoverTailscaleDevices() async throws -> [TailscaleDevice] { try await tailscaleDiscovery.discover() }
     public func bootstrapRemotePi(_ computer: Computer) async -> Computer { await remoteBootstrap.deploy(computer) }
     public func storeCredential(_ secret: Data, reference: String) throws { try credentialStore.write(secret, reference: reference) }
+    public func hasCredential(reference: String) -> Bool { (try? credentialStore.read(reference: reference)) != nil }
 }
 
 public struct WorkjetBootstrap {
@@ -103,9 +118,21 @@ public struct WorkjetBootstrap {
         // Workjet is deliberately skill-only. Older config files may still
         // contain the removed, never-wired global UI option.
         value.skillActivation = .skillOnly
+        value.injectWorkerDeclarations = true
         value.providerSlots = min(max(value.providerSlots, 1), 3)
         value.probeTimeoutSeconds = min(max(value.probeTimeoutSeconds, 5), 600)
         value.turnTimeoutSeconds = min(max(value.turnTimeoutSeconds, 60), 10_800)
+        if !value.providers.contains(where: { $0.kind == .cliProxyAPI }),
+           value.cliProxy.inferenceCredentialReference != nil || value.cliProxy.managementCredentialReference != nil || value.cliProxy.endpoint != CLIProxyConfiguration().endpoint {
+            let id = UUID(uuidString: "00000000-0000-0000-0000-00000000c1a0")!
+            value.providers.append(Provider(
+                id: id,
+                name: "CLIProxyAPI",
+                kind: .cliProxyAPI,
+                endpoint: value.cliProxy.endpoint,
+                credentialReference: value.cliProxy.inferenceCredentialReference
+            ))
+        }
         let local: Computer
         if let existing = value.computers.first(where: \.isLocal) { local = existing }
         else { local = WorkjetDefaults.localComputer; value.computers.insert(local, at: 0) }

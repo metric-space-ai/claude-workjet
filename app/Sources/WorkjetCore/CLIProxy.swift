@@ -85,6 +85,103 @@ public struct URLSessionHTTPClient: HTTPClient, Sendable {
     }
 }
 
+public enum ProviderEndpointValidation: Equatable, Sendable {
+    case valid(URL)
+    case invalid(String)
+}
+
+public enum ProviderEndpointValidator {
+    public static func validate(_ endpoint: String, kind: ProviderKind) -> ProviderEndpointValidation {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(),
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else {
+            return .invalid("Endpunkt muss eine URL ohne Zugangsdaten, Query oder Fragment sein.")
+        }
+        let loopback = isLoopback(host)
+        if kind.isLocalGateway {
+            guard loopback, scheme == "http" || scheme == "https" else {
+                return .invalid("Lokale Gateways müssen einen Loopback-Endpunkt verwenden.")
+            }
+        } else {
+            guard scheme == "https" || (scheme == "http" && loopback) else {
+                return .invalid("Direkte APIs benötigen HTTPS; HTTP ist nur auf Loopback erlaubt.")
+            }
+        }
+        components.scheme = scheme
+        components.host = host
+        if components.path == "/" { components.path = "" }
+        guard let url = components.url else { return .invalid("Endpunkt ist ungültig.") }
+        return .valid(url)
+    }
+
+    public static func modelsURL(baseURL: URL) -> URL {
+        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components.path = "/" + ([basePath, "v1/models"].filter { !$0.isEmpty }.joined(separator: "/"))
+        components.query = nil
+        components.fragment = nil
+        return components.url!
+    }
+
+    public static func isLoopback(_ host: String) -> Bool {
+        let host = host.lowercased()
+        if host == "localhost" || host == "::1" || host == "[::1]" { return true }
+        let pieces = host.split(separator: ".")
+        return pieces.count == 4 && pieces[0] == "127" && pieces.allSatisfy { Int($0).map { (0...255).contains($0) } == true }
+    }
+}
+
+public struct ProviderInspector: Sendable {
+    public let client: any HTTPClient
+    public let credentials: any CredentialStoring
+
+    public init(client: any HTTPClient = URLSessionHTTPClient(), credentials: any CredentialStoring = KeychainCredentialStore()) {
+        self.client = client
+        self.credentials = credentials
+    }
+
+    public func inspect(_ provider: Provider) async -> ProviderProbeResult {
+        let validation = ProviderEndpointValidator.validate(provider.endpoint, kind: provider.kind)
+        guard case let .valid(baseURL) = validation else {
+            if case let .invalid(detail) = validation { return ProviderProbeResult(status: .offline, detail: detail) }
+            return ProviderProbeResult(status: .offline, detail: "Endpunkt ist ungültig.")
+        }
+        var request = URLRequest(url: ProviderEndpointValidator.modelsURL(baseURL: baseURL))
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let reference = provider.credentialReference,
+           let secret = try? credentials.read(reference: reference),
+           let token = String(data: secret, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let response: HTTPResponse
+        do { response = try await client.request(request) }
+        catch { return ProviderProbeResult(status: .offline, detail: "Endpunkt ist nicht erreichbar.") }
+        guard response.data.count <= 1_048_576 else { return ProviderProbeResult(status: .degraded, detail: "Modellantwort überschreitet das Sicherheitslimit.") }
+        if response.statusCode == 401 || response.statusCode == 403 {
+            return ProviderProbeResult(status: .offline, detail: "Zugang wurde vom /v1/models-Endpunkt abgelehnt.")
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            return ProviderProbeResult(status: .offline, detail: "/v1/models antwortet mit HTTP \(response.statusCode).")
+        }
+        guard let models = Self.parseModels(response.data) else {
+            return ProviderProbeResult(status: .degraded, detail: "/v1/models lieferte kein kompatibles data[].id-Format.")
+        }
+        let ownership = provider.kind.isLocalGateway ? " OAuth/Abonnement wird im lokalen Gateway verwaltet." : ""
+        return ProviderProbeResult(status: .connected, detail: "Verbindung geprüft; \(models.count) Modell(e) gefunden.\(ownership)", modelIDs: models)
+    }
+
+    public static func parseModels(_ data: Data) -> [String]? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let entries = root["data"] as? [[String: Any]] else { return nil }
+        return Provider.normalizedModels(entries.compactMap { $0["id"] as? String })
+    }
+}
+
 public struct CLIProxyInspector: Sendable {
     public let client: any HTTPClient
     public let credentials: any CredentialStoring

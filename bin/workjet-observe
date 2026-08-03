@@ -1,0 +1,76 @@
+#!/bin/zsh
+# Synchronous run observer for direct Workjet worker wrappers.
+# Set WORKJET_OBSERVER_BYPASS=1 when an outer dispatcher owns the run journal.
+emulate -L zsh
+setopt pipe_fail
+
+[[ $# -ge 2 ]] || { print -u2 'usage: workjet-observe WORKER COMMAND [ARG ...]'; exit 64; }
+worker="$1"
+shift
+
+inside_dispatcher() {
+  [[ "${WORKJET_OBSERVER_BYPASS:-0}" == 1 ]] && return 0
+  local pid=$PPID row parent command depth=0
+  while (( pid > 1 && depth < 8 )); do
+    row="$(ps -p "$pid" -o ppid= -o command= 2>/dev/null)" || break
+    parent="${${=row}[1]}"
+    command="${row#*${${=row}[1]}}}"
+    [[ "$command" == *claude-agent* ]] && return 0
+    [[ "$parent" == <-> ]] || break
+    pid=$parent
+    (( ++depth ))
+  done
+  return 1
+}
+
+if inside_dispatcher; then
+  exec "$@"
+fi
+
+umask 077
+state_root="${WORKJET_STATE_DIR:-$HOME/.local/state/workjet}"
+stamp="$(date -u '+%Y%m%dT%H%M%S')"
+run_id="direct-${stamp}-$$-${worker//[^A-Za-z0-9._-]/_}"
+run_dir="$state_root/runs/$run_id"
+index_dir="$state_root/run-index"
+mkdir -p "$run_dir" "$index_dir" || { print -u2 'workjet-observe: cannot create run journal'; exit 73; }
+chmod 700 "$run_dir" 2>/dev/null || true
+index_tmp="$index_dir/.${run_id}.$$"
+print -r -- "$run_dir" > "$index_tmp" && mv "$index_tmp" "$index_dir/$run_id" || exit 73
+print -r -- "$worker" > "$run_dir/worker"
+date -u '+%Y-%m-%dT%H:%M:%SZ' > "$run_dir/started-at"
+print -r -- 'Direkte Claude-Code-Ausführung' > "$run_dir/activity"
+touch "$run_dir/heartbeat"
+
+child_pid=''
+heartbeat_pid=''
+forward_signal() {
+  [[ -n "$child_pid" ]] && kill -TERM "$child_pid" 2>/dev/null || true
+}
+trap forward_signal INT TERM HUP
+
+"$@" &
+child_pid=$!
+print -r -- "$child_pid" > "$run_dir/pid"
+(
+  while kill -0 "$child_pid" 2>/dev/null; do
+    sleep "${WORKJET_OBSERVER_HEARTBEAT_INTERVAL:-10}"
+    kill -0 "$child_pid" 2>/dev/null && touch "$run_dir/heartbeat"
+  done
+) &
+heartbeat_pid=$!
+
+wait "$child_pid"
+rc=$?
+if kill -0 "$child_pid" 2>/dev/null; then
+  wait "$child_pid"
+  rc=$?
+fi
+kill "$heartbeat_pid" 2>/dev/null || true
+wait "$heartbeat_pid" 2>/dev/null || true
+print -r -- "$rc" > "$run_dir/exit-code"
+{
+  print -r -- "rc=$rc"
+  print -r -- "finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+} > "$run_dir/exit"
+exit "$rc"

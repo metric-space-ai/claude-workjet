@@ -14,13 +14,10 @@ public enum ManagedPrompt {
     public static let endMarker = "<!-- WORKJET MANAGED WORKERS END v1 -->"
 
     public static func workerBody(configuration: WorkjetConfiguration) -> Data {
-        guard configuration.injectWorkerDeclarations else {
-            return Data("Fable bleibt der einzige Orchestrator. Es sind derzeit keine verwalteten Worker-Deklarationen aktiviert.".utf8)
-        }
         let computers = Dictionary(uniqueKeysWithValues: configuration.computers.map { ($0.id, $0) })
         let providers = Dictionary(uniqueKeysWithValues: configuration.providers.map { ($0.id, $0) })
         var lines = [
-            "## Verwaltete Workjet-Worker",
+            "## Verwaltete Workjet-Worker · automatisch erzeugt · nicht editierbar",
             "Fable (Claude Code) bleibt der einzige Orchestrator. Fable wählt und invokiert pro Delegation genau einen deklarierten Worker; die Workjet-App wählt keine Worker, baut keine Workflows und fällt niemals stillschweigend zurück.",
             "Infrastruktur: höchstens \(configuration.providerSlots) parallele Aufrufe je Provider; Probe-Timeout \(configuration.probeTimeoutSeconds) s; Turn-Timeout \(configuration.turnTimeoutSeconds) s; Degradation \(configuration.degradationAllowed ? "nur nach expliziter Freigabe zulässig" : "nicht zulässig").",
             ""
@@ -38,27 +35,48 @@ public enum ManagedPrompt {
                 capabilityTruth = remotePiTruth(computer)
                 invocationTruth = remotePiInvocation(computer)
             } else if worker.harness == .piSidecar {
-                capabilityTruth = "Pi-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+                capabilityTruth = "Pi-Code-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
                 invocationTruth = "Ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments))."
             } else {
                 capabilityTruth = "Remote-Claude-Code-Ausführung ist in dieser App nicht implementiert; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
                 invocationTruth = "Nicht verfügbar."
             }
+            let effort = worker.reasoningEffort?.rawValue ?? "automatisch"
+            let effortTruth = worker.reasoningEffort == nil
+                ? "Kein fester Effort; Fable verwendet den Harness-Standard."
+                : "Fable muss den konfigurierten Effort `\(effort)` beim Aufruf passend zum Harness weitergeben; Workjet verändert keine frei konfigurierten Executable-Argumente."
             lines += [
-                "### \(safeInline(worker.name))",
+                "### \(worker.mentionTag) — \(safeInline(worker.name))",
                 "- ID: `\(worker.id.uuidString.lowercased())`",
                 "- Modell: `\(safeInline(worker.model))`",
+                "- Reasoning: `\(effort)` — \(effortTruth)",
                 "- Harness: \(worker.harness.rawValue)",
                 "- Ziel-Computer: \(safeInline(target)) (`\(worker.computerID.uuidString.lowercased())`)",
                 "- Anbieter/Zugangsroute: \(providerRoute)",
-                "- Anweisungen: \(safeInline(worker.instructions))",
                 "- Fähigkeiten: \(worker.invocation.capabilities.isEmpty ? "Keine deklariert" : worker.invocation.capabilities.map(safeInline).joined(separator: "; "))",
                 "- Aktueller Status: \(capabilityTruth)",
                 "- Invocation: \(invocationTruth)",
+                "",
+                "<!-- WORKJET WORKER INSTRUCTIONS BEGIN \(worker.mentionTag) -->",
+                safeMultilineInstructions(worker.instructions),
+                "<!-- WORKJET WORKER INSTRUCTIONS END \(worker.mentionTag) -->",
                 ""
             ]
         }
         return Data(lines.joined(separator: "\n").trimmingCharacters(in: .newlines).utf8)
+    }
+
+    public static func unresolvedMentions(in instructions: String, workers: [Worker]) -> [String] {
+        let known = Set(workers.map(\.mentionTag))
+        guard let regex = try? NSRegularExpression(pattern: #"@[\p{L}\p{N}_-]+"#) else { return [] }
+        let range = NSRange(instructions.startIndex..., in: instructions)
+        var seen = Set<String>()
+        return regex.matches(in: instructions, range: range).compactMap { match in
+            guard let range = Range(match.range, in: instructions) else { return nil }
+            let mention = String(instructions[range])
+            guard !known.contains(mention), seen.insert(mention).inserted else { return nil }
+            return mention
+        }
     }
 
     public static func block(body: Data) -> Data {
@@ -148,7 +166,10 @@ public enum ManagedPrompt {
         let route: String
         if let sanitizedEndpoint = safeEndpointDescription(endpoint) { route = "\(provider.kind.rawValue) über \(sanitizedEndpoint)" }
         else { route = provider.kind.rawValue }
-        return "\(safeInline(provider.name)) (`\(id.uuidString.lowercased())`), \(route). Geheimnisse bleiben ausschließlich in der lokalen Keychain."
+        let authentication = provider.kind.isLocalGateway
+            ? "OAuth/Abonnement wird im lokalen Gateway verwaltet."
+            : "Ein optionaler API-Zugang bleibt ausschließlich in der lokalen Keychain."
+        return "\(safeInline(provider.name)), \(route). \(authentication)"
     }
 
     private static func safeEndpointDescription(_ endpoint: String) -> String? {
@@ -218,6 +239,12 @@ public enum ManagedPrompt {
     private static func shellQuoted(_ value: String) -> String {
         let singleLine = value.split(whereSeparator: \.isNewline).joined(separator: " ")
         return "'" + singleLine.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func safeMultilineInstructions(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: beginStem, with: "WORKJET-MANAGED-WORKERS-BEGIN")
+            .replacingOccurrences(of: endMarker, with: "WORKJET-MANAGED-WORKERS-END")
     }
 
     private static func safeInline(_ value: String) -> String {

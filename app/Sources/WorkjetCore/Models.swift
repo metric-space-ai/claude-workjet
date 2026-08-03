@@ -2,7 +2,23 @@ import Foundation
 
 public enum Harness: String, CaseIterable, Codable, Equatable, Sendable {
     case claudeCode = "Claude Code"
-    case piSidecar = "Pi Sidecar"
+    case piSidecar = "Pi Code"
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        switch value {
+        case "Claude Code": self = .claudeCode
+        case "Pi Code", "Pi Sidecar": self = .piSidecar
+        default:
+            throw DecodingError.dataCorruptedError(in: try decoder.singleValueContainer(), debugDescription: "Unbekanntes Harness: \(value)")
+        }
+    }
+}
+
+public enum ReasoningEffort: String, CaseIterable, Codable, Equatable, Sendable {
+    case low, medium, high, xhigh, max, ultra
+
+    public var label: String { rawValue }
 }
 
 public enum ComputerTransport: String, CaseIterable, Codable, Equatable, Sendable {
@@ -173,22 +189,41 @@ public struct Worker: Identifiable, Equatable, Codable, Sendable {
     public var harness: Harness
     public var model: String
     public var instructions: String
+    public var reasoningEffort: ReasoningEffort?
     public var computerID: UUID
     /// Stable access route. A missing/deleted provider remains unavailable and is never replaced implicitly.
     public var providerID: UUID?
     public var invocation: WorkerInvocation
     public var capacity: CapacityStatus
 
-    public init(id: UUID = UUID(), name: String, harness: Harness, model: String, instructions: String = "", computerID: UUID, providerID: UUID? = nil, invocation: WorkerInvocation = WorkerInvocation(executable: ""), capacity: CapacityStatus = .unavailable(reason: "Keine kompatiblen Nutzungsdaten verfügbar.")) {
+    public init(id: UUID = UUID(), name: String, harness: Harness, model: String, instructions: String = "", reasoningEffort: ReasoningEffort? = nil, computerID: UUID, providerID: UUID? = nil, invocation: WorkerInvocation = WorkerInvocation(executable: ""), capacity: CapacityStatus = .unavailable(reason: "Keine kompatiblen Nutzungsdaten verfügbar.")) {
         self.id = id
         self.name = name
         self.harness = harness
         self.model = model
         self.instructions = instructions
+        self.reasoningEffort = reasoningEffort
         self.computerID = computerID
         self.providerID = providerID
         self.invocation = invocation
         self.capacity = capacity
+    }
+
+    public var mentionTag: String {
+        let scalars = name.unicodeScalars
+        var result = ""
+        var pendingSeparator = false
+        for scalar in scalars {
+            if CharacterSet.alphanumerics.contains(scalar) || scalar == "_" || scalar == "-" {
+                if pendingSeparator && !result.isEmpty && !result.hasSuffix("-") { result.append("-") }
+                result.unicodeScalars.append(scalar)
+                pendingSeparator = false
+            } else {
+                pendingSeparator = true
+            }
+        }
+        result = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        return "@" + (result.isEmpty ? "Worker" : result)
     }
 }
 
@@ -260,9 +295,27 @@ public struct RunRecord: Equatable, Sendable {
 }
 
 public enum ProviderKind: String, CaseIterable, Codable, Equatable, Sendable {
-    case cliProxy = "CLIProxy OAuth/Abo"
-    case oauthSubscription = "OAuth/Abo"
-    case apiKey = "Direkter API-Key"
+    case directAPI = "Direkte API"
+    case cliProxyAPI = "CLIProxyAPI"
+    case cliProxyRust = "CLIProxy (Rust)"
+
+    public var isLocalGateway: Bool { self != .directAPI }
+
+    // Source-compatible aliases for older app code; encoded product names stay current.
+    public static var apiKey: ProviderKind { .directAPI }
+    public static var cliProxy: ProviderKind { .cliProxyAPI }
+    public static var oauthSubscription: ProviderKind { .cliProxyRust }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        switch value {
+        case "Direkte API", "Direkter API-Key": self = .directAPI
+        case "CLIProxyAPI", "CLIProxy OAuth/Abo": self = .cliProxyAPI
+        case "CLIProxy (Rust)", "OAuth/Abo": self = .cliProxyRust
+        default: throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unbekannter Anbietertyp: \(value)")
+        }
+    }
 }
 
 public enum ProviderStatus: String, Codable, Equatable, Sendable {
@@ -298,22 +351,79 @@ public struct Provider: Identifiable, Equatable, Codable, Sendable {
     public var name: String
     public var kind: ProviderKind
     public var endpoint: String
+    public var modelIDs: [String]
     public var status: ProviderStatus
+    public var statusDetail: String
     public var capacity: CapacityStatus
     public var credentialReference: String?
     public var loginExecutable: String?
     public var loginArguments: [String]
 
-    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, status: ProviderStatus = .unverified, capacity: CapacityStatus = .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
+    public init(id: UUID = UUID(), name: String, kind: ProviderKind, endpoint: String, modelIDs: [String] = [], status: ProviderStatus = .unverified, statusDetail: String = "Noch nicht geprüft.", capacity: CapacityStatus = .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert."), credentialReference: String? = nil, loginExecutable: String? = nil, loginArguments: [String] = []) {
         self.id = id
         self.name = name
         self.kind = kind
         self.endpoint = endpoint
+        self.modelIDs = Self.normalizedModels(modelIDs)
         self.status = status
+        self.statusDetail = statusDetail
         self.capacity = capacity
-        self.credentialReference = credentialReference
+        self.credentialReference = credentialReference ?? Self.credentialReference(for: id)
         self.loginExecutable = loginExecutable
         self.loginArguments = loginArguments
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, kind, endpoint, modelIDs, status, statusDetail, capacity, credentialReference, loginExecutable, loginArguments
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        kind = try values.decode(ProviderKind.self, forKey: .kind)
+        endpoint = try values.decodeIfPresent(String.self, forKey: .endpoint) ?? ""
+        modelIDs = Self.normalizedModels(try values.decodeIfPresent([String].self, forKey: .modelIDs) ?? [])
+        status = try values.decodeIfPresent(ProviderStatus.self, forKey: .status) ?? .unverified
+        statusDetail = try values.decodeIfPresent(String.self, forKey: .statusDetail) ?? "Noch nicht geprüft."
+        capacity = try values.decodeIfPresent(CapacityStatus.self, forKey: .capacity) ?? .unavailable(reason: "Anbieterstatus und Kapazität wurden noch nicht verifiziert.")
+        credentialReference = try values.decodeIfPresent(String.self, forKey: .credentialReference) ?? Self.credentialReference(for: id)
+        loginExecutable = try values.decodeIfPresent(String.self, forKey: .loginExecutable)
+        loginArguments = try values.decodeIfPresent([String].self, forKey: .loginArguments) ?? []
+    }
+
+    public static func credentialReference(for id: UUID) -> String {
+        "provider-\(id.uuidString.lowercased())"
+    }
+
+    public static func normalizedModels(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap {
+            let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty, seen.insert(value).inserted else { return nil }
+            return value
+        }
+    }
+}
+
+public struct ProviderProbeResult: Equatable, Sendable {
+    public var status: ProviderStatus
+    public var detail: String
+    public var modelIDs: [String]
+
+    public init(status: ProviderStatus, detail: String, modelIDs: [String] = []) {
+        self.status = status
+        self.detail = detail
+        self.modelIDs = Provider.normalizedModels(modelIDs)
+    }
+}
+
+public enum WorkerModelSuggestions {
+    public static let defaults = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "k3[1m]", "MiniMax-M3"]
+
+    public static func values(providerID: UUID?, providers: [Provider]) -> [String] {
+        let discovered = providerID.flatMap { id in providers.first(where: { $0.id == id })?.modelIDs } ?? []
+        return Provider.normalizedModels(discovered + defaults)
     }
 }
 

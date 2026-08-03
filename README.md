@@ -4,7 +4,7 @@ Get shit done with coding agents — Michael Welsch's Claude Code "workjet" setu
 
 Runs GPT-5.6, MiniMax M3, and Kimi K3 as headless workers inside Claude Code.
 
-Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. A worker invocation is a single process — brief in via `-p`, report out on stdout. `claude-agent` is a role-based dispatcher with explicit degradation and failure semantics. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers. The default installer loads it only through `/workjet`; the repository's `CLAUDE.md` import supports project-local or opt-in global use.
+Each worker is a small zsh wrapper around the standard `claude` CLI: it sets its own `CLAUDE_CONFIG_DIR`, authenticates against an Anthropic-compatible endpoint via env vars, and runs `claude --bare`. Direct wrapper calls stay in the foreground and are synchronously observed in `~/.local/state/workjet/runs`; stdin/stdout/stderr and the child exit code remain unchanged. `claude-agent` is a role-based dispatcher with explicit degradation and failure semantics and owns its existing journal, so the observer detects that context and does not double-count it. `AGENTS.md` is the orchestrator prompt for the Claude session that coordinates the workers. The default installer loads it only through `/workjet`; the repository's `CLAUDE.md` import supports project-local or opt-in global use.
 
 ## Roles
 
@@ -24,6 +24,7 @@ Review model: the orchestrator self-reviews adversarially by default; Kimi revie
 | `bin/claude-sol` | GPT-5.6 (reasoning high) via a local CLIProxyAPI bridge; ChatGPT Pro subscription |
 | `bin/claude-minimax` | MiniMax M3; MiniMax coding plan |
 | `bin/claude-kimi` | Kimi K3 (1M context); Kimi coding plan |
+| `bin/workjet-observe` | Foreground observer for direct wrapper calls; dispatcher-owned calls bypass it |
 | `bin/claude-agent` | Role-based dispatcher: probes the required worker, degrades only with explicit authorization |
 | `bin/claude-fleet` | Multi-brief runner: delegates through `claude-agent`, with a global three-slot provider semaphore |
 | `AGENTS.md` | Orchestrator prompt: role split, brief format, review model, operating rules |
@@ -59,7 +60,7 @@ git clone https://github.com/metric-space-ai/claude-workjet /tmp/claude-workjet
 cd /tmp/claude-workjet && ./install.sh
 ```
 
-Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent,fleet}` prints five paths, and `~/.local/bin` is on `PATH`.
+Check: `ls ~/.local/bin/claude-{sol,minimax,kimi,agent,fleet} ~/.local/bin/workjet-observe` prints six paths, and `~/.local/bin` is on `PATH`.
 
 ### 2. MiniMax (skip without subscription)
 
@@ -162,7 +163,7 @@ In any Claude Code session: `/workjet <task>` (or just say "workjet"). The skill
 claude-sol -p "$(cat brief.md)" --allowedTools "Read,Write,Edit,Grep,Glob,Bash" < /dev/null
 ```
 
-`< /dev/null` prevents a worker that asks a question from blocking forever. For long jobs, run in the background and read the output file.
+`< /dev/null` prevents a worker that asks a question from blocking forever. Direct calls create a minimal run journal without recording prompt contents or secrets. An outer dispatcher that owns the journal can set `WORKJET_OBSERVER_BYPASS=1`; `claude-agent` is also detected through the parent process chain. For long jobs, run in the background and read the output file.
 
 Brief format (defined in `AGENTS.md`): hard file whitelist, acceptance criteria as exact commands, an escape-hatch clause (stop and justify instead of widening scope), a structured report tail, no subagents. Workers cannot be steered mid-run; all precision goes into the brief.
 

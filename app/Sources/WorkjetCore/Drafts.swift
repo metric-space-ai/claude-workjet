@@ -6,6 +6,7 @@ public struct WorkerDraft: Equatable {
     public var harness: Harness
     public var model: String
     public var instructions: String
+    public var reasoningEffort: ReasoningEffort?
     public var computerID: UUID?
     public var providerID: UUID?
     public var executable: String
@@ -17,6 +18,7 @@ public struct WorkerDraft: Equatable {
         self.harness = worker?.harness ?? .claudeCode
         self.model = worker?.model ?? ""
         self.instructions = worker?.instructions ?? ""
+        self.reasoningEffort = worker?.reasoningEffort
         self.computerID = worker?.computerID
         self.providerID = worker?.providerID
         self.executable = worker?.invocation.executable ?? ""
@@ -57,6 +59,7 @@ public struct WorkerDraft: Equatable {
         result.harness = harness
         result.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         result.instructions = instructions
+        result.reasoningEffort = reasoningEffort
         result.computerID = computerID
         result.providerID = providerID
         result.invocation = WorkerInvocation(
