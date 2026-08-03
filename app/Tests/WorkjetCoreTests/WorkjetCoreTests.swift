@@ -30,6 +30,19 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(worker?.invocation.capabilities, ["Review", "Tests"])
         XCTAssertEqual(WorkerDraft(worker: worker).providerID, providerID)
     }
+
+    func testBootstrapNormalizesSkillOnlyAndDispatcherBounds() {
+        var config = WorkjetDefaults.configuration()
+        config.skillActivation = .global
+        config.providerSlots = 9
+        config.probeTimeoutSeconds = 1
+        config.turnTimeoutSeconds = 99_999
+        let normalized = WorkjetBootstrap.normalized(config)
+        XCTAssertEqual(normalized.skillActivation, .skillOnly)
+        XCTAssertEqual(normalized.providerSlots, 3)
+        XCTAssertEqual(normalized.probeTimeoutSeconds, 5)
+        XCTAssertEqual(normalized.turnTimeoutSeconds, 10_800)
+    }
 }
 
 final class ConfigurationStoreTests: XCTestCase {
@@ -65,6 +78,9 @@ final class ManagedPromptTests: XCTestCase {
         let config = WorkjetDefaults.configuration(); let body = ManagedPrompt.workerBody(configuration: config)
         XCTAssertEqual(body, ManagedPrompt.workerBody(configuration: config)); let text = String(decoding: body, as: UTF8.self)
         XCTAssertTrue(text.contains("Fable (Claude Code) bleibt der einzige Orchestrator")); XCTAssertTrue(text.contains("genau einen deklarierten Worker"))
+        XCTAssertTrue(text.contains("höchstens 3 parallele Aufrufe je Provider"))
+        XCTAssertTrue(text.contains("Probe-Timeout 120 s"))
+        XCTAssertTrue(text.contains("Turn-Timeout 5400 s"))
         for worker in config.workers { XCTAssertTrue(text.contains(worker.id.uuidString.lowercased())); XCTAssertTrue(text.contains(worker.invocation.executable)); XCTAssertTrue(text.contains(worker.model)) }
         var hostile = config; hostile.workers[0].instructions = ManagedPrompt.endMarker
         XCTAssertNoThrow(try ManagedPrompt.parse(ManagedPrompt.block(body: ManagedPrompt.workerBody(configuration: hostile))))
@@ -345,7 +361,7 @@ final class RemotePiBootstrapTests: XCTestCase {
     private final class Service: WorkjetService, @unchecked Sendable { var saves: [(WorkjetConfiguration, Bool)] = []; func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws { saves.append((configuration, handwrittenRulesChanged)) }; func runs(workers: [Worker]) -> [RunRecord] { [] }; func stop(_ run: ActiveRun) throws {}; func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus { CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "test", capacity: .unavailable(reason: "test")) }; func storeCredential(_ secret: Data, reference: String) throws {} }
     func testSelectionIsExclusiveAndDebouncedChangesCoalesceOnExplicitFlush() async {
         let service = Service(); let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id)
-        model.providerSlots = 4; model.telemetryRetentionDays = 30; model.cliProxyConfiguration.usageStatisticsEnabled = true; model.skillRules = "n"; model.skillRules = "new rules"; model.addProvider(Provider(name: "API", kind: .apiKey, endpoint: "https://example.test"))
+        model.providerSlots = 2; model.telemetryRetentionDays = 30; model.cliProxyConfiguration.usageStatisticsEnabled = true; model.skillRules = "n"; model.skillRules = "new rules"; model.addProvider(Provider(name: "API", kind: .apiKey, endpoint: "https://example.test"))
         XCTAssertTrue(service.saves.isEmpty)
         await model.flushPersistence()
         XCTAssertEqual(service.saves.count, 1)

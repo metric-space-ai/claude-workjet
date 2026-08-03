@@ -100,6 +100,12 @@ public struct WorkjetBootstrap {
 
     public static func normalized(_ configuration: WorkjetConfiguration) -> WorkjetConfiguration {
         var value = configuration
+        // Workjet is deliberately skill-only. Older config files may still
+        // contain the removed, never-wired global UI option.
+        value.skillActivation = .skillOnly
+        value.providerSlots = min(max(value.providerSlots, 1), 3)
+        value.probeTimeoutSeconds = min(max(value.probeTimeoutSeconds, 5), 600)
+        value.turnTimeoutSeconds = min(max(value.turnTimeoutSeconds, 60), 10_800)
         let local: Computer
         if let existing = value.computers.first(where: \.isLocal) { local = existing }
         else { local = WorkjetDefaults.localComputer; value.computers.insert(local, at: 0) }

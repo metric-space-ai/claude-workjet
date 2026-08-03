@@ -350,7 +350,7 @@ public struct WorkjetConfiguration: Equatable, Codable, Sendable {
     public var degradationAllowed: Bool
     public var cliProxy: CLIProxyConfiguration
 
-    public init(version: Int = currentVersion, workers: [Worker], computers: [Computer], providers: [Provider], selectedComputerID: UUID, skillRules: String, skillActivation: SkillActivation = .skillOnly, injectWorkerDeclarations: Bool = true, telemetryClaudeCodeEvents: Bool = true, telemetrySidecarEvents: Bool = true, telemetryRetentionDays: Int = 14, providerSlots: Int = 3, probeTimeoutSeconds: Int = 20, turnTimeoutSeconds: Int = 900, degradationAllowed: Bool = true, cliProxy: CLIProxyConfiguration = CLIProxyConfiguration()) {
+    public init(version: Int = currentVersion, workers: [Worker], computers: [Computer], providers: [Provider], selectedComputerID: UUID, skillRules: String, skillActivation: SkillActivation = .skillOnly, injectWorkerDeclarations: Bool = true, telemetryClaudeCodeEvents: Bool = true, telemetrySidecarEvents: Bool = true, telemetryRetentionDays: Int = 14, providerSlots: Int = 3, probeTimeoutSeconds: Int = 120, turnTimeoutSeconds: Int = 5400, degradationAllowed: Bool = true, cliProxy: CLIProxyConfiguration = CLIProxyConfiguration()) {
         self.version = version
         self.workers = workers
         self.computers = computers

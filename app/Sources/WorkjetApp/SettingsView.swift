@@ -36,14 +36,8 @@ private struct SkillSettingsSection: View {
             Text("Orchestrator-Regeln (handschriftlicher Inhalt außerhalb des verwalteten Blocks)").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
             TextEditor(text: $model.skillRules).font(.system(size: 12)).scrollContentBackground(.hidden).padding(6).frame(minHeight: 96)
                 .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
-            Text("Aktivierung").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
-            HStack(spacing: 8) {
-                ForEach(SkillActivation.allCases, id: \.self) { activation in
-                    WJChoiceButton(title: activation.rawValue, isSelected: model.skillActivation == activation) { model.skillActivation = activation }
-                }
-            }
             Toggle("Worker-Deklarationen automatisch verwalten", isOn: $model.injectWorkerDeclarations).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
-            Text("Fable/Claude Code bleibt der einzige Orchestrator und invokiert genau einen ausgewählten Worker.").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
+            Text("Wird ausschließlich über /workjet geladen. Fable/Claude Code bleibt der einzige Orchestrator und invokiert genau einen ausgewählten Worker.").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
             Text("Generierter verwalteter Block").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
             ScrollView { Text(model.promptPreview).font(.system(size: 10, design: .monospaced)).foregroundStyle(WJTheme.secondaryText).frame(maxWidth: .infinity, alignment: .leading).padding(8).textSelection(.enabled) }
                 .frame(height: 150).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
@@ -184,9 +178,9 @@ private struct ExecutionSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WJSectionHeader(title: "Ausführung (Infrastruktur-Defaults)")
-            Stepper(value: $model.providerSlots, in: 1...8) { Text("Provider-Slots: \(model.providerSlots)").font(.system(size: 12)) }
-            Stepper(value: $model.probeTimeoutSeconds, in: 5...120, step: 5) { Text("Probe-Timeout: \(model.probeTimeoutSeconds) s").font(.system(size: 12)) }
-            Stepper(value: $model.turnTimeoutSeconds, in: 60...3600, step: 60) { Text("Turn-Timeout: \(model.turnTimeoutSeconds) s").font(.system(size: 12)) }
+            Stepper(value: $model.providerSlots, in: 1...3) { Text("Provider-Slots: \(model.providerSlots)").font(.system(size: 12)) }
+            Stepper(value: $model.probeTimeoutSeconds, in: 5...600, step: 5) { Text("Probe-Timeout: \(model.probeTimeoutSeconds) s").font(.system(size: 12)) }
+            Stepper(value: $model.turnTimeoutSeconds, in: 60...10800, step: 60) { Text("Turn-Timeout: \(model.turnTimeoutSeconds) s").font(.system(size: 12)) }
             Toggle("Explizite Degradation erlauben", isOn: $model.degradationAllowed).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
             Text("Fable steuert Zerlegung, Worker-Auswahl und Workflow. Die App fällt nie stillschweigend zurück.").font(.system(size: 11)).foregroundStyle(WJTheme.tertiaryText)
         }

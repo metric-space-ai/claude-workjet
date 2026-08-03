@@ -22,6 +22,7 @@ public enum ManagedPrompt {
         var lines = [
             "## Verwaltete Workjet-Worker",
             "Fable (Claude Code) bleibt der einzige Orchestrator. Fable wählt und invokiert pro Delegation genau einen deklarierten Worker; die Workjet-App wählt keine Worker, baut keine Workflows und fällt niemals stillschweigend zurück.",
+            "Infrastruktur: höchstens \(configuration.providerSlots) parallele Aufrufe je Provider; Probe-Timeout \(configuration.probeTimeoutSeconds) s; Turn-Timeout \(configuration.turnTimeoutSeconds) s; Degradation \(configuration.degradationAllowed ? "nur nach expliziter Freigabe zulässig" : "nicht zulässig").",
             ""
         ]
         for worker in configuration.workers {
