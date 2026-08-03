@@ -16,7 +16,7 @@ struct RootView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             WJTheme.background.ignoresSafeArea()
             Group {
                 switch screen {
@@ -40,10 +40,25 @@ struct RootView: View {
                 }
             }
             .transition(.opacity)
+            if let message = model.statusMessages.last {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text(message).font(.system(size: 10)).lineLimit(3)
+                    Spacer(minLength: 4)
+                    Button { model.dismissMessage(message) } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).accessibilityLabel("Statusmeldung schließen")
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(Color(nsColor: .systemOrange).opacity(0.96))
+                .padding(8)
+            }
         }
         .animation(.easeInOut(duration: 0.18), value: screen)
         .frame(width: WJTheme.popoverWidth, height: WJTheme.popoverHeight)
         .preferredColorScheme(.dark)
+        .onAppear { model.startPolling() }
+        .onDisappear { model.stopPolling() }
     }
 
     private func openComputerEditor(_ computer: Computer?, from returnTo: Screen) {

@@ -5,7 +5,7 @@ let package = Package(
     name: "Workjet",
     platforms: [.macOS(.v14)],
     targets: [
-        .target(name: "WorkjetCore"),
+        .target(name: "WorkjetCore", linkerSettings: [.linkedFramework("Security")]),
         .executableTarget(
             name: "WorkjetApp",
             dependencies: ["WorkjetCore"]

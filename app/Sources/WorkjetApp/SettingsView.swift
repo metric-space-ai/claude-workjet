@@ -1,11 +1,8 @@
 import SwiftUI
 import WorkjetCore
 
-/// Complete inline settings view inside the same popover. Linear, cardless:
-/// section headers plus thin dividers.
 struct SettingsView: View {
     @EnvironmentObject private var model: WorkjetViewModel
-
     let onClose: () -> Void
     let onAddComputer: () -> Void
     let onEditComputer: (Computer) -> Void
@@ -13,409 +10,184 @@ struct SettingsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Einstellungen")
-                    .font(.system(size: 15, weight: .semibold))
-                    .accessibilityAddTraits(.isHeader)
+                Text("Einstellungen").font(.system(size: 15, weight: .semibold)).accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(WJIconButtonStyle())
-                .accessibilityLabel("Einstellungen schließen")
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+                Button(action: onClose) { Image(systemName: "xmark") }.buttonStyle(WJIconButtonStyle()).accessibilityLabel("Einstellungen schließen")
+            }.padding(.horizontal, 14).padding(.vertical, 10)
             WJDivider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    SkillSettingsSection()
-                    WJDivider().padding(.vertical, 14)
-                    AccessSettingsSection()
-                    WJDivider().padding(.vertical, 14)
-                    ComputersSettingsSection(onAdd: onAddComputer, onEdit: onEditComputer)
-                    WJDivider().padding(.vertical, 14)
-                    TelemetrySettingsSection()
-                    WJDivider().padding(.vertical, 14)
+                    SkillSettingsSection(); WJDivider().padding(.vertical, 14)
+                    AccessSettingsSection(); WJDivider().padding(.vertical, 14)
+                    ComputersSettingsSection(onAdd: onAddComputer, onEdit: onEditComputer); WJDivider().padding(.vertical, 14)
+                    TelemetrySettingsSection(); WJDivider().padding(.vertical, 14)
                     ExecutionSettingsSection()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
+                }.padding(14)
             }
         }
     }
 }
-
-// MARK: - 1. Workjet Skill
 
 private struct SkillSettingsSection: View {
     @EnvironmentObject private var model: WorkjetViewModel
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WJSectionHeader(title: "Workjet Skill")
-
-            Text("Orchestrator-Regeln")
-                .font(.system(size: 12))
-                .foregroundStyle(WJTheme.secondaryText)
-            TextEditor(text: $model.skillRules)
-                .font(.system(size: 12))
-                .scrollContentBackground(.hidden)
-                .padding(6)
-                .frame(minHeight: 96)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
-                .accessibilityLabel("Orchestrator-Regeln bearbeiten")
-
-            Text("Aktivierung")
-                .font(.system(size: 12))
-                .foregroundStyle(WJTheme.secondaryText)
+            Text("Orchestrator-Regeln (handschriftlicher Inhalt außerhalb des verwalteten Blocks)").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
+            TextEditor(text: $model.skillRules).font(.system(size: 12)).scrollContentBackground(.hidden).padding(6).frame(minHeight: 96)
+                .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            Text("Aktivierung").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
             HStack(spacing: 8) {
                 ForEach(SkillActivation.allCases, id: \.self) { activation in
-                    WJChoiceButton(
-                        title: activation.rawValue,
-                        isSelected: model.skillActivation == activation,
-                        accessibilityLabel: "Aktivierung \(activation.rawValue)",
-                        help: activation == .skillOnly
-                            ? "Der Skill lädt nur über /workjet."
-                            : "Der Skill ist global in jeder Session aktiv."
-                    ) {
-                        model.skillActivation = activation
-                    }
+                    WJChoiceButton(title: activation.rawValue, isSelected: model.skillActivation == activation) { model.skillActivation = activation }
                 }
             }
-
-            Toggle(isOn: $model.injectWorkerDeclarations) {
-                Text("Worker-Deklarationen automatisch anhängen")
-                    .font(.system(size: 12))
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityLabel("Worker-Deklarationen automatisch anhängen")
-
-            Text("Fable erhält Skill + Worker-Deklarationen und übernimmt Zerlegung, Routing und Ausführung.")
-                .font(.system(size: 11))
-                .foregroundStyle(WJTheme.secondaryText)
-
-            Text("Generierter Prompt")
-                .font(.system(size: 12))
-                .foregroundStyle(WJTheme.secondaryText)
-            ScrollView {
-                Text(model.promptPreview)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(WJTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .textSelection(.enabled)
-            }
-            .frame(height: 150)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
-            .accessibilityLabel("Vorschau des generierten Skill-Prompts")
+            Toggle("Worker-Deklarationen automatisch verwalten", isOn: $model.injectWorkerDeclarations).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Text("Fable/Claude Code bleibt der einzige Orchestrator und invokiert genau einen ausgewählten Worker.").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
+            Text("Generierter verwalteter Block").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText)
+            ScrollView { Text(model.promptPreview).font(.system(size: 10, design: .monospaced)).foregroundStyle(WJTheme.secondaryText).frame(maxWidth: .infinity, alignment: .leading).padding(8).textSelection(.enabled) }
+                .frame(height: 150).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
         }
     }
 }
-
-// MARK: - 2. Models & Access
 
 private struct AccessSettingsSection: View {
     @EnvironmentObject private var model: WorkjetViewModel
     @State private var editingProviderID: UUID?
+    @State private var inferenceSecret = ""
+    @State private var managementSecret = ""
+    @State private var providerSecret = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 WJSectionHeader(title: "Modelle & Zugang")
                 Spacer()
-                Button {
-                    let provider = Provider(
-                        name: "Neuer Anbieter",
-                        kind: .apiKey,
-                        endpoint: "",
-                        status: .offline
-                    )
-                    model.addProvider(provider)
-                    editingProviderID = provider.id
-                } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(WJIconButtonStyle())
-                .accessibilityLabel("Anbieter hinzufügen")
-                .help("OAuth-/Abo- oder API-Anbieter hinzufügen")
+                Button { let provider = Provider(name: "Neuer Anbieter", kind: .apiKey, endpoint: ""); model.addProvider(provider); editingProviderID = provider.id } label: { Image(systemName: "plus") }
+                    .buttonStyle(WJIconButtonStyle()).accessibilityLabel("Anbieter hinzufügen")
             }
-
-            // CLIProxy status row
-            HStack(spacing: 8) {
-                StatusDot(status: model.cliProxy.status)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("CLIProxyAPI")
-                        .font(.system(size: 12, weight: .semibold))
-                    Text("\(model.cliProxy.endpoint) · \(model.cliProxy.account)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(WJTheme.secondaryText)
-                        .lineLimit(1)
-                }
-                Spacer()
-                Text(model.cliProxy.status.rawValue)
-                    .font(.system(size: 11))
-                    .foregroundStyle(WJTheme.secondaryText)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("CLIProxyAPI, \(model.cliProxy.status.rawValue), Endpunkt \(model.cliProxy.endpoint)")
-
-            ForEach(model.providers.indices, id: \.self) { index in
-                providerRow(index: index)
-            }
+            cliProxyEditor
+            ForEach(model.providers) { provider in providerRow(provider) }
         }
     }
 
-    private func providerRow(index: Int) -> some View {
-        let provider = model.providers[index]
-        return VStack(alignment: .leading, spacing: 8) {
-            Button {
-                editingProviderID = editingProviderID == provider.id ? nil : provider.id
-            } label: {
+    private var cliProxyEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle().fill(cliColor).frame(width: 7, height: 7)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("CLIProxyAPI · \(model.cliProxyStatus.state.rawValue)").font(.system(size: 12, weight: .semibold))
+                    Text(model.cliProxyStatus.detail).font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+                }
+                Spacer()
+                Button { model.refreshCLIProxy() } label: { Image(systemName: "arrow.clockwise") }.buttonStyle(WJIconButtonStyle()).accessibilityLabel("CLIProxy erneut prüfen")
+            }
+            field("Loopback-Endpunkt", text: $model.cliProxyConfiguration.endpoint)
+            field("Inferenz-Keychain-Referenz", text: optionalCLIReference(\.inferenceCredentialReference))
+            HStack { SecureField("Inferenz-Geheimnis im Keychain speichern", text: $inferenceSecret).textFieldStyle(.plain); saveSecret(inferenceSecret, reference: model.cliProxyConfiguration.inferenceCredentialReference) { inferenceSecret = "" } }
+                .fieldSurface()
+            field("Management-Keychain-Referenz (getrennt)", text: optionalCLIReference(\.managementCredentialReference))
+            HStack { SecureField("Management-Geheimnis im Keychain speichern", text: $managementSecret).textFieldStyle(.plain); saveSecret(managementSecret, reference: model.cliProxyConfiguration.managementCredentialReference) { managementSecret = "" } }
+                .fieldSurface()
+            Toggle("Lokale Nutzungsstatistik abfragen", isOn: $model.cliProxyConfiguration.usageStatisticsEnabled).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Text(capacityDetail(model.cliProxyStatus.capacity)).font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+        }.padding(10).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface.opacity(0.55)))
+    }
+
+    private func providerRow(_ provider: Provider) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Button { editingProviderID = editingProviderID == provider.id ? nil : provider.id } label: {
                 HStack(spacing: 8) {
                     StatusDot(status: provider.status)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(provider.name)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.primary)
-                        Text("\(provider.kind.rawValue) · \(provider.endpoint)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(WJTheme.secondaryText)
-                            .lineLimit(1)
+                        Text(provider.name).font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary)
+                        Text("\(provider.kind.rawValue) · \(provider.endpoint)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
                     }
-                    Spacer()
-                    Text(quotaDetail(provider.quota))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(WJTheme.secondaryText)
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11))
-                        .foregroundStyle(WJTheme.secondaryText)
+                    Spacer(); Text(capacityDetail(provider.capacity)).font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText).lineLimit(2); Image(systemName: "pencil").font(.system(size: 11))
                 }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(provider.name) bearbeiten, \(provider.status.rawValue), Quota \(quotaDetail(provider.quota))")
-
-            if editingProviderID == provider.id {
-                providerEditor(index: index)
-                    .transition(.opacity)
-            }
+            }.buttonStyle(.plain)
+            if editingProviderID == provider.id { providerEditor(provider) }
         }
-        .animation(.easeInOut(duration: 0.15), value: editingProviderID)
     }
 
-    private func providerEditor(index: Int) -> some View {
+    private func providerEditor(_ provider: Provider) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                ForEach(ProviderKind.allCases, id: \.self) { kind in
-                    WJChoiceButton(
-                        title: kind.rawValue,
-                        isSelected: model.providers[index].kind == kind,
-                        accessibilityLabel: "Anbieter-Typ \(kind.rawValue)"
-                    ) {
-                        model.providers[index].kind = kind
-                        model.updateProvider(model.providers[index])
-                    }
-                }
-            }
-            TextField("Name", text: providerBinding(index, \.name))
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
-                .accessibilityLabel("Name des Anbieters")
-            TextField("Endpunkt", text: providerBinding(index, \.endpoint))
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, design: .monospaced))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
-                .accessibilityLabel("Endpunkt des Anbieters")
-        }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface.opacity(0.6)))
+            HStack(spacing: 6) { ForEach(ProviderKind.allCases, id: \.self) { kind in WJChoiceButton(title: kind.rawValue, isSelected: provider.kind == kind) { update(provider) { $0.kind = kind } } } }
+            field("Name", text: providerBinding(provider, \.name))
+            field("Endpunkt", text: providerBinding(provider, \.endpoint))
+            field("Keychain-Referenz", text: optionalProviderReference(provider))
+            HStack {
+                SecureField("API-Geheimnis im Keychain speichern", text: $providerSecret).textFieldStyle(.plain)
+                saveSecret(providerSecret, reference: provider.credentialReference) { providerSecret = "" }
+            }.fieldSurface()
+            field("Login-Executable (nur Anzeige)", text: optionalProviderString(provider, \.loginExecutable))
+            field("Login-Argumente, eine Zeile je Argument", text: providerArguments(provider))
+            Text("Login wird niemals automatisch oder headless ausgeführt.").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+        }.padding(10).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface.opacity(0.55)))
     }
 
-    private func providerBinding(_ index: Int, _ keyPath: WritableKeyPath<Provider, String>) -> Binding<String> {
-        Binding(
-            get: { model.providers[index][keyPath: keyPath] },
-            set: { newValue in
-                model.providers[index][keyPath: keyPath] = newValue
-                model.updateProvider(model.providers[index])
-            }
-        )
-    }
-
-    private func quotaDetail(_ quota: QuotaStatus) -> String {
-        let percent = Int((quota.usedPercent * 100).rounded())
-        return "Quota \(percent)% · \(quota.rateLimited ? "Rate-Limit" : "Rate ok")"
-    }
+    private func update(_ provider: Provider, mutation: (inout Provider) -> Void) { var copy = provider; mutation(&copy); model.updateProvider(copy) }
+    private func providerBinding(_ provider: Provider, _ keyPath: WritableKeyPath<Provider, String>) -> Binding<String> { Binding(get: { provider[keyPath: keyPath] }, set: { value in update(provider) { $0[keyPath: keyPath] = value } }) }
+    private func optionalProviderReference(_ provider: Provider) -> Binding<String> { Binding(get: { provider.credentialReference ?? "" }, set: { value in update(provider) { $0.credentialReference = value.isEmpty ? nil : value } }) }
+    private func optionalProviderString(_ provider: Provider, _ keyPath: WritableKeyPath<Provider, String?>) -> Binding<String> { Binding(get: { provider[keyPath: keyPath] ?? "" }, set: { value in update(provider) { $0[keyPath: keyPath] = value.isEmpty ? nil : value } }) }
+    private func providerArguments(_ provider: Provider) -> Binding<String> { Binding(get: { provider.loginArguments.joined(separator: "\n") }, set: { value in update(provider) { $0.loginArguments = value.split(whereSeparator: \.isNewline).map(String.init) } }) }
+    private func optionalCLIReference(_ keyPath: WritableKeyPath<CLIProxyConfiguration, String?>) -> Binding<String> { Binding(get: { model.cliProxyConfiguration[keyPath: keyPath] ?? "" }, set: { value in var copy = model.cliProxyConfiguration; copy[keyPath: keyPath] = value.isEmpty ? nil : value; model.cliProxyConfiguration = copy }) }
+    private func saveSecret(_ secret: String, reference: String?, clear: @escaping () -> Void) -> some View { Button("Sichern") { if let reference, !reference.isEmpty { model.storeCredential(secret, reference: reference); clear() } }.buttonStyle(.bordered).controlSize(.mini).disabled(secret.isEmpty || reference?.isEmpty != false) }
+    private func field(_ placeholder: String, text: Binding<String>) -> some View { TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 11)).fieldSurface() }
+    private var cliColor: Color { switch model.cliProxyStatus.state { case .reachable: WJTheme.quotaOK; case .usageDisabled, .managementUnavailable, .authRequired: WJTheme.quotaWarning; case .unsafeEndpoint, .offline: WJTheme.quotaCritical } }
 }
 
 private struct StatusDot: View {
     let status: ProviderStatus
-
-    private var color: Color {
-        switch status {
-        case .connected: return WJTheme.quotaOK
-        case .degraded: return WJTheme.quotaWarning
-        case .offline: return WJTheme.quotaCritical
-        }
-    }
-
-    var body: some View {
-        Circle()
-            .fill(color)
-            .frame(width: 7, height: 7)
-            .accessibilityHidden(true)
-    }
+    var body: some View { Circle().fill(status == .connected ? WJTheme.quotaOK : status == .degraded ? WJTheme.quotaWarning : WJTheme.quotaCritical).frame(width: 7, height: 7) }
 }
 
-// MARK: - 3. Computers
+private func capacityDetail(_ capacity: CapacityStatus) -> String {
+    guard let fraction = capacity.fraction else { return "Kapazität nicht verfügbar: \(capacity.reason ?? "unbekannter Grund")" }
+    let source = { if case .measured = capacity { return "gemessen" }; return "benutzerdefiniert" }()
+    return "Kapazität \(Int((fraction * 100).rounded()))% (\(source))" + (capacity.rateLimited == true ? " · Rate-Limit" : "")
+}
 
 private struct ComputersSettingsSection: View {
     @EnvironmentObject private var model: WorkjetViewModel
-    let onAdd: () -> Void
-    let onEdit: (Computer) -> Void
-
+    let onAdd: () -> Void; let onEdit: (Computer) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                WJSectionHeader(title: "Computer")
-                Spacer()
-                Button(action: onAdd) {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(WJIconButtonStyle())
-                .accessibilityLabel("Computer hinzufügen")
-                .help("Tailscale- oder SSH-Host hinzufügen")
-            }
-
+            HStack { WJSectionHeader(title: "Computer"); Spacer(); Button(action: onAdd) { Image(systemName: "plus") }.buttonStyle(WJIconButtonStyle()) }
             ForEach(model.computers) { computer in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(computer.name)
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(detail(for: computer))
-                            .font(.system(size: 11))
-                            .foregroundStyle(WJTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if !computer.isLocal {
-                        Button {
-                            onEdit(computer)
-                        } label: {
-                            Image(systemName: "pencil")
-                        }
-                        .buttonStyle(WJIconButtonStyle())
-                        .accessibilityLabel("\(computer.name) bearbeiten")
-                    }
-                }
-                .accessibilityElement(children: .contain)
+                HStack { VStack(alignment: .leading, spacing: 2) { Text(computer.name).font(.system(size: 12, weight: .semibold)); Text(detail(computer)).font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1) }; Spacer(); if !computer.isLocal { Button { onEdit(computer) } label: { Image(systemName: "pencil") }.buttonStyle(WJIconButtonStyle()) } }
             }
         }
     }
-
-    private func detail(for computer: Computer) -> String {
-        if computer.isLocal {
-            return "Immer verfügbar"
-        }
-        let sandbox = computer.sandboxEnabled ? "Sandbox an" : "Sandbox aus"
-        let sidecar = computer.pinnedSidecarVersion.isEmpty
-            ? "kein Sidecar"
-            : "Sidecar \(computer.pinnedSidecarVersion)"
-        return "\(computer.transport.rawValue) · \(computer.host) · \(sandbox) · \(sidecar)"
-    }
+    private func detail(_ computer: Computer) -> String { computer.isLocal ? "Immer vorhanden" : "\(computer.transport.rawValue) · \(computer.host) · \(computer.telemetryEnabled ? "Telemetrie konfiguriert" : "keine Telemetrie")" }
 }
-
-// MARK: - 4. Telemetry
 
 private struct TelemetrySettingsSection: View {
     @EnvironmentObject private var model: WorkjetViewModel
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WJSectionHeader(title: "Telemetrie")
-
-            Toggle(isOn: $model.telemetryClaudeCodeEvents) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Claude-Code-Events")
-                        .font(.system(size: 12))
-                    Text("stream-json- und Hook-Events der Claude-Code-Worker.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(WJTheme.secondaryText)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityLabel("Claude-Code-Telemetrie aktivieren")
-
-            Toggle(isOn: $model.telemetrySidecarEvents) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Pi-Sidecar-Events")
-                        .font(.system(size: 12))
-                    Text("Socket-Events der Pi-Sidecar-Worker.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(WJTheme.secondaryText)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityLabel("Pi-Sidecar-Telemetrie aktivieren")
-
-            Stepper(value: $model.telemetryRetentionDays, in: 1...90) {
-                Text("Verlauf: \(model.telemetryRetentionDays) Tage")
-                    .font(.system(size: 12))
-            }
-            .accessibilityLabel("Aufbewahrung des Telemetrie-Verlaufs in Tagen")
+            Toggle("Claude-Code-Stream-Artefakte (live, wenn vorhanden)", isOn: $model.telemetryClaudeCodeEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Toggle("Pi-Antwort-Events (derzeit post-hoc)", isOn: $model.telemetrySidecarEvents).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Stepper(value: $model.telemetryRetentionDays, in: 1...90) { Text("Verlauf: \(model.telemetryRetentionDays) Tage").font(.system(size: 12)) }
         }
     }
 }
 
-// MARK: - 5. Execution infrastructure defaults
-
 private struct ExecutionSettingsSection: View {
     @EnvironmentObject private var model: WorkjetViewModel
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             WJSectionHeader(title: "Ausführung (Infrastruktur-Defaults)")
-
-            Stepper(value: $model.providerSlots, in: 1...8) {
-                Text("Provider-Slots: \(model.providerSlots)")
-                    .font(.system(size: 12))
-            }
-            .accessibilityLabel("Anzahl paralleler Provider-Slots")
-
-            Stepper(value: $model.probeTimeoutSeconds, in: 5...120, step: 5) {
-                Text("Probe-Timeout: \(model.probeTimeoutSeconds) s")
-                    .font(.system(size: 12))
-            }
-            .accessibilityLabel("Probe-Timeout in Sekunden")
-
-            Stepper(value: $model.turnTimeoutSeconds, in: 60...3600, step: 60) {
-                Text("Turn-Timeout: \(model.turnTimeoutSeconds) s")
-                    .font(.system(size: 12))
-            }
-            .accessibilityLabel("Turn-Timeout in Sekunden")
-
-            Toggle(isOn: $model.degradationAllowed) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Explizite Degradation erlauben")
-                        .font(.system(size: 12))
-                    Text("Bei Quota-/Auth-Wänden darf nur mit ausdrücklicher Freigabe auf ein schwächeres Modell gewechselt werden — nie stillschweigend.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(WJTheme.secondaryText)
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.small)
-            .accessibilityLabel("Explizite Degradation erlauben")
-
-            Text("Nur Infrastruktur-Defaults — Zerlegung, Routing und Workflow-Steuerung liegen bei Fable, nicht in dieser App.")
-                .font(.system(size: 11))
-                .foregroundStyle(WJTheme.tertiaryText)
+            Stepper(value: $model.providerSlots, in: 1...8) { Text("Provider-Slots: \(model.providerSlots)").font(.system(size: 12)) }
+            Stepper(value: $model.probeTimeoutSeconds, in: 5...120, step: 5) { Text("Probe-Timeout: \(model.probeTimeoutSeconds) s").font(.system(size: 12)) }
+            Stepper(value: $model.turnTimeoutSeconds, in: 60...3600, step: 60) { Text("Turn-Timeout: \(model.turnTimeoutSeconds) s").font(.system(size: 12)) }
+            Toggle("Explizite Degradation erlauben", isOn: $model.degradationAllowed).toggleStyle(.switch).controlSize(.small).font(.system(size: 12))
+            Text("Fable steuert Zerlegung, Worker-Auswahl und Workflow. Die App fällt nie stillschweigend zurück.").font(.system(size: 11)).foregroundStyle(WJTheme.tertiaryText)
         }
     }
+}
+
+private extension View {
+    func fieldSurface() -> some View { self.padding(.horizontal, 9).padding(.vertical, 6).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface)) }
 }

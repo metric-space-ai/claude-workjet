@@ -7,6 +7,9 @@ public struct WorkerDraft: Equatable {
     public var model: String
     public var instructions: String
     public var computerID: UUID?
+    public var executable: String
+    public var arguments: String
+    public var capabilities: String
 
     public init(worker: Worker? = nil) {
         self.name = worker?.name ?? ""
@@ -14,12 +17,16 @@ public struct WorkerDraft: Equatable {
         self.model = worker?.model ?? ""
         self.instructions = worker?.instructions ?? ""
         self.computerID = worker?.computerID
+        self.executable = worker?.invocation.executable ?? ""
+        self.arguments = worker?.invocation.arguments.joined(separator: "\n") ?? ""
+        self.capabilities = worker?.invocation.capabilities.joined(separator: "\n") ?? ""
     }
 
     public var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && computerID != nil
+            && !executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Applies the draft to an existing worker or creates a new one.
@@ -36,6 +43,11 @@ public struct WorkerDraft: Equatable {
         result.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         result.instructions = instructions
         result.computerID = computerID
+        result.invocation = WorkerInvocation(
+            executable: executable.trimmingCharacters(in: .whitespacesAndNewlines),
+            arguments: arguments.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+            capabilities: capabilities.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        )
         return result
     }
 }

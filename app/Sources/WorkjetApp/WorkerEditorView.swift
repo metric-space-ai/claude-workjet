@@ -30,6 +30,7 @@ struct WorkerEditorView: View {
                     harnessSection
                     modelSection
                     instructionsSection
+                    invocationSection
                     computerSection
                 }
                 .padding(.horizontal, 14)
@@ -37,9 +38,8 @@ struct WorkerEditorView: View {
             }
         }
         .onAppear {
-            if draft.computerID == nil {
-                draft.computerID = model.computers.first?.id
-            }
+            if draft.computerID == nil { draft.computerID = model.computers.first(where: \.isLocal)?.id }
+            if draft.executable.isEmpty { draft.executable = "~/.local/bin/claude-sol" }
         }
     }
 
@@ -138,6 +138,22 @@ struct WorkerEditorView: View {
                 .frame(minHeight: 110)
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(WJTheme.surface))
                 .accessibilityLabel("Workerspezifische Anweisungen")
+        }
+    }
+
+    private var invocationSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            WJSectionHeader(title: "Stabile Invocation")
+            TextField("Absolute Datei oder ~/… Wrapper", text: $draft.executable)
+                .textFieldStyle(.plain).font(.system(size: 12, design: .monospaced))
+                .padding(8).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            Text("Argumente (eine Zeile je Argument; <WORKJET_BRIEF> markiert den Brief)")
+                .font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
+            TextEditor(text: $draft.arguments).font(.system(size: 11, design: .monospaced)).scrollContentBackground(.hidden)
+                .padding(6).frame(minHeight: 70).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            Text("Fähigkeiten (eine Zeile je Aussage)").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText)
+            TextEditor(text: $draft.capabilities).font(.system(size: 11)).scrollContentBackground(.hidden)
+                .padding(6).frame(minHeight: 70).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
         }
     }
 
