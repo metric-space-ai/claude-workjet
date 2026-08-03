@@ -97,7 +97,8 @@ public struct CLIProxyInspector: Sendable {
         guard let baseURL = URL(string: configuration.endpoint), isSafeLoopback(baseURL) else {
             return CLIProxyStatus(endpoint: configuration.endpoint, state: .unsafeEndpoint, detail: "Nur Loopback-Endpunkte (localhost, 127.0.0.0/8 oder ::1) sind erlaubt.", capacity: .unavailable(reason: "Kapazität ist für einen unsicheren Endpunkt nicht abrufbar."))
         }
-        var reachability = URLRequest(url: baseURL)
+        let inferenceURL = baseURL.appendingPathComponent("v1/models")
+        var reachability = URLRequest(url: inferenceURL)
         reachability.httpMethod = "GET"
         if let reference = configuration.inferenceCredentialReference,
            let secret = try? credentials.read(reference: reference),
@@ -111,6 +112,9 @@ public struct CLIProxyInspector: Sendable {
         }
         if response.statusCode == 401 || response.statusCode == 403 {
             return CLIProxyStatus(endpoint: configuration.endpoint, state: .authRequired, detail: "Der Inferenz-Endpunkt verlangt eine eigene Inferenz-Berechtigung.", capacity: .unavailable(reason: "Inferenz-Authentifizierung erforderlich."))
+        }
+        guard (200..<300).contains(response.statusCode) else {
+            return CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "Die konkrete Inferenzroute /v1/models antwortet mit HTTP \(response.statusCode).", capacity: .unavailable(reason: "CLIProxy-Inferenzroute ist nicht verfügbar."))
         }
         guard configuration.usageStatisticsEnabled else {
             return CLIProxyStatus(endpoint: configuration.endpoint, state: .usageDisabled, detail: "CLIProxy ist erreichbar; lokale Nutzungsstatistik ist deaktiviert.", capacity: .unavailable(reason: "Lokale CLIProxy-Nutzungsstatistik ist deaktiviert."))
@@ -134,7 +138,7 @@ public struct CLIProxyInspector: Sendable {
                 return CLIProxyStatus(endpoint: configuration.endpoint, state: .managementUnavailable, detail: "Management-Endpunkt antwortet mit HTTP \(usage.statusCode).", capacity: .unavailable(reason: "CLIProxy-Management-Endpunkt ist nicht verfügbar."))
             }
             guard let capacity = parseCapacity(usage.data) else {
-                return CLIProxyStatus(endpoint: configuration.endpoint, state: .reachable, detail: "CLIProxy und Management sind erreichbar.", capacity: .unavailable(reason: "Nutzungsantwort enthält kein kompatibles Paar aus Verbrauch und Limit."))
+                return CLIProxyStatus(endpoint: configuration.endpoint, state: .reachable, detail: "CLIProxy und Management sind erreichbar.", capacity: .unavailable(reason: "Nutzungsantwort enthält kein kompatibles, identitäts- und zeitfenstergebundenes Paar aus Verbrauch und Limit."))
             }
             return CLIProxyStatus(endpoint: configuration.endpoint, state: .reachable, detail: "CLIProxy und Management-Nutzungsstatistik sind erreichbar.", capacity: capacity)
         } catch {
@@ -156,12 +160,14 @@ public struct CLIProxyInspector: Sendable {
 
     private func capacity(in value: Any) -> CapacityStatus? {
         if let dictionary = value as? [String: Any] {
-            let used = number(dictionary["used"]) ?? number(dictionary["usage"]) ?? number(dictionary["consumed"])
-            let limit = number(dictionary["limit"]) ?? number(dictionary["quota"]) ?? number(dictionary["capacity"])
-            if let used, let limit, limit > 0, used >= 0, used <= limit {
+            let used = number(dictionary["used"])
+            let limit = number(dictionary["limit"])
+            let window = nonemptyString(dictionary["window"]) ?? nonemptyString(dictionary["period"])
+            let identity = nonemptyString(dictionary["identity"]) ?? nonemptyString(dictionary["account_id"]) ?? nonemptyString(dictionary["model"])
+            if let used, let limit, let window, let identity, limit > 0, used >= 0, used <= limit {
                 let unit = dictionary["unit"] as? String ?? "Einheiten"
                 let limited = dictionary["rate_limited"] as? Bool ?? dictionary["rateLimited"] as? Bool ?? false
-                return .measured(used: used, limit: limit, unit: unit, rateLimited: limited)
+                return .measured(used: used, limit: limit, unit: "\(unit) · \(window) · \(identity)", rateLimited: limited)
             }
             for nested in dictionary.values { if let found = capacity(in: nested) { return found } }
         } else if let array = value as? [Any] {
@@ -174,5 +180,11 @@ public struct CLIProxyInspector: Sendable {
         if let number = value as? NSNumber { return number.doubleValue }
         if let text = value as? String { return Double(text) }
         return nil
+    }
+
+    private func nonemptyString(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

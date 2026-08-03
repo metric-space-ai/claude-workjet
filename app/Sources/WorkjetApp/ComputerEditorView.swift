@@ -11,11 +11,18 @@ struct ComputerEditorView: View {
     let onClose: () -> Void
 
     @State private var draft: ComputerDraft
+    @State private var workingComputer: Computer?
+    @State private var isDeploying = false
+    @State private var deploymentStatus: DeploymentStatus
+    @State private var deploymentDetail: String
 
     init(computer: Computer?, onClose: @escaping () -> Void) {
         self.computer = computer
         self.onClose = onClose
         _draft = State(initialValue: ComputerDraft(computer: computer))
+        _workingComputer = State(initialValue: computer)
+        _deploymentStatus = State(initialValue: computer?.deploymentStatus ?? .notConfigured)
+        _deploymentDetail = State(initialValue: computer?.deploymentDetail ?? "Noch nicht geprüft.")
     }
 
     var body: some View {
@@ -42,15 +49,33 @@ struct ComputerEditorView: View {
                 .font(.system(size: 15, weight: .semibold))
                 .accessibilityAddTraits(.isHeader)
             Spacer()
+            Button("Prüfen & einrichten") {
+                guard let saved = draft.applied(to: workingComputer), draft.isDeployable else { return }
+                isDeploying = true
+                deploymentStatus = .checking
+                deploymentDetail = "Prüfung läuft …"
+                Task {
+                    let deployed = await model.bootstrapRemoteComputer(saved)
+                    workingComputer = deployed
+                    draft = ComputerDraft(computer: deployed)
+                    deploymentStatus = deployed.deploymentStatus
+                    deploymentDetail = deployed.deploymentDetail
+                    isDeploying = false
+                }
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(!draft.isDeployable || isDeploying || computer?.isLocal == true)
+            .accessibilityLabel("Remote-Computer prüfen und Pi-Sidecar einrichten")
             Button("Speichern") {
-                if let saved = draft.applied(to: computer) {
+                if let saved = draft.applied(to: workingComputer) {
                     model.upsertComputer(saved)
-                    onClose()
+                    Task { await model.flushPersistence(); onClose() }
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(!draft.isValid)
+            .disabled(!draft.isValid || computer?.isLocal == true)
             .accessibilityLabel("Computer speichern")
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -95,6 +120,12 @@ struct ComputerEditorView: View {
                   accessibility: "Hostname oder IP-Adresse")
             field(label: "Benutzer", placeholder: "z. B. mw", text: $draft.user,
                   accessibility: "SSH-Benutzername")
+            if draft.transport == .ssh {
+                field(label: "Known hosts", placeholder: "/Users/…/.ssh/workjet_known_hosts", text: $draft.knownHostsPath,
+                      accessibility: "Private known-hosts-Datei")
+                Text("Host-Key-Aufnahme und -Freigabe erfolgen außerhalb von Workjet. Strikte Prüfung bleibt immer aktiv.")
+                    .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            }
             HStack(spacing: 8) {
                 Text("Port")
                     .font(.system(size: 12))
@@ -127,13 +158,31 @@ struct ComputerEditorView: View {
     }
 
     private var sidecarSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            WJSectionHeader(title: "Pi Sidecar (gepinnte Version)")
-            field(label: "Version", placeholder: "z. B. 0.4.2", text: $draft.pinnedSidecarVersion,
-                  accessibility: "Gepinnte Pi-Sidecar-Version")
-            Text("Remote-Worker auf diesem Computer nutzen exakt diese Sidecar-Version.")
-                .font(.system(size: 11))
-                .foregroundStyle(WJTheme.secondaryText)
+        VStack(alignment: .leading, spacing: 7) {
+            WJSectionHeader(title: "Pi Sidecar (gepinnte Version \(PiSidecarRuntime.version))")
+            field(label: "Bundle", placeholder: "/absoluter/Pfad/ctox-pi-sidecar.mjs", text: $draft.sidecarBundlePath,
+                  accessibility: "Lokaler Pfad zum auditierten Pi-Sidecar-Bundle")
+            HStack(spacing: 7) {
+                Circle().fill(deploymentColor).frame(width: 7, height: 7)
+                Text(deploymentStatus.rawValue).font(.system(size: 11, weight: .semibold))
+                if isDeploying { ProgressView().controlSize(.mini) }
+            }
+            Text(deploymentDetail).font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText).lineLimit(4)
+            if let current = model.computer(for: draft.id), let hash = current.installedContentHash {
+                Text("Installierter Inhalt: \(hash) · Version \(current.installedSidecarVersion ?? "unbekannt")")
+                    .font(.system(size: 9, design: .monospaced)).foregroundStyle(WJTheme.tertiaryText).textSelection(.enabled)
+            }
+            Text("Es werden nur Bundle, generierter Turn-Runner und Manifest übertragen. Node >=20 wird vorausgesetzt; Workjet installiert keine Pakete. Echtmodell-Inferenz bleibt ohne separaten Loopback-Relay nicht verfügbar.")
+                .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+        }
+    }
+
+    private var deploymentColor: Color {
+        switch deploymentStatus {
+        case .installed: return WJTheme.quotaOK
+        case .checking: return WJTheme.quotaWarning
+        case .blocked, .failed: return WJTheme.quotaCritical
+        case .notConfigured: return WJTheme.tertiaryText
         }
     }
 
@@ -142,7 +191,7 @@ struct ComputerEditorView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Telemetrie einrichten")
                     .font(.system(size: 13))
-                Text("Pi-Sidecar-Socket-Events dieses Computers an Workjet melden.")
+                Text("Pi-Ereignisse aus der finalen Antwort post-hoc erfassen; keine Live-Events.")
                     .font(.system(size: 11))
                     .foregroundStyle(WJTheme.secondaryText)
             }

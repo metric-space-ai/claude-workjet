@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 public struct ManagedPromptDocument: Equatable, Sendable {
@@ -17,6 +18,7 @@ public enum ManagedPrompt {
             return Data("Fable bleibt der einzige Orchestrator. Es sind derzeit keine verwalteten Worker-Deklarationen aktiviert.".utf8)
         }
         let computers = Dictionary(uniqueKeysWithValues: configuration.computers.map { ($0.id, $0) })
+        let providers = Dictionary(uniqueKeysWithValues: configuration.providers.map { ($0.id, $0) })
         var lines = [
             "## Verwaltete Workjet-Worker",
             "Fable (Claude Code) bleibt der einzige Orchestrator. Fable wählt und invokiert pro Delegation genau einen deklarierten Worker; die Workjet-App wählt keine Worker, baut keine Workflows und fällt niemals stillschweigend zurück.",
@@ -25,13 +27,21 @@ public enum ManagedPrompt {
         for worker in configuration.workers {
             let computer = computers[worker.computerID]
             let target = computer?.name ?? "Unbekannter Computer"
+            let providerRoute = providerDescription(worker.providerID, providers: providers)
             let capabilityTruth: String
+            let invocationTruth: String
             if computer?.isLocal == true && worker.harness == .claudeCode {
                 capabilityTruth = "Lokaler Claude-Code-Wrapper; lokale Stream-Artefakte können live erkannt werden, sofern der Dispatcher sie schreibt."
+                invocationTruth = "Ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments)); Brief ersetzt `<WORKJET_BRIEF>`, stdin ist `/dev/null`."
+            } else if worker.harness == .piSidecar, let computer, !computer.isLocal {
+                capabilityTruth = remotePiTruth(computer)
+                invocationTruth = remotePiInvocation(computer)
             } else if worker.harness == .piSidecar {
                 capabilityTruth = "Pi-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+                invocationTruth = "Ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments))."
             } else {
-                capabilityTruth = "Remote-Ausführung ist in dieser App nicht implementiert; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+                capabilityTruth = "Remote-Claude-Code-Ausführung ist in dieser App nicht implementiert; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+                invocationTruth = "Nicht verfügbar."
             }
             lines += [
                 "### \(safeInline(worker.name))",
@@ -39,10 +49,11 @@ public enum ManagedPrompt {
                 "- Modell: `\(safeInline(worker.model))`",
                 "- Harness: \(worker.harness.rawValue)",
                 "- Ziel-Computer: \(safeInline(target)) (`\(worker.computerID.uuidString.lowercased())`)",
+                "- Anbieter/Zugangsroute: \(providerRoute)",
                 "- Anweisungen: \(safeInline(worker.instructions))",
                 "- Fähigkeiten: \(worker.invocation.capabilities.isEmpty ? "Keine deklariert" : worker.invocation.capabilities.map(safeInline).joined(separator: "; "))",
                 "- Aktueller Status: \(capabilityTruth)",
-                "- Invocation: ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments)); Brief ersetzt `<WORKJET_BRIEF>`, stdin ist `/dev/null`.",
+                "- Invocation: \(invocationTruth)",
                 ""
             ]
         }
@@ -127,6 +138,72 @@ public enum ManagedPrompt {
         return result
     }
 
+    private static func providerDescription(_ id: UUID?, providers: [UUID: Provider]) -> String {
+        guard let id else { return "Nicht konfiguriert (nicht verfügbar)." }
+        guard let provider = providers[id] else {
+            return "Referenz `\(id.uuidString.lowercased())` ist gelöscht oder nicht verfügbar; niemals automatisch ersetzen."
+        }
+        let endpoint = provider.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        let route: String
+        if let sanitizedEndpoint = safeEndpointDescription(endpoint) { route = "\(provider.kind.rawValue) über \(sanitizedEndpoint)" }
+        else { route = provider.kind.rawValue }
+        return "\(safeInline(provider.name)) (`\(id.uuidString.lowercased())`), \(route). Geheimnisse bleiben ausschließlich in der lokalen Keychain."
+    }
+
+    private static func safeEndpointDescription(_ endpoint: String) -> String? {
+        guard !endpoint.isEmpty, var components = URLComponents(string: endpoint), components.scheme != nil, components.host != nil else { return nil }
+        components.user = nil
+        components.password = nil
+        components.query = nil
+        components.fragment = nil
+        return components.string.map(safeInline)
+    }
+
+    private static func remotePiTruth(_ computer: Computer) -> String {
+        let deployment: String
+        if computer.deploymentStatus == .installed,
+           computer.installedSidecarVersion == PiSidecarRuntime.version,
+           let hash = computer.installedContentHash {
+            deployment = "Sidecar \(PiSidecarRuntime.version) ist als Inhalt `\(safeInline(hash))` bereitgestellt."
+        } else {
+            deployment = "Remote-Runner ist nicht bestätigt installiert (\(computer.deploymentStatus.rawValue)). Zuerst in Workjet „Prüfen & einrichten“ ausführen."
+        }
+        return "\(deployment) Pi-Ereignisse kommen ausschließlich post-hoc in der finalen Antwort. Fable bleibt für lokale Integration und Verifikation verantwortlich. Remote-Echtmodell-Inferenz ist ohne separaten Loopback-Relay nicht verfügbar; es werden keine CLIProxy-, API-, OAuth- oder Keychain-Geheimnisse übertragen. Faux-/Offline-Turns sind zur Prüfung zulässig."
+    }
+
+    private static func remotePiInvocation(_ computer: Computer) -> String {
+        guard computer.deploymentStatus == .installed,
+              computer.installedSidecarVersion == PiSidecarRuntime.version,
+              (try? RemoteCommandBuilder.validate(computer)) != nil else {
+            return "Nicht verfügbar, bis „Prüfen & einrichten“ eine gültige Installation bestätigt hat."
+        }
+        let remoteRunner = ["node", ".local/lib/workjet/current/workjet-pi-turn.mjs"]
+        let tokens: [String]
+        switch computer.transport {
+        case .ssh:
+            guard computer.knownHostsPath.hasPrefix("/") else { return "Nicht verfügbar: private known-hosts-Datei fehlt." }
+            tokens = [
+                "/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes",
+                "-o", "UserKnownHostsFile=\(computer.knownHostsPath)", "-o", "ClearAllForwardings=yes", "-p", String(computer.port),
+                "-l", computer.user, "--", computer.host
+            ] + remoteRunner
+        case .tailscale:
+            guard let executable = computer.tailscaleExecutablePath, AllowlistedTailscaleLocator.allowedPaths.contains(executable) else {
+                return "Nicht verfügbar: das bestätigte Tailscale-Executable fehlt. Erneut „Prüfen & einrichten“ ausführen."
+            }
+            tokens = [executable, "ssh", "\(computer.user)@\(computer.host)"] + remoteRunner
+        case .local:
+            return "Nicht als Remote-Invocation verfügbar."
+        }
+        let transport = tokens.map(shellQuoted).joined(separator: " ")
+        return "Fable erzeugt den aktuellen `CtoxTurnRequest`-JSON-Snapshot als genau eine NDJSON-Zeile und leitet ihn über stdin an `\(transport)` weiter. Genau eine finale NDJSON-Antwort wird über stdout empfangen; darin enthaltene Pi-Ereignisse sind post-hoc."
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        let singleLine = value.split(whereSeparator: \.isNewline).joined(separator: " ")
+        return "'" + singleLine.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     private static func safeInline(_ value: String) -> String {
         value.split(whereSeparator: \.isNewline).joined(separator: " ")
             .replacingOccurrences(of: beginStem, with: "WORKJET-MANAGED-WORKERS-BEGIN")
@@ -147,26 +224,64 @@ public protocol PromptSynchronizing: Sendable {
 
 public struct ManagedPromptStore: PromptSynchronizing, Sendable {
     public let fileURL: URL
+    public var lockURL: URL { fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).workjet.lock") }
     public init(fileURL: URL) { self.fileURL = fileURL }
 
     public func loadHandwrittenRules() throws -> String? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        try SecureFile.checkRegularOwnedFile(at: fileURL)
-        return try ManagedPrompt.handwrittenContent(from: Data(contentsOf: fileURL))
+        try withLock {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+            return try ManagedPrompt.handwrittenContent(from: SecureFile.readRegularOwnedFile(at: fileURL))
+        }
     }
 
     public func synchronize(_ configuration: WorkjetConfiguration, handwrittenChanged: Bool) throws {
-        let body = ManagedPrompt.workerBody(configuration: configuration)
-        let original: Data
-        if FileManager.default.fileExists(atPath: fileURL.path) {
-            try SecureFile.checkRegularOwnedFile(at: fileURL)
-            original = try Data(contentsOf: fileURL)
-        } else {
-            original = Data(configuration.skillRules.utf8)
+        try withLock {
+            let body = ManagedPrompt.workerBody(configuration: configuration)
+            let original: Data
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                original = try SecureFile.readRegularOwnedFile(at: fileURL)
+                _ = try ManagedPrompt.parse(original) // validate the current marker/hash while holding the stable lock
+            } else {
+                original = Data(configuration.skillRules.utf8)
+            }
+            let updated = handwrittenChanged
+                ? try ManagedPrompt.replacingHandwrittenContent(in: original, rules: configuration.skillRules, body: body)
+                : try ManagedPrompt.replacingManagedBlock(in: original, body: body)
+            if FileManager.default.fileExists(atPath: fileURL.path) {
+                try SecureFile.checkRegularOwnedFile(at: fileURL)
+            }
+            try AtomicFile.write(updated, to: fileURL, directoryMode: 0o700, fileMode: 0o600)
         }
-        let updated = handwrittenChanged
-            ? try ManagedPrompt.replacingHandwrittenContent(in: original, rules: configuration.skillRules, body: body)
-            : try ManagedPrompt.replacingManagedBlock(in: original, body: body)
-        try AtomicFile.write(updated, to: fileURL, directoryMode: 0o700, fileMode: 0o600)
+    }
+
+    private func withLock<T>(_ body: () throws -> T) throws -> T {
+        let directory = lockURL.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            _ = chmod(directory.path, 0o700)
+        } catch { throw LocalStateError.io(error.localizedDescription) }
+        let fd = open(lockURL.path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else {
+            if errno == ELOOP { throw LocalStateError.insecurePath(lockURL.path) }
+            throw LocalStateError.io(String(cString: strerror(errno)))
+        }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
+        guard (info.st_mode & S_IFMT) == S_IFREG, (info.st_mode & 0o077) == 0 else { throw LocalStateError.insecurePath(lockURL.path) }
+        guard info.st_uid == geteuid() else { throw LocalStateError.wrongOwner(lockURL.path) }
+        guard flock(fd, LOCK_EX) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
+        defer { _ = flock(fd, LOCK_UN) }
+        // A path swap after open must not turn the stable lock into an attacker-controlled file.
+        var pathInfo = stat()
+        guard lstat(lockURL.path, &pathInfo) == 0,
+              (pathInfo.st_mode & S_IFMT) == S_IFREG,
+              (pathInfo.st_mode & 0o077) == 0,
+              pathInfo.st_uid == geteuid(),
+              pathInfo.st_dev == info.st_dev,
+              pathInfo.st_ino == info.st_ino else {
+            throw LocalStateError.insecurePath(lockURL.path)
+        }
+        return try body()
     }
 }

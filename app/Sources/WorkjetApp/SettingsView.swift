@@ -122,7 +122,12 @@ private struct AccessSettingsSection: View {
             }.fieldSurface()
             field("Login-Executable (nur Anzeige)", text: optionalProviderString(provider, \.loginExecutable))
             field("Login-Argumente, eine Zeile je Argument", text: providerArguments(provider))
-            Text("Login wird niemals automatisch oder headless ausgeführt.").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+            HStack {
+                Text("Login wird niemals automatisch oder headless ausgeführt.").font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
+                Spacer()
+                Button("Anbieter löschen", role: .destructive) { model.removeProvider(id: provider.id); editingProviderID = nil }
+                    .buttonStyle(.bordered).controlSize(.mini)
+            }
         }.padding(10).background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface.opacity(0.55)))
     }
 
@@ -144,7 +149,7 @@ private struct StatusDot: View {
 
 private func capacityDetail(_ capacity: CapacityStatus) -> String {
     guard let fraction = capacity.fraction else { return "Kapazität nicht verfügbar: \(capacity.reason ?? "unbekannter Grund")" }
-    let source = { if case .measured = capacity { return "gemessen" }; return "benutzerdefiniert" }()
+    let source = { if case .measured = capacity { return "remote gemessen" }; return "lokal konfiguriertes Limit" }()
     return "Kapazität \(Int((fraction * 100).rounded()))% (\(source))" + (capacity.rateLimited == true ? " · Rate-Limit" : "")
 }
 
@@ -159,7 +164,7 @@ private struct ComputersSettingsSection: View {
             }
         }
     }
-    private func detail(_ computer: Computer) -> String { computer.isLocal ? "Immer vorhanden" : "\(computer.transport.rawValue) · \(computer.host) · \(computer.telemetryEnabled ? "Telemetrie konfiguriert" : "keine Telemetrie")" }
+    private func detail(_ computer: Computer) -> String { computer.isLocal ? "Immer vorhanden" : "\(computer.transport.rawValue) · \(computer.host) · Pi: \(computer.deploymentStatus.rawValue) · Events post-hoc" }
 }
 
 private struct TelemetrySettingsSection: View {

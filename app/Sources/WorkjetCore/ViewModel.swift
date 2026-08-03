@@ -26,12 +26,18 @@ public final class WorkjetViewModel: ObservableObject {
     @Published public private(set) var selectedComputerID: UUID { didSet { persistIfReady() } }
 
     private let service: any WorkjetService
+    private let persistenceDelay: TimeInterval
+    private lazy var persistence = PersistenceCoordinator(service: service, delay: persistenceDelay) { [weak self] error in
+        Task { @MainActor in self?.expose(error) }
+    }
     private var ready = false
     private var pollingTask: Task<Void, Never>?
+    private var runRefreshTask: Task<Void, Never>?
 
-    public init(configuration: WorkjetConfiguration, service: any WorkjetService = NullWorkjetService(), messages: [String] = []) {
+    public init(configuration: WorkjetConfiguration, service: any WorkjetService = NullWorkjetService(), messages: [String] = [], persistenceDelay: TimeInterval = 0.25) {
         let value = WorkjetBootstrap.normalized(configuration)
         self.service = service
+        self.persistenceDelay = persistenceDelay
         workers = value.workers
         computers = value.computers
         providers = value.providers
@@ -83,6 +89,10 @@ public final class WorkjetViewModel: ObservableObject {
         guard let index = providers.firstIndex(where: { $0.id == provider.id }) else { return }
         providers[index] = provider
     }
+    public func removeProvider(id: UUID) {
+        providers.removeAll { $0.id == id }
+        // Worker references intentionally remain stable and render as unavailable.
+    }
 
     public func startPolling() {
         guard pollingTask == nil else { return }
@@ -97,8 +107,20 @@ public final class WorkjetViewModel: ObservableObject {
         }
     }
 
-    public func stopPolling() { pollingTask?.cancel(); pollingTask = nil }
-    public func refreshRuns() { activeRuns = service.runs(workers: workers).compactMap { $0.state == .running ? $0.activeRun : nil } }
+    public func stopPolling() {
+        pollingTask?.cancel(); pollingTask = nil
+        runRefreshTask?.cancel(); runRefreshTask = nil
+    }
+    public func refreshRuns() {
+        runRefreshTask?.cancel()
+        let service = self.service
+        let workers = self.workers
+        runRefreshTask = Task { [weak self] in
+            let records = await Task.detached(priority: .utility) { service.runs(workers: workers) }.value
+            guard !Task.isCancelled, let self else { return }
+            self.activeRuns = records.compactMap { $0.state == .running ? $0.activeRun : nil }
+        }
+    }
     public func refreshCLIProxy() {
         let configuration = cliProxyConfiguration
         Task { [weak self] in
@@ -111,10 +133,29 @@ public final class WorkjetViewModel: ObservableObject {
 
     public func stopRun(id: UUID) {
         guard let run = activeRuns.first(where: { $0.id == id }) else { return }
-        do {
-            try service.stop(run)
-            refreshRuns()
-        } catch { expose(error) }
+        let service = self.service
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) { try service.stop(run) }.value
+                self?.refreshRuns()
+            } catch { self?.expose(error) }
+        }
+    }
+
+    @discardableResult
+    public func bootstrapRemoteComputer(_ computer: Computer) async -> Computer {
+        guard !computer.isLocal else {
+            expose(RemotePiBootstrapError.localComputer)
+            return computer
+        }
+        var checking = computer
+        checking.deploymentStatus = .checking
+        checking.deploymentDetail = "Prüfung läuft …"
+        upsertComputer(checking)
+        let deployed = await service.bootstrapRemotePi(checking)
+        upsertComputer(deployed)
+        await flushPersistence()
+        return deployed
     }
 
     public func storeCredential(_ value: String, reference: String) {
@@ -125,10 +166,14 @@ public final class WorkjetViewModel: ObservableObject {
 
     public func dismissMessage(_ message: String) { statusMessages.removeAll { $0 == message } }
 
+    public func flushPersistence() async {
+        guard ready else { return }
+        await persistence.flush()
+    }
+
     private func persistIfReady(handwrittenRulesChanged: Bool = false) {
         guard ready else { return }
-        do { try service.save(configuration, handwrittenRulesChanged: handwrittenRulesChanged) }
-        catch { expose(error) }
+        persistence.schedule(configuration, handwrittenChanged: handwrittenRulesChanged)
     }
 
     private func expose(_ error: Error) {

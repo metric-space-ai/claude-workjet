@@ -7,6 +7,7 @@ public struct WorkerDraft: Equatable {
     public var model: String
     public var instructions: String
     public var computerID: UUID?
+    public var providerID: UUID?
     public var executable: String
     public var arguments: String
     public var capabilities: String
@@ -17,6 +18,7 @@ public struct WorkerDraft: Equatable {
         self.model = worker?.model ?? ""
         self.instructions = worker?.instructions ?? ""
         self.computerID = worker?.computerID
+        self.providerID = worker?.providerID
         self.executable = worker?.invocation.executable ?? ""
         self.arguments = worker?.invocation.arguments.joined(separator: "\n") ?? ""
         self.capabilities = worker?.invocation.capabilities.joined(separator: "\n") ?? ""
@@ -43,6 +45,7 @@ public struct WorkerDraft: Equatable {
         result.model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         result.instructions = instructions
         result.computerID = computerID
+        result.providerID = providerID
         result.invocation = WorkerInvocation(
             executable: executable.trimmingCharacters(in: .whitespacesAndNewlines),
             arguments: arguments.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
@@ -54,6 +57,7 @@ public struct WorkerDraft: Equatable {
 
 /// Editable draft for the computer setup editor (Tailscale or SSH).
 public struct ComputerDraft: Equatable {
+    public var id: UUID
     public var name: String
     public var transport: ComputerTransport
     public var host: String
@@ -62,8 +66,11 @@ public struct ComputerDraft: Equatable {
     public var sandboxEnabled: Bool
     public var pinnedSidecarVersion: String
     public var telemetryEnabled: Bool
+    public var sidecarBundlePath: String
+    public var knownHostsPath: String
 
     public init(computer: Computer? = nil) {
+        self.id = computer?.id ?? UUID()
         self.name = computer?.name ?? ""
         let transport = computer?.transport ?? .tailscale
         self.transport = transport == .local ? .tailscale : transport
@@ -71,27 +78,55 @@ public struct ComputerDraft: Equatable {
         self.user = computer?.user ?? ""
         self.port = computer?.port ?? 22
         self.sandboxEnabled = computer?.sandboxEnabled ?? true
-        self.pinnedSidecarVersion = computer?.pinnedSidecarVersion ?? ""
+        self.pinnedSidecarVersion = PiSidecarRuntime.version
         self.telemetryEnabled = computer?.telemetryEnabled ?? false
+        self.sidecarBundlePath = computer?.sidecarBundlePath ?? ""
+        self.knownHostsPath = computer?.knownHostsPath ?? ""
     }
 
     public var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (1...65535).contains(port)
     }
 
+    public var isDeployable: Bool {
+        isValid
+            && !sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (transport != .ssh || !knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
     public func applied(to computer: Computer?) -> Computer? {
-        guard isValid else { return nil }
-        var result = computer ?? Computer(name: "", transport: transport)
+        guard isValid, computer?.isLocal != true else { return nil }
+        var result = computer ?? Computer(id: id, name: "", transport: transport)
         result.name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         result.transport = transport
         result.host = host.trimmingCharacters(in: .whitespacesAndNewlines)
         result.user = user.trimmingCharacters(in: .whitespacesAndNewlines)
         result.port = port
         result.sandboxEnabled = sandboxEnabled
-        result.pinnedSidecarVersion = pinnedSidecarVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.pinnedSidecarVersion = PiSidecarRuntime.version
         result.telemetryEnabled = telemetryEnabled
+        result.sidecarBundlePath = sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.knownHostsPath = knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let computer {
+            let routeChanged = computer.transport != result.transport
+                || computer.host != result.host
+                || computer.user != result.user
+                || computer.port != result.port
+                || computer.sidecarBundlePath != result.sidecarBundlePath
+                || computer.knownHostsPath != result.knownHostsPath
+            if routeChanged {
+                result.deploymentStatus = .notConfigured
+                result.deploymentDetail = "Verbindungs- oder Bundle-Konfiguration wurde geändert; erneut prüfen und einrichten."
+                result.installedContentHash = nil
+                result.installedSidecarVersion = nil
+                result.tailscaleExecutablePath = nil
+                result.lastSuccessfulPreflightAt = nil
+                result.lastSuccessfulDeploymentAt = nil
+            }
+        }
         return result
     }
 }

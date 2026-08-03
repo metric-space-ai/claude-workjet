@@ -29,6 +29,7 @@ struct WorkerEditorView: View {
                     nameSection
                     harnessSection
                     modelSection
+                    providerSection
                     instructionsSection
                     invocationSection
                     computerSection
@@ -52,7 +53,7 @@ struct WorkerEditorView: View {
             Button("Speichern") {
                 if let saved = draft.applied(to: worker) {
                     model.upsertWorker(saved)
-                    onClose()
+                    Task { await model.flushPersistence(); onClose() }
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -124,6 +125,38 @@ struct WorkerEditorView: View {
                     )
                     .accessibilityLabel("Modell \(suggestion) wählen")
                 }
+            }
+        }
+    }
+
+    private var providerSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WJSectionHeader(title: "Anbieter / Zugangsroute")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    WJChoiceButton(title: "Nicht konfiguriert", isSelected: draft.providerID == nil, accessibilityLabel: "Keine Anbieterroute") {
+                        draft.providerID = nil
+                    }
+                    ForEach(model.providers) { provider in
+                        WJChoiceButton(
+                            title: provider.name,
+                            isSelected: draft.providerID == provider.id,
+                            accessibilityLabel: "Anbieterroute \(provider.name)",
+                            help: "\(provider.kind.rawValue) · \(provider.endpoint)"
+                        ) { draft.providerID = provider.id }
+                    }
+                    if let selected = draft.providerID, !model.providers.contains(where: { $0.id == selected }) {
+                        WJChoiceButton(title: "Nicht verfügbar", isSelected: true, accessibilityLabel: "Gelöschter Anbieter ist nicht verfügbar") {}
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            if let selected = draft.providerID, !model.providers.contains(where: { $0.id == selected }) {
+                Text("Die gespeicherte Anbieterreferenz \(selected.uuidString.lowercased()) wurde gelöscht. Sie bleibt unverändert und wird nie automatisch ersetzt.")
+                    .font(.system(size: 10)).foregroundStyle(WJTheme.quotaCritical)
+            } else {
+                Text("CLIProxy-Abos und direkte API-Key-Anbieter werden über ihre stabile Anbieter-ID referenziert; Geheimnisse bleiben in der lokalen Keychain.")
+                    .font(.system(size: 10)).foregroundStyle(WJTheme.secondaryText)
             }
         }
     }

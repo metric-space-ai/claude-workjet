@@ -128,4 +128,39 @@ public enum SecureFile {
         guard (info.st_mode & S_IFMT) == S_IFREG else { throw LocalStateError.insecurePath(url.path) }
         guard info.st_uid == geteuid() else { throw LocalStateError.wrongOwner(url.path) }
     }
+
+    public static func checkPrivateRegularOwnedFile(at url: URL) throws {
+        try checkRegularOwnedFile(at: url)
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
+        guard (info.st_mode & 0o077) == 0 else { throw LocalStateError.insecurePath(url.path) }
+    }
+
+    public static func readRegularOwnedFile(at url: URL, maximumBytes: Int = 32 * 1_024 * 1_024) throws -> Data {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard fd >= 0 else {
+            if errno == ELOOP { throw LocalStateError.insecurePath(url.path) }
+            throw LocalStateError.io(String(cString: strerror(errno)))
+        }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { throw LocalStateError.insecurePath(url.path) }
+        guard info.st_uid == geteuid() else { throw LocalStateError.wrongOwner(url.path) }
+        guard info.st_size >= 0, info.st_size <= maximumBytes else { throw LocalStateError.io("Datei überschreitet das erlaubte Größenlimit.") }
+        var data = Data()
+        data.reserveCapacity(Int(info.st_size))
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while true {
+            let count = Darwin.read(fd, &buffer, buffer.count)
+            if count == 0 { break }
+            guard count > 0 else {
+                if errno == EINTR { continue }
+                throw LocalStateError.io(String(cString: strerror(errno)))
+            }
+            guard data.count + count <= maximumBytes else { throw LocalStateError.io("Datei überschreitet das erlaubte Größenlimit.") }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
 }

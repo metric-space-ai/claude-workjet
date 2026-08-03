@@ -58,7 +58,10 @@ struct RootView: View {
         .frame(width: WJTheme.popoverWidth, height: WJTheme.popoverHeight)
         .preferredColorScheme(.dark)
         .onAppear { model.startPolling() }
-        .onDisappear { model.stopPolling() }
+        .onDisappear {
+            model.stopPolling()
+            Task { await model.flushPersistence() }
+        }
     }
 
     private func openComputerEditor(_ computer: Computer?, from returnTo: Screen) {

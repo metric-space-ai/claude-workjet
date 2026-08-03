@@ -11,6 +11,18 @@ public enum ComputerTransport: String, CaseIterable, Codable, Equatable, Sendabl
     case ssh = "SSH"
 }
 
+public enum PiSidecarRuntime {
+    public static let version = "0.80.2"
+}
+
+public enum DeploymentStatus: String, Codable, Equatable, Sendable {
+    case notConfigured = "Nicht eingerichtet"
+    case checking = "Wird geprüft"
+    case blocked = "Blockiert"
+    case installed = "Installiert"
+    case failed = "Fehlgeschlagen"
+}
+
 public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var id: UUID
     public var name: String
@@ -21,8 +33,36 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var sandboxEnabled: Bool
     public var pinnedSidecarVersion: String
     public var telemetryEnabled: Bool
+    public var sidecarBundlePath: String
+    public var deploymentStatus: DeploymentStatus
+    public var deploymentDetail: String
+    public var installedContentHash: String?
+    public var installedSidecarVersion: String?
+    public var knownHostsPath: String
+    public var tailscaleExecutablePath: String?
+    public var lastSuccessfulPreflightAt: Date?
+    public var lastSuccessfulDeploymentAt: Date?
 
-    public init(id: UUID = UUID(), name: String, transport: ComputerTransport, host: String = "", user: String = "", port: Int = 22, sandboxEnabled: Bool = true, pinnedSidecarVersion: String = "", telemetryEnabled: Bool = false) {
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        transport: ComputerTransport,
+        host: String = "",
+        user: String = "",
+        port: Int = 22,
+        sandboxEnabled: Bool = true,
+        pinnedSidecarVersion: String = PiSidecarRuntime.version,
+        telemetryEnabled: Bool = false,
+        sidecarBundlePath: String = "",
+        deploymentStatus: DeploymentStatus = .notConfigured,
+        deploymentDetail: String = "Noch nicht geprüft.",
+        installedContentHash: String? = nil,
+        installedSidecarVersion: String? = nil,
+        knownHostsPath: String = "",
+        tailscaleExecutablePath: String? = nil,
+        lastSuccessfulPreflightAt: Date? = nil,
+        lastSuccessfulDeploymentAt: Date? = nil
+    ) {
         self.id = id
         self.name = name
         self.transport = transport
@@ -30,8 +70,46 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         self.user = user
         self.port = port
         self.sandboxEnabled = sandboxEnabled
-        self.pinnedSidecarVersion = pinnedSidecarVersion
+        self.pinnedSidecarVersion = pinnedSidecarVersion.isEmpty ? PiSidecarRuntime.version : pinnedSidecarVersion
         self.telemetryEnabled = telemetryEnabled
+        self.sidecarBundlePath = sidecarBundlePath
+        self.deploymentStatus = deploymentStatus
+        self.deploymentDetail = deploymentDetail
+        self.installedContentHash = installedContentHash
+        self.installedSidecarVersion = installedSidecarVersion
+        self.knownHostsPath = knownHostsPath
+        self.tailscaleExecutablePath = tailscaleExecutablePath
+        self.lastSuccessfulPreflightAt = lastSuccessfulPreflightAt
+        self.lastSuccessfulDeploymentAt = lastSuccessfulDeploymentAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, transport, host, user, port, sandboxEnabled, pinnedSidecarVersion, telemetryEnabled
+        case sidecarBundlePath, deploymentStatus, deploymentDetail, installedContentHash, installedSidecarVersion
+        case knownHostsPath, tailscaleExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        transport = try values.decode(ComputerTransport.self, forKey: .transport)
+        host = try values.decodeIfPresent(String.self, forKey: .host) ?? ""
+        user = try values.decodeIfPresent(String.self, forKey: .user) ?? ""
+        port = try values.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        sandboxEnabled = try values.decodeIfPresent(Bool.self, forKey: .sandboxEnabled) ?? true
+        pinnedSidecarVersion = try values.decodeIfPresent(String.self, forKey: .pinnedSidecarVersion) ?? PiSidecarRuntime.version
+        if pinnedSidecarVersion.isEmpty { pinnedSidecarVersion = PiSidecarRuntime.version }
+        telemetryEnabled = try values.decodeIfPresent(Bool.self, forKey: .telemetryEnabled) ?? false
+        sidecarBundlePath = try values.decodeIfPresent(String.self, forKey: .sidecarBundlePath) ?? ""
+        deploymentStatus = try values.decodeIfPresent(DeploymentStatus.self, forKey: .deploymentStatus) ?? .notConfigured
+        deploymentDetail = try values.decodeIfPresent(String.self, forKey: .deploymentDetail) ?? "Noch nicht geprüft."
+        installedContentHash = try values.decodeIfPresent(String.self, forKey: .installedContentHash)
+        installedSidecarVersion = try values.decodeIfPresent(String.self, forKey: .installedSidecarVersion)
+        knownHostsPath = try values.decodeIfPresent(String.self, forKey: .knownHostsPath) ?? ""
+        tailscaleExecutablePath = try values.decodeIfPresent(String.self, forKey: .tailscaleExecutablePath)
+        lastSuccessfulPreflightAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessfulPreflightAt)
+        lastSuccessfulDeploymentAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessfulDeploymentAt)
     }
 
     public var isLocal: Bool { transport == .local }
@@ -92,16 +170,19 @@ public struct Worker: Identifiable, Equatable, Codable, Sendable {
     public var model: String
     public var instructions: String
     public var computerID: UUID
+    /// Stable access route. A missing/deleted provider remains unavailable and is never replaced implicitly.
+    public var providerID: UUID?
     public var invocation: WorkerInvocation
     public var capacity: CapacityStatus
 
-    public init(id: UUID = UUID(), name: String, harness: Harness, model: String, instructions: String = "", computerID: UUID, invocation: WorkerInvocation = WorkerInvocation(executable: ""), capacity: CapacityStatus = .unavailable(reason: "Keine kompatiblen Nutzungsdaten verfügbar.")) {
+    public init(id: UUID = UUID(), name: String, harness: Harness, model: String, instructions: String = "", computerID: UUID, providerID: UUID? = nil, invocation: WorkerInvocation = WorkerInvocation(executable: ""), capacity: CapacityStatus = .unavailable(reason: "Keine kompatiblen Nutzungsdaten verfügbar.")) {
         self.id = id
         self.name = name
         self.harness = harness
         self.model = model
         self.instructions = instructions
         self.computerID = computerID
+        self.providerID = providerID
         self.invocation = invocation
         self.capacity = capacity
     }
