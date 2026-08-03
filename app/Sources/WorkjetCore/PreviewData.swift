@@ -7,7 +7,7 @@ public enum PreviewData {
     public static var computers: [Computer] { [localComputer, devbox, builder] }
     public static var workers: [Worker] { WorkjetDefaults.configuration().workers }
     public static var providers: [Provider] {
-        [Provider(name: "MiniMax Coding Plan", kind: .oauthSubscription, endpoint: "https://api.minimax.io/anthropic", status: .connected, capacity: .userConfigured(used: 87, limit: 100, unit: "%", rateLimited: true))]
+        [Provider(name: "MiniMax Coding Plan", kind: .directAPI, endpoint: "https://api.minimax.io/anthropic", status: .connected, capacity: .userConfigured(used: 87, limit: 100, unit: "%", rateLimited: true))]
     }
     public static func configuration() -> WorkjetConfiguration {
         var value = WorkjetDefaults.configuration()

@@ -30,12 +30,21 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(worker?.invocation.capabilities, ["Review", "Tests"])
         XCTAssertEqual(WorkerDraft(worker: worker).providerID, providerID)
         draft.selectHarness(.piSidecar)
-        XCTAssertEqual(draft.executable, "node")
-        XCTAssertNotEqual(draft.executable, "~/.local/bin/claude-sol")
+        XCTAssertEqual(draft.executable, "~/.local/bin/claude-kimi")
         XCTAssertTrue(draft.arguments.isEmpty)
         draft.selectHarness(.claudeCode)
-        XCTAssertEqual(draft.executable, "~/.local/bin/claude-sol")
+        XCTAssertEqual(draft.executable, "~/.local/bin/claude-kimi")
         XCTAssertEqual(draft.arguments, "-p\n<WORKJET_BRIEF>")
+
+        draft.arguments = "--custom-flag"
+        draft.selectHarness(.piSidecar)
+        XCTAssertEqual(draft.arguments, "--custom-flag")
+
+        var defaults = WorkerDraft()
+        defaults.selectHarness(.claudeCode)
+        defaults.selectHarness(.piSidecar)
+        XCTAssertEqual(defaults.executable, "node")
+        XCTAssertTrue(defaults.arguments.isEmpty)
     }
 
     func testBootstrapNormalizesSkillOnlyAndDispatcherBounds() {
@@ -51,6 +60,19 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(normalized.providerSlots, 3)
         XCTAssertEqual(normalized.probeTimeoutSeconds, 5)
         XCTAssertEqual(normalized.turnTimeoutSeconds, 10_800)
+    }
+
+    func testLegacyCLIProxyMigrationIsOneTime() {
+        var config = WorkjetDefaults.configuration()
+        config.cliProxy = CLIProxyConfiguration(endpoint: "http://127.0.0.1:9000", inferenceCredentialReference: "legacy-key")
+        let migrated = WorkjetBootstrap.normalized(config)
+        XCTAssertEqual(migrated.providers.count, 1)
+        XCTAssertEqual(migrated.providers[0].kind, .cliProxyAPI)
+        XCTAssertEqual(migrated.providers[0].credentialReference, "legacy-key")
+        XCTAssertEqual(migrated.cliProxy, CLIProxyConfiguration())
+        var deleted = migrated
+        deleted.providers.removeAll()
+        XCTAssertTrue(WorkjetBootstrap.normalized(deleted).providers.isEmpty)
     }
 }
 
@@ -671,6 +693,22 @@ final class ProcessCommandRunnerTests: XCTestCase {
         model.removeProvider(id: provider.id)
         XCTAssertTrue(model.providers.isEmpty)
         XCTAssertNil(service.credentials[Provider.credentialReference(for: provider.id)])
+    }
+
+    func testProviderWithoutAuthenticationDoesNotStoreSecretAndSharedLegacySecretIsPreserved() async {
+        var config = WorkjetDefaults.configuration()
+        let noAuth = Provider(name: "Public", kind: .directAPI, endpoint: "https://example.test", authentication: .none)
+        let shared = Provider(name: "Legacy", kind: .cliProxyAPI, endpoint: "http://127.0.0.1:8317", credentialReference: "shared-key")
+        config.providers = [noAuth, shared]
+        let service = Service()
+        service.credentials["shared-key"] = Data("keep".utf8)
+        let model = WorkjetViewModel(configuration: config, service: service, persistenceDelay: 60)
+
+        await model.testProvider(id: noAuth.id, secret: "must-not-store")
+        XCTAssertNil(service.credentials[Provider.credentialReference(for: noAuth.id)])
+        model.cliProxyConfiguration.inferenceCredentialReference = "shared-key"
+        model.removeProvider(id: shared.id)
+        XCTAssertEqual(service.credentials["shared-key"], Data("keep".utf8))
     }
 
     func testUnprobedProviderDefaultsToNeutralInsteadOfOffline() {

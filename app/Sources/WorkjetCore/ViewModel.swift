@@ -115,8 +115,12 @@ public final class WorkjetViewModel: ObservableObject {
     }
     public func removeProvider(id: UUID) {
         if let reference = providers.first(where: { $0.id == id })?.credentialReference {
-            do { try service.deleteCredential(reference: reference) }
-            catch { expose(error); return }
+            let stillUsedByLegacyCLIProxy = reference == cliProxyConfiguration.inferenceCredentialReference
+                || reference == cliProxyConfiguration.managementCredentialReference
+            if !stillUsedByLegacyCLIProxy {
+                do { try service.deleteCredential(reference: reference) }
+                catch { expose(error); return }
+            }
         }
         providers.removeAll { $0.id == id }
         providerAccessStored.remove(id)
@@ -137,7 +141,9 @@ public final class WorkjetViewModel: ObservableObject {
         let reference = provider.credentialReference ?? Provider.credentialReference(for: provider.id)
         provider.credentialReference = reference
         do {
-            if !secret.isEmpty { try service.storeCredential(Data(secret.utf8), reference: reference) }
+            if provider.authentication != .none, !secret.isEmpty {
+                try service.storeCredential(Data(secret.utf8), reference: reference)
+            }
             let result = await service.inspectProvider(provider)
             provider.status = result.status
             provider.statusDetail = result.detail
@@ -286,20 +292,6 @@ public final class WorkjetViewModel: ObservableObject {
             masked.delivery = .unavailable
             return masked
         }
-    }
-
-    private static func sameEndpoint(_ lhs: String, _ rhs: String) -> Bool {
-        func normalized(_ value: String) -> String {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard var components = URLComponents(string: trimmed), let scheme = components.scheme, let host = components.host else {
-                return trimmed
-            }
-            components.scheme = scheme.lowercased()
-            components.host = host.lowercased()
-            if components.path == "/" { components.path = "" }
-            return components.string ?? trimmed
-        }
-        return normalized(lhs) == normalized(rhs)
     }
 
     private func persistIfReady(handwrittenRulesChanged: Bool = false) {

@@ -125,17 +125,21 @@ public struct WorkjetBootstrap {
         value.providerSlots = min(max(value.providerSlots, 1), 3)
         value.probeTimeoutSeconds = min(max(value.probeTimeoutSeconds, 5), 600)
         value.turnTimeoutSeconds = min(max(value.turnTimeoutSeconds, 60), 10_800)
-        if !value.providers.contains(where: { $0.kind == .cliProxyAPI }),
-           value.cliProxy.inferenceCredentialReference != nil || value.cliProxy.managementCredentialReference != nil || value.cliProxy.endpoint != CLIProxyConfiguration().endpoint {
+        let legacyCLIProxy = value.cliProxy
+        let hasLegacyCLIProxy = legacyCLIProxy.inferenceCredentialReference != nil
+            || legacyCLIProxy.managementCredentialReference != nil
+            || legacyCLIProxy.endpoint != CLIProxyConfiguration().endpoint
+        if hasLegacyCLIProxy, !value.providers.contains(where: { $0.kind == .cliProxyAPI }) {
             let id = UUID(uuidString: "00000000-0000-0000-0000-00000000c1a0")!
             value.providers.append(Provider(
                 id: id,
                 name: "CLIProxyAPI",
                 kind: .cliProxyAPI,
-                endpoint: value.cliProxy.endpoint,
-                credentialReference: value.cliProxy.inferenceCredentialReference
+                endpoint: legacyCLIProxy.endpoint,
+                credentialReference: legacyCLIProxy.inferenceCredentialReference
             ))
         }
+        if hasLegacyCLIProxy { value.cliProxy = CLIProxyConfiguration() }
         let local: Computer
         if let existing = value.computers.first(where: \.isLocal) { local = existing }
         else { local = WorkjetDefaults.localComputer; value.computers.insert(local, at: 0) }

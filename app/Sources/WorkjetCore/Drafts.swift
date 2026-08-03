@@ -40,10 +40,18 @@ public struct WorkerDraft: Equatable {
         }
     }
 
+    public static func defaultArguments(for harness: Harness) -> String {
+        harness == .claudeCode ? "-p\n<WORKJET_BRIEF>" : ""
+    }
+
     public mutating func selectHarness(_ harness: Harness) {
+        let previousHarness = self.harness
+        let executableWasDefault = executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || executable == Self.defaultExecutable(for: previousHarness)
+        let argumentsWereDefault = arguments == Self.defaultArguments(for: previousHarness)
         self.harness = harness
-        executable = Self.defaultExecutable(for: harness)
-        arguments = harness == .claudeCode ? "-p\n<WORKJET_BRIEF>" : ""
+        if executableWasDefault { executable = Self.defaultExecutable(for: harness) }
+        if argumentsWereDefault { arguments = Self.defaultArguments(for: harness) }
     }
 
     /// Applies the draft to an existing worker or creates a new one.
