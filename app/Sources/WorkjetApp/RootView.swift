@@ -5,6 +5,7 @@ import WorkjetCore
 /// editors with small restrained transitions only.
 struct RootView: View {
     @EnvironmentObject private var model: WorkjetViewModel
+    var viewportHeight: CGFloat = WJTheme.popoverHeight
     @State private var screen: Screen = .main
     @State private var computerEditorReturn: Screen = .main
 
@@ -25,11 +26,16 @@ struct RootView: View {
                         onOpenSettings: { screen = .settings },
                         onAddWorker: { screen = .workerEditor(nil) },
                         onEditWorker: { screen = .workerEditor($0) },
-                        onAddComputer: { openComputerEditor(nil, from: .main) }
+                        onAddComputer: { openComputerEditor(nil, from: .main) },
+                        onEditComputer: { openComputerEditor($0, from: .main) }
                     )
                 case .settings:
                     SettingsView(
-                        onClose: { screen = .main },
+                        onClose: {
+                            Task {
+                                if await model.flushPersistence() { screen = .main }
+                            }
+                        },
                         onAddComputer: { openComputerEditor(nil, from: .settings) },
                         onEditComputer: { openComputerEditor($0, from: .settings) }
                     )
@@ -55,11 +61,9 @@ struct RootView: View {
             }
         }
         .animation(.easeInOut(duration: 0.18), value: screen)
-        .frame(width: WJTheme.popoverWidth, height: WJTheme.popoverHeight)
+        .frame(width: WJTheme.popoverWidth, height: viewportHeight)
         .preferredColorScheme(.dark)
-        .onAppear { model.startPolling() }
         .onDisappear {
-            model.stopPolling()
             Task { await model.flushPersistence() }
         }
     }

@@ -5,7 +5,8 @@ struct ProviderAccountsView: View {
     @EnvironmentObject private var model: WorkjetViewModel
 
     var selectedRoute: ProviderRoute? = nil
-    var onSelect: ((ProviderRoute) -> Void)? = nil
+    var onSelect: ((ProviderRoute?) -> Void)? = nil
+    var initiallyOpenProvider: ModelProvider? = nil
 
     @State private var openAPIProvider: ModelProvider?
     @State private var apiKeys: [ModelProvider: String] = [:]
@@ -13,13 +14,145 @@ struct ProviderAccountsView: View {
     @State private var editingAccountID: UUID?
     @State private var accountSecrets: [UUID: String] = [:]
     @State private var busyAccountID: UUID?
+    @State private var showCustomProvider = false
+    @State private var customName = ""
+    @State private var customEndpoint = ""
+    @State private var customAuthentication: ProviderAuthentication = .bearerToken
+    @State private var customAPIKey = ""
+    @State private var creatingCustomProvider = false
 
     var body: some View {
         VStack(spacing: 0) {
             ForEach(ModelProvider.allCases) { provider in
                 providerSection(provider)
-                if provider != ModelProvider.allCases.last { WJDivider() }
+                WJDivider()
             }
+            customProviderSection
+        }
+        .onAppear {
+            if let initiallyOpenProvider { beginAdding(initiallyOpenProvider) }
+        }
+    }
+
+    private var customAccounts: [Provider] {
+        model.providers
+            .filter { $0.modelProvider == nil }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private var customProviderSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 10) {
+                Text("API")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 25, height: 25)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(WJTheme.surface))
+                Text("Eigener Anbieter")
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button(showCustomProvider ? "Abbrechen" : "+ Zugang") {
+                    showCustomProvider.toggle()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .accessibilityLabel("Eigenen kompatiblen Anbieter hinzufügen")
+                .accessibilityIdentifier("provider.custom.open")
+            }
+
+            ForEach(customAccounts) { account in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Button { onSelect?(selectedRoute == .account(account.id) ? nil : .account(account.id)) } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(account.name).font(.system(size: 11, weight: .medium)).foregroundStyle(.primary)
+                                Text(accountSummary(account)).font(.system(size: 10)).foregroundStyle(account.status == .connected ? WJTheme.quotaOK : WJTheme.secondaryText)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(account.name), \(accountIdentityAndSummary(account))")
+                        .accessibilityIdentifier("provider.account.select.\(account.id.uuidString.uppercased())")
+                        .accessibilityAddTraits(selectedRoute == .account(account.id) ? .isSelected : [])
+                        Spacer()
+                        if selectedRoute == .account(account.id) {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(WJTheme.accent)
+                                .accessibilityIdentifier("provider.account.selected.\(account.id.uuidString.uppercased())")
+                        }
+                        Button {
+                            editingAccountID = editingAccountID == account.id ? nil : account.id
+                            accountSecrets[account.id] = ""
+                        } label: { Image(systemName: "pencil") }
+                            .buttonStyle(WJIconButtonStyle())
+                            .accessibilityLabel("\(account.name) bearbeiten")
+                        Button("Trennen", role: .destructive) { disconnect(account) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .accessibilityIdentifier("provider.account.disconnect.\(account.id.uuidString.uppercased())")
+                    }
+                    if editingAccountID == account.id { accountEditor(account) }
+                }
+                .padding(.leading, 33)
+            }
+
+            if showCustomProvider {
+                VStack(spacing: 7) {
+                    TextField("Name", text: $customName)
+                        .accountField()
+                        .accessibilityIdentifier("provider.custom.name")
+                    TextField("Kompatibler Endpunkt, z. B. https://host.example/v1", text: $customEndpoint)
+                        .accountField()
+                        .accessibilityIdentifier("provider.custom.endpoint")
+                    HStack(spacing: 6) {
+                        WJChoiceButton(title: "Bearer", isSelected: customAuthentication == .bearerToken) { customAuthentication = .bearerToken }
+                        WJChoiceButton(title: "x-api-key", isSelected: customAuthentication == .apiKeyHeader) { customAuthentication = .apiKeyHeader }
+                        WJChoiceButton(title: "Ohne Auth", isSelected: customAuthentication == .none) { customAuthentication = .none }
+                    }
+                    if customAuthentication != .none {
+                        SecureField("API-Key", text: $customAPIKey).accountField()
+                    }
+                    HStack {
+                        Text("Workjet prüft /v1/models und übernimmt die gelieferten Modell-IDs.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(WJTheme.secondaryText)
+                        Spacer()
+                        if creatingCustomProvider { ProgressView().controlSize(.mini) }
+                        Button("Verbinden & Modelle laden") { connectCustomProvider() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.mini)
+                            .disabled(!customProviderInputIsComplete || creatingCustomProvider)
+                    }
+                }
+                .padding(.leading, 33)
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var customProviderInputIsComplete: Bool {
+        !customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !customEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (customAuthentication == .none || !customAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private func connectCustomProvider() {
+        creatingCustomProvider = true
+        Task {
+            guard let account = await model.connectCustomProvider(
+                name: customName,
+                endpoint: customEndpoint,
+                authentication: customAuthentication,
+                apiKey: customAPIKey
+            ) else {
+                creatingCustomProvider = false
+                return
+            }
+            customName = ""
+            customEndpoint = ""
+            customAPIKey = ""
+            showCustomProvider = false
+            creatingCustomProvider = false
+            onSelect?(.account(account.id))
         }
     }
 
@@ -37,7 +170,7 @@ struct ProviderAccountsView: View {
                 if case .authenticating = loginState {
                     ProgressView().controlSize(.mini)
                 } else {
-                    Button("+ Zugang") { beginAdding(provider) }
+                    Button(openAPIProvider == provider ? "Abbrechen" : "+ Zugang") { beginAdding(provider) }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
                         .accessibilityLabel("Weiteren \(provider.rawValue)-Zugang hinzufügen")
@@ -47,23 +180,28 @@ struct ProviderAccountsView: View {
             ForEach(accounts) { account in
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        Button { onSelect?(.account(account.id)) } label: {
+                        Button { onSelect?(selectedRoute == .account(account.id) ? nil : .account(account.id)) } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(account.name)
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(.primary)
-                            Text(accountSummary(account))
+                            Text(accountIdentityAndSummary(account))
                                 .font(.system(size: 10))
                                 .foregroundStyle(account.status == .connected ? WJTheme.quotaOK : WJTheme.secondaryText)
                                 .lineLimit(1)
+                                .accessibilityIdentifier("provider.account.label.\(account.id.uuidString.uppercased())")
                         }
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("\(account.name), \(accountIdentityAndSummary(account))")
+                        .accessibilityIdentifier("provider.account.select.\(account.id.uuidString.uppercased())")
+                        .accessibilityAddTraits(selectedRoute == .account(account.id) ? .isSelected : [])
                         Spacer()
                         if selectedRoute == .account(account.id) {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(WJTheme.accent)
+                                .accessibilityIdentifier("provider.account.selected.\(account.id.uuidString.uppercased())")
                         }
                         Button {
                             editingAccountID = editingAccountID == account.id ? nil : account.id
@@ -73,6 +211,10 @@ struct ProviderAccountsView: View {
                         }
                         .buttonStyle(WJIconButtonStyle())
                         .accessibilityLabel("\(account.name) bearbeiten")
+                        Button("Trennen", role: .destructive) { disconnect(account) }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .accessibilityIdentifier("provider.account.disconnect.\(account.id.uuidString.uppercased())")
                     }
                     if editingAccountID == account.id { accountEditor(account) }
                 }
@@ -80,13 +222,13 @@ struct ProviderAccountsView: View {
             }
 
             if accounts.count > 1 {
-                Button { onSelect?(.pool(provider)) } label: {
+                Button { onSelect?(selectedRoute == .pool(provider) ? nil : .pool(provider)) } label: {
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Pool · \(accounts.count) Zugänge")
+                            Text("Alle \(accounts.count) Zugänge verwenden")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.primary)
-                            Text(accounts.map(\.name).joined(separator: " → "))
+                            Text(accounts.map { $0.compactAccountLabel ?? $0.name }.joined(separator: " · "))
                                 .font(.system(size: 9))
                                 .foregroundStyle(WJTheme.secondaryText)
                                 .lineLimit(1)
@@ -102,23 +244,28 @@ struct ProviderAccountsView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.leading, 33)
-                .help("Deterministische Reihenfolge; kein stilles Umsortieren")
+                .help("CLIProxy verwendet die verbundenen Zugänge gemeinsam.")
             }
 
             if openAPIProvider == provider {
                 VStack(spacing: 6) {
-                    TextField("Name des Zugangs", text: nameBinding(for: provider))
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12))
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 6)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
                     if provider.usesWebLogin {
-                        Button("Im Web anmelden") { authenticateNewAccount(provider) }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.mini)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        HStack {
+                            Text("Die Mailadresse aus der Web-Anmeldung identifiziert den Zugang.")
+                                .font(.system(size: 9))
+                                .foregroundStyle(WJTheme.secondaryText)
+                            Spacer()
+                            Button("Im Web anmelden") { authenticateNewAccount(provider) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.mini)
+                        }
                     } else {
+                        TextField("Name des Zugangs", text: nameBinding(for: provider))
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
                         HStack(spacing: 8) {
                             SecureField("API-Key", text: keyBinding(for: provider))
                                 .textFieldStyle(.plain)
@@ -149,7 +296,7 @@ struct ProviderAccountsView: View {
 
     private func beginAdding(_ provider: ModelProvider) {
         openAPIProvider = openAPIProvider == provider ? nil : provider
-        if accountNames[provider] == nil {
+        if !provider.usesWebLogin, accountNames[provider] == nil {
             accountNames[provider] = "\(provider.rawValue) \(model.providerAccounts(for: provider).count + 1)"
         }
     }
@@ -182,6 +329,18 @@ struct ProviderAccountsView: View {
             capacity = " · Quote/Rate nicht verfügbar"
         }
         return "\(account.status.rawValue)\(capacity)"
+    }
+
+    private func accountIdentityAndSummary(_ account: Provider) -> String {
+        [account.compactAccountLabel, accountSummary(account)]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    private func disconnect(_ account: Provider) {
+        if selectedRoute == .account(account.id) { onSelect?(nil) }
+        model.removeProvider(id: account.id)
+        editingAccountID = nil
     }
 
     @ViewBuilder
@@ -308,7 +467,8 @@ private extension View {
 
 struct ProviderSetupView: View {
     let selectedRoute: ProviderRoute?
-    let onSelect: (ProviderRoute) -> Void
+    var initiallyOpenProvider: ModelProvider? = nil
+    let onSelect: (ProviderRoute?) -> Void
     let onClose: () -> Void
 
     var body: some View {
@@ -325,7 +485,7 @@ struct ProviderSetupView: View {
             .padding(.vertical, 10)
             WJDivider()
             ScrollView {
-                ProviderAccountsView(selectedRoute: selectedRoute, onSelect: onSelect)
+                ProviderAccountsView(selectedRoute: selectedRoute, onSelect: onSelect, initiallyOpenProvider: initiallyOpenProvider)
                     .padding(.horizontal, 14)
             }
         }
