@@ -13,57 +13,87 @@ public enum ManagedPrompt {
     public static let beginStem = "<!-- WORKJET MANAGED WORKERS BEGIN"
     public static let endMarker = "<!-- WORKJET MANAGED WORKERS END v1 -->"
 
-    public static func workerBody(configuration: WorkjetConfiguration) -> Data {
+    public static func workerBody(
+        configuration: WorkjetConfiguration,
+        includeModelPrompts: Bool = true,
+        includeWorkerInstructions: Bool = true
+    ) -> Data {
         let computers = Dictionary(uniqueKeysWithValues: configuration.computers.map { ($0.id, $0) })
         let providers = Dictionary(uniqueKeysWithValues: configuration.providers.map { ($0.id, $0) })
-        var lines = [
-            "## Verwaltete Workjet-Worker · automatisch erzeugt · nicht editierbar",
-            "Fable (Claude Code) bleibt der einzige Orchestrator. Fable wählt und invokiert pro Delegation genau einen deklarierten Worker; die Workjet-App wählt keine Worker, baut keine Workflows und fällt niemals stillschweigend zurück.",
-            "Infrastruktur: höchstens \(configuration.providerSlots) parallele Aufrufe je Provider; Probe-Timeout \(configuration.probeTimeoutSeconds) s; Turn-Timeout \(configuration.turnTimeoutSeconds) s; Degradation \(configuration.degradationAllowed ? "nur nach expliziter Freigabe zulässig" : "nicht zulässig").",
-            ""
-        ]
+        var lines = ["## Worker", ""]
+        var renderedModels = Set<String>()
         for worker in configuration.workers {
+            let adapter = HarnessAdapterRegistry.descriptor(for: worker.harness)
             let computer = computers[worker.computerID]
             let target = computer?.name ?? "Unbekannter Computer"
-            let providerRoute = providerDescription(worker.providerID, providers: providers)
-            let capabilityTruth: String
-            let invocationTruth: String
-            if computer?.isLocal == true && worker.harness == .claudeCode {
-                capabilityTruth = "Lokaler Claude-Code-Wrapper; lokale Stream-Artefakte können live erkannt werden, sofern der Dispatcher sie schreibt."
-                invocationTruth = "Ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments)); Brief ersetzt `<WORKJET_BRIEF>`, stdin ist `/dev/null`."
-            } else if worker.harness == .piSidecar, let computer, !computer.isLocal {
-                capabilityTruth = remotePiTruth(computer)
-                invocationTruth = remotePiInvocation(computer)
-            } else if worker.harness == .piSidecar {
-                capabilityTruth = "Pi-Code-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
-                invocationTruth = "Ausführbare Datei `\(safeInline(worker.invocation.executable))` mit Argumenten \(argumentDescription(worker.invocation.arguments))."
-            } else {
-                capabilityTruth = "Remote-Claude-Code-Ausführung ist in dieser App nicht implementiert; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
-                invocationTruth = "Nicht verfügbar."
-            }
+            let providerRoute = providerDescription(for: worker, providers: providers)
             let effort = worker.reasoningEffort?.rawValue ?? "automatisch"
-            let effortTruth = worker.reasoningEffort == nil
-                ? "Kein fester Effort; Fable verwendet den Harness-Standard."
-                : "Fable muss den konfigurierten Effort `\(effort)` beim Aufruf passend zum Harness weitergeben; Workjet verändert keine frei konfigurierten Executable-Argumente."
             lines += [
                 "### \(worker.mentionTag) — \(safeInline(worker.name))",
                 "- ID: `\(worker.id.uuidString.lowercased())`",
                 "- Modell: `\(safeInline(worker.model))`",
-                "- Reasoning: `\(effort)` — \(effortTruth)",
-                "- Harness: \(worker.harness.rawValue)",
+                "- Reasoning: `\(effort)`",
+                "- Harness: \(adapter.displayName)",
+                "- Invocation-Protokoll: `\(adapter.invocationProtocol.rawValue)`",
                 "- Ziel-Computer: \(safeInline(target)) (`\(worker.computerID.uuidString.lowercased())`)",
                 "- Anbieter/Zugangsroute: \(providerRoute)",
                 "- Fähigkeiten: \(worker.invocation.capabilities.isEmpty ? "Keine deklariert" : worker.invocation.capabilities.map(safeInline).joined(separator: "; "))",
-                "- Aktueller Status: \(capabilityTruth)",
-                "- Invocation: \(invocationTruth)",
-                "",
-                "<!-- WORKJET WORKER INSTRUCTIONS BEGIN \(worker.mentionTag) -->",
-                safeMultilineInstructions(worker.instructions),
-                "<!-- WORKJET WORKER INSTRUCTIONS END \(worker.mentionTag) -->",
+                "- Executable: `\(safeInline(worker.invocation.executable))`",
+                "- Argumente: \(argumentDescription(worker.invocation.arguments))",
+                "- Harness-Optionen: \(optionDescription(worker.invocation.options))",
                 ""
             ]
+            let runtime = runtimeNotes(for: worker, configuration: configuration)
+            if !runtime.isEmpty { lines += [runtime, ""] }
+            if includeModelPrompts {
+                let canonical = ModelPromptCatalog.canonicalName(for: worker.model)
+                if !canonical.isEmpty,
+                   renderedModels.insert(canonical).inserted,
+                   let prompt = configuration.modelPrompts?[canonical]?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !prompt.isEmpty {
+                    lines += [
+                        "#### Modellregeln · \(safeInline(canonical))",
+                        "<!-- WORKJET MODEL PROMPT BEGIN \(safeInline(canonical)) -->",
+                        safeMultilineInstructions(prompt),
+                        "<!-- WORKJET MODEL PROMPT END \(safeInline(canonical)) -->",
+                        ""
+                    ]
+                }
+            }
+            if includeWorkerInstructions {
+                lines += [
+                    "#### Aufgabe dieses Workers",
+                    "<!-- WORKJET WORKER INSTRUCTIONS BEGIN \(worker.mentionTag) -->",
+                    safeMultilineInstructions(worker.instructions),
+                    "<!-- WORKJET WORKER INSTRUCTIONS END \(worker.mentionTag) -->",
+                    ""
+                ]
+            }
         }
+        lines += ["## Ad-hoc Learnings", ""]
+        let learnings = configuration.adHocLearnings?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !learnings.isEmpty { lines += [safeMultilineInstructions(learnings), ""] }
+        lines += ["## Technische Regeln", ""]
+        let technical = configuration.technicalRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !technical.isEmpty { lines.append(safeMultilineInstructions(technical)) }
         return Data(lines.joined(separator: "\n").trimmingCharacters(in: .newlines).utf8)
+    }
+
+    /// Generated facts are derived exclusively from the editable Worker and
+    /// Computer settings. They are exposed in the collapsed technical section
+    /// of Settings and are never an invisible second policy source.
+    public static func runtimeNotes(for worker: Worker, configuration: WorkjetConfiguration) -> String {
+        guard worker.harness == .piSidecar else { return "" }
+        guard let computer = configuration.computers.first(where: { $0.id == worker.computerID }) else {
+            return "- Pi-Laufzeit: Ziel-Computer ist nicht verfügbar."
+        }
+        if computer.isLocal {
+            return "- Pi-Laufzeit: Pi-Code-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+        }
+        return [
+            "- Remote-Status: \(remotePiTruth(computer))",
+            "- Remote-Invocation: \(remotePiInvocation(computer))"
+        ].joined(separator: "\n")
     }
 
     public static func unresolvedMentions(in instructions: String, workers: [Worker]) -> [String] {
@@ -157,19 +187,37 @@ public enum ManagedPrompt {
         return result
     }
 
-    private static func providerDescription(_ id: UUID?, providers: [UUID: Provider]) -> String {
-        guard let id else { return "Nicht konfiguriert (nicht verfügbar)." }
-        guard let provider = providers[id] else {
-            return "Referenz `\(id.uuidString.lowercased())` ist gelöscht oder nicht verfügbar; niemals automatisch ersetzen."
+    private static func providerDescription(for worker: Worker, providers: [UUID: Provider]) -> String {
+        switch worker.providerRoute {
+        case let .account(id):
+            guard let provider = providers[id] else {
+                return "Nicht verfügbar (`\(id.uuidString.lowercased())`)"
+            }
+            let route = providerDescription(provider)
+            if provider.modelProvider?.usesWebLogin == true, provider.kind.isLocalGateway {
+                return "\(route). Konkrete OAuth-Account-Zuordnung: nicht verfügbar; diese Metadaten pinnen keinen CLIProxy-Account."
+            }
+            return route
+        case let .pool(modelProvider):
+            let accounts = Provider.deterministicPool(Array(providers.values), for: modelProvider)
+            guard !accounts.isEmpty else {
+                return "Pool \(safeInline(modelProvider.rawValue)): nicht verfügbar (kein Zugang konfiguriert)."
+            }
+            let order = accounts.enumerated().map { index, account in
+                "\(index + 1). \(safeInline(account.name)) (`\(account.id.uuidString.lowercased())`)"
+            }.joined(separator: " → ")
+            return "Pool \(safeInline(modelProvider.rawValue)); deklarierte Reihenfolge: \(order). Automatischer Account-Fallback und konkretes OAuth-Pinning: nicht verfügbar."
+        case nil:
+            return "Nicht konfiguriert"
         }
+    }
+
+    private static func providerDescription(_ provider: Provider) -> String {
         let endpoint = provider.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         let route: String
         if let sanitizedEndpoint = safeEndpointDescription(endpoint) { route = "\(provider.kind.rawValue) über \(sanitizedEndpoint)" }
         else { route = provider.kind.rawValue }
-        let authentication = provider.kind.isLocalGateway
-            ? "OAuth/Abonnement wird im lokalen Gateway verwaltet."
-            : "Ein optionaler API-Zugang bleibt ausschließlich in der lokalen Keychain."
-        return "\(safeInline(provider.name)), \(route). \(authentication)"
+        return "\(safeInline(provider.name)), \(route)"
     }
 
     private static func safeEndpointDescription(_ endpoint: String) -> String? {
@@ -258,6 +306,13 @@ public enum ManagedPrompt {
 
     private static func argumentDescription(_ arguments: [String]) -> String {
         "[" + arguments.map { "`\(safeInline($0))`" }.joined(separator: ", ") + "]"
+    }
+
+    private static func optionDescription(_ options: [String: String]) -> String {
+        guard !options.isEmpty else { return "Keine" }
+        return options.keys.sorted().map { key in
+            "`\(safeInline(key))=\(safeInline(options[key] ?? ""))`"
+        }.joined(separator: ", ")
     }
 }
 
