@@ -8,6 +8,10 @@ public protocol WorkjetService: AnyObject, Sendable {
     func inspectProvider(_ provider: Provider) async -> ProviderProbeResult
     func discoverTailscaleDevices() async throws -> [TailscaleDevice]
     func bootstrapRemotePi(_ computer: Computer) async -> Computer
+    func probeRemoteHost(_ computer: Computer) async throws -> RemoteHostResponse
+    func startRemoteWorker(_ worker: Worker, on computer: Computer, input: Data) async throws -> RemoteHostResponse
+    func remoteEvents(on computer: Computer, runID: String, after sequence: UInt64) async throws -> RemoteHostResponse
+    func stopRemoteWorker(on computer: Computer, runID: String) async throws -> RemoteHostResponse
     func storeCredential(_ secret: Data, reference: String) throws
     func deleteCredential(reference: String) throws
     func hasCredential(reference: String) -> Bool
@@ -20,11 +24,82 @@ public extension WorkjetService {
     func discoverTailscaleDevices() async throws -> [TailscaleDevice] { throw TailscaleDeviceError.unavailable }
     func deleteCredential(reference: String) throws {}
     func hasCredential(reference: String) -> Bool { false }
+    func loadAdHocLearnings() throws -> String? { nil }
+    func saveAdHocLearnings(_ value: String, configuration: WorkjetConfiguration) throws {}
+    func probeRemoteHost(_ computer: Computer) async throws -> RemoteHostResponse { throw RemoteHostProtocolError.computerNotInstalled }
+    func startRemoteWorker(_ worker: Worker, on computer: Computer, input: Data) async throws -> RemoteHostResponse { throw RemoteHostProtocolError.computerNotInstalled }
+    func remoteEvents(on computer: Computer, runID: String, after sequence: UInt64) async throws -> RemoteHostResponse { throw RemoteHostProtocolError.computerNotInstalled }
+    func stopRemoteWorker(on computer: Computer, runID: String) async throws -> RemoteHostResponse { throw RemoteHostProtocolError.computerNotInstalled }
     func bootstrapRemotePi(_ computer: Computer) async -> Computer {
         var value = computer
         value.deploymentStatus = .failed
         value.deploymentDetail = "Dieser Dienst unterstützt keine Remote-Pi-Einrichtung."
         return value
+    }
+}
+
+/// Adapts the app service's remote methods to the cursor ledger without
+/// bypassing dependency injection in ViewModel tests or previews.
+public struct RemoteServiceHostClient: RemoteHostCalling, @unchecked Sendable {
+    private let service: any WorkjetService
+    private let computer: Computer
+
+    public init(service: any WorkjetService, computer: Computer) {
+        self.service = service
+        self.computer = computer
+    }
+
+    public func call(_ request: RemoteHostRequest) async throws -> RemoteHostResponse {
+        switch request.operation {
+        case .probe:
+            return try await service.probeRemoteHost(computer)
+        case .start:
+            guard let launch = request.launch else {
+                throw RemoteHostProtocolError.rejected("Start-Anfrage enthält keinen Harness-Launch.")
+            }
+            let response = try await RemoteHostClientRequestBridge(service: service, computer: computer).start(launch)
+            return response
+        case .events:
+            guard let runID = request.runID else { throw RemoteRunLedgerError.missingRunID }
+            return try await service.remoteEvents(on: computer, runID: runID, after: request.afterSequence ?? 0)
+        case .stop:
+            guard let runID = request.runID else { throw RemoteRunLedgerError.missingRunID }
+            return try await service.stopRemoteWorker(on: computer, runID: runID)
+        }
+    }
+}
+
+private struct RemoteHostClientRequestBridge: @unchecked Sendable {
+    let service: any WorkjetService
+    let computer: Computer
+
+    func start(_ launch: RemoteHarnessLaunch) async throws -> RemoteHostResponse {
+        // The service API historically accepted Worker + Data. Preserve that
+        // public API while making the ledger's exact encoded launch testable.
+        guard let input = Data(base64Encoded: launch.inputBase64) else {
+            throw RemoteHarnessAdapterError.invalidInput("Remote-Launch enthält keine gültige Base64-Eingabe.")
+        }
+        var worker = Worker(
+            name: launch.harnessID,
+            harness: harness(for: launch.harnessID),
+            model: launch.model,
+            reasoningEffort: launch.reasoning.flatMap(ReasoningEffort.init(rawValue:)),
+            computerID: computer.id,
+            invocation: WorkerInvocation(executable: launch.harnessID, options: launch.options)
+        )
+        worker.invocation.options = launch.options
+        return try await service.startRemoteWorker(worker, on: computer, input: input)
+    }
+
+    private func harness(for id: String) -> Harness {
+        switch id {
+        case "pi-code": return .piSidecar
+        case "codex-cli": return .codexCLI
+        case "opencode": return .openCode
+        case "cursor-agent": return .cursorAgent
+        case "grok-cli": return .grokCLI
+        default: return .claudeCode
+        }
     }
 }
 
@@ -80,6 +155,18 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     public func inspectProvider(_ provider: Provider) async -> ProviderProbeResult { await providerInspector.inspect(provider) }
     public func discoverTailscaleDevices() async throws -> [TailscaleDevice] { try await tailscaleDiscovery.discover() }
     public func bootstrapRemotePi(_ computer: Computer) async -> Computer { await remoteBootstrap.deploy(computer) }
+    public func probeRemoteHost(_ computer: Computer) async throws -> RemoteHostResponse {
+        try await RemoteHostClient(computer: computer).probe()
+    }
+    public func startRemoteWorker(_ worker: Worker, on computer: Computer, input: Data) async throws -> RemoteHostResponse {
+        try await RemoteHostClient(computer: computer).start(worker: worker, input: input)
+    }
+    public func remoteEvents(on computer: Computer, runID: String, after sequence: UInt64) async throws -> RemoteHostResponse {
+        try await RemoteHostClient(computer: computer).events(runID: runID, after: sequence)
+    }
+    public func stopRemoteWorker(on computer: Computer, runID: String) async throws -> RemoteHostResponse {
+        try await RemoteHostClient(computer: computer).stop(runID: runID)
+    }
     public func storeCredential(_ secret: Data, reference: String) throws { try credentialStore.write(secret, reference: reference) }
     public func deleteCredential(reference: String) throws { try credentialStore.delete(reference: reference) }
     public func hasCredential(reference: String) -> Bool { (try? credentialStore.read(reference: reference)) != nil }

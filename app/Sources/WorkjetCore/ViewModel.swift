@@ -7,6 +7,9 @@ public final class WorkjetViewModel: ObservableObject {
     @Published public private(set) var computers: [Computer] { didSet { persistIfReady() } }
     @Published public private(set) var providers: [Provider] { didSet { persistIfReady() } }
     @Published public private(set) var activeRuns: [ActiveRun] = []
+    @Published public private(set) var remoteRuns: [UUID: RemoteWorkerRun] = [:]
+    @Published public private(set) var remoteHostProbes: [UUID: RemoteHostResponse] = [:]
+    @Published public private(set) var remoteHostErrors: [UUID: String] = [:]
     @Published public private(set) var cliProxyStatus: CLIProxyStatus
     @Published public private(set) var providerAccessStored: Set<UUID> = []
     @Published public private(set) var providerLoginStates: [ModelProvider: CLIProxyLoginState] = [:]
@@ -45,7 +48,16 @@ public final class WorkjetViewModel: ObservableObject {
     private var providerRefreshTask: Task<Void, Never>?
     private var learningRefreshTask: Task<Void, Never>?
     private var learningPersistenceTask: Task<Void, Never>?
+    private var remoteRefreshTask: Task<Void, Never>?
+    private var remoteSessions: [UUID: RemoteSession] = [:]
     private var applyingExternalLearnings = false
+
+    private struct RemoteSession {
+        var worker: Worker
+        var computer: Computer
+        var ledger: RemoteRunLedger
+        var supervisor: RemoteConnectionSupervisor
+    }
 
     public init(configuration: WorkjetConfiguration, service: any WorkjetService = NullWorkjetService(), messages: [String] = [], persistenceDelay: TimeInterval = 0.25) {
         let value = WorkjetBootstrap.normalized(configuration)
@@ -84,7 +96,8 @@ public final class WorkjetViewModel: ObservableObject {
     public var runtimeStatus: WorkjetRuntimeStatus {
         if case .failed = promptSyncStatus { return .attention }
         if !statusMessages.isEmpty || !runtimeHealthIssues.isEmpty { return .attention }
-        if !activeRuns.isEmpty { return .active(count: activeRuns.count) }
+        let remoteCount = remoteRuns.values.filter { !$0.state.isTerminal }.count
+        if !activeRuns.isEmpty || remoteCount > 0 { return .active(count: activeRuns.count + remoteCount) }
         return .ready
     }
     public var runtimeSubtitle: String {
@@ -97,7 +110,8 @@ public final class WorkjetViewModel: ObservableObject {
             break
         }
         if let issue = runtimeHealthIssues.first { return issue }
-        if !activeRuns.isEmpty { return "\(activeRuns.count) Worker aktiv"
+        let remoteCount = remoteRuns.values.filter { !$0.state.isTerminal }.count
+        if !activeRuns.isEmpty || remoteCount > 0 { return "\(activeRuns.count + remoteCount) Worker aktiv"
         }
         return "Für nächsten Workjet-Aufruf synchron"
     }
@@ -107,7 +121,7 @@ public final class WorkjetViewModel: ObservableObject {
         if let selected = computer(for: selectedComputerID), !selected.isLocal {
             if selected.deploymentStatus != .installed {
                 issues.append("Computer nicht vollständig eingerichtet")
-            } else {
+            } else if remoteHostProbes[selected.id] == nil {
                 issues.append("Remote-Telemetrie nicht verbunden")
             }
         }
@@ -202,7 +216,7 @@ public final class WorkjetViewModel: ObservableObject {
     }
 
     public func operationalStatus(for worker: Worker) -> WorkerOperationalStatus {
-        if activeRuns.contains(where: { $0.workerID == worker.id }) {
+        if activeRuns.contains(where: { $0.workerID == worker.id }) || remoteRuns[worker.id].map({ !$0.state.isTerminal }) == true {
             return WorkerOperationalStatus(
                 state: .active,
                 label: "Aktiv",
@@ -218,6 +232,13 @@ public final class WorkjetViewModel: ObservableObject {
                 state: .unavailable,
                 label: "Computer nicht bereit",
                 detail: computer.deploymentDetail.isEmpty ? computer.deploymentStatus.rawValue : computer.deploymentDetail
+            )
+        }
+        if !computer.isLocal, !RemoteHarnessAdapterRegistry().supports(worker.harness) {
+            return WorkerOperationalStatus(
+                state: .unavailable,
+                label: "Remote-Harness blockiert",
+                detail: RemoteHarnessAdapterError.unsupportedHarness(worker.harness.rawValue).localizedDescription
             )
         }
         guard !worker.invocation.executable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -535,12 +556,14 @@ public final class WorkjetViewModel: ObservableObject {
         }
         pollingTask = Task { [weak self] in
             var providerTicks = 0
+            var remoteTicks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard !Task.isCancelled, let self else { break }
                 self.refreshRuns()
                 self.refreshAdHocLearnings()
                 providerTicks += 1
+                remoteTicks += 1
                 if providerTicks >= 15 {
                     providerTicks = 0
                     if self.providerRefreshTask == nil {
@@ -550,8 +573,13 @@ public final class WorkjetViewModel: ObservableObject {
                         }
                     }
                 }
+                if remoteTicks >= 5 {
+                    remoteTicks = 0
+                    self.refreshRemoteTelemetry()
+                }
             }
         }
+        refreshRemoteTelemetry()
     }
 
     public func stopPolling() {
@@ -560,6 +588,7 @@ public final class WorkjetViewModel: ObservableObject {
         providerRefreshTask?.cancel(); providerRefreshTask = nil
         learningRefreshTask?.cancel(); learningRefreshTask = nil
         learningPersistenceTask?.cancel(); learningPersistenceTask = nil
+        remoteRefreshTask?.cancel(); remoteRefreshTask = nil
     }
     public func refreshRuns() {
         runRefreshTask?.cancel()
@@ -612,6 +641,108 @@ public final class WorkjetViewModel: ObservableObject {
                 try await Task.detached(priority: .userInitiated) { try service.stop(run) }.value
                 self?.refreshRuns()
             } catch { self?.expose(error) }
+        }
+    }
+
+    @discardableResult
+    public func probeRemoteComputer(_ computer: Computer) async -> RemoteHostResponse? {
+        guard !computer.isLocal else {
+            expose(RemoteHostProtocolError.computerNotInstalled)
+            return nil
+        }
+        do {
+            let response = try await service.probeRemoteHost(computer)
+            remoteHostProbes[computer.id] = response
+            remoteHostErrors[computer.id] = nil
+            return response
+        } catch {
+            remoteHostProbes[computer.id] = nil
+            remoteHostErrors[computer.id] = error.localizedDescription
+            expose(error)
+            return nil
+        }
+    }
+
+    /// Executes the real probe -> start path and records a durable exclusive
+    /// event cursor for subsequent reconnects. Unsupported adapters fail before
+    /// any remote process can be claimed as started.
+    @discardableResult
+    public func startRemoteWorker(id workerID: UUID, input: Data) async -> RemoteWorkerRun? {
+        guard let worker = workers.first(where: { $0.id == workerID }),
+              let computer = computers.first(where: { $0.id == worker.computerID }),
+              !computer.isLocal else { return nil }
+        do {
+            let registry = RemoteHarnessAdapterRegistry()
+            let launch = try registry.launch(worker: worker, computer: computer, input: input)
+            let probe = try await service.probeRemoteHost(computer)
+            remoteHostProbes[computer.id] = probe
+            remoteHostErrors[computer.id] = nil
+            for capability in ["start", "events-after-exclusive-cursor", "stop", launch.harnessID]
+                where !probe.capabilities.contains(capability) {
+                throw RemoteHostProtocolError.missingCapability(capability)
+            }
+
+            let ledger = RemoteRunLedger(client: RemoteServiceHostClient(service: service, computer: computer))
+            _ = try await ledger.start(RemoteHostRequest(operation: .start, launch: launch))
+            let supervisor = RemoteConnectionSupervisor(ledger: ledger)
+            remoteSessions[workerID] = RemoteSession(worker: worker, computer: computer, ledger: ledger, supervisor: supervisor)
+            let run = try RemoteWorkerRun(workerID: workerID, computerID: computer.id, snapshot: await ledger.snapshot())
+            remoteRuns[workerID] = run
+            return run
+        } catch {
+            remoteHostErrors[computer.id] = error.localizedDescription
+            expose(error)
+            return nil
+        }
+    }
+
+    public func stopRemoteWorker(id workerID: UUID) async {
+        guard let session = remoteSessions[workerID] else { return }
+        do {
+            try await session.ledger.stop()
+            remoteRuns[workerID] = try RemoteWorkerRun(
+                workerID: workerID,
+                computerID: session.computer.id,
+                snapshot: await session.ledger.snapshot()
+            )
+        } catch { expose(error) }
+    }
+
+    public func refreshRemoteTelemetry(staleHeartbeatAfter: TimeInterval = 45) {
+        guard remoteRefreshTask == nil else { return }
+        remoteRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            let remoteComputers = self.computers.filter { !$0.isLocal && $0.deploymentStatus == .installed }
+            for computer in remoteComputers {
+                do {
+                    let response = try await self.service.probeRemoteHost(computer)
+                    self.remoteHostProbes[computer.id] = response
+                    self.remoteHostErrors[computer.id] = nil
+                } catch {
+                    self.remoteHostProbes[computer.id] = nil
+                    self.remoteHostErrors[computer.id] = error.localizedDescription
+                }
+            }
+            for (workerID, session) in self.remoteSessions {
+                let current = await session.ledger.snapshot()
+                guard !current.state.isTerminal else { continue }
+                do {
+                    _ = try await session.supervisor.refreshAndReapGhosts(staleAfter: staleHeartbeatAfter)
+                    self.remoteRuns[workerID] = try RemoteWorkerRun(
+                        workerID: workerID,
+                        computerID: session.computer.id,
+                        snapshot: await session.ledger.snapshot()
+                    )
+                } catch {
+                    self.remoteRuns[workerID] = try? RemoteWorkerRun(
+                        workerID: workerID,
+                        computerID: session.computer.id,
+                        snapshot: await session.ledger.snapshot(),
+                        connectionError: error.localizedDescription
+                    )
+                }
+            }
+            self.remoteRefreshTask = nil
         }
     }
 
