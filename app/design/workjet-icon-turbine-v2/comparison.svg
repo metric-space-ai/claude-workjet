@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1088" height="272" viewBox="0 0 1088 272">
+  <rect width="1088" height="272" rx="32" fill="#050b11"/>
+  <g transform="translate(8 8)"><image href="01-turbofan-front.svg" width="256" height="256"/></g>
+  <g transform="translate(280 8)"><image href="02-axial-afterburner.svg" width="256" height="256"/></g>
+  <g transform="translate(552 8)"><image href="03-dual-spool.svg" width="256" height="256"/></g>
+  <g transform="translate(824 8)"><image href="04-compressor-crown.svg" width="256" height="256"/></g>
+</svg>

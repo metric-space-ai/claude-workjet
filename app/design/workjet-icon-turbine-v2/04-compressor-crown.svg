@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <radialGradient id="case" cx="42%" cy="38%" r="72%">
+      <stop stop-color="#1d4b68"/>
+      <stop offset="1" stop-color="#06121c"/>
+    </radialGradient>
+    <linearGradient id="tail" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#55c6ff"/>
+      <stop offset="1" stop-color="#ff7040"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#case)"/>
+  <path d="M145 91h37l17 16h20l25 21-25 21h-20l-17 16h-37z" fill="url(#tail)"/>
+  <circle cx="111" cy="128" r="82" fill="#081a28" stroke="#e9f8ff" stroke-width="9"/>
+  <g fill="#63caff">
+    <path d="M111 121L95 59c20-5 36-1 50 9l-27 55z"/>
+    <path d="M117 124l33-55c18 10 28 24 32 41l-63 21z"/>
+    <path d="M119 132l63-18c6 20 2 36-8 50l-57-25z"/>
+    <path d="M114 137l59 30c-10 18-24 28-42 31l-23-61z"/>
+    <path d="M106 136l21 62c-20 6-37 2-51-8l28-56z"/>
+    <path d="M102 130l-29 59c-18-10-29-24-32-42l61-23z"/>
+    <path d="M103 122l-62 21c-6-20-2-37 8-51l56 28z"/>
+    <path d="M108 119L50 89c10-18 24-28 42-31l22 61z"/>
+  </g>
+  <circle cx="111" cy="128" r="31" fill="#eaf8ff"/>
+  <circle cx="111" cy="128" r="14" fill="#0a2132"/>
+  <circle cx="111" cy="128" r="4" fill="#ff9a46"/>
+</svg>

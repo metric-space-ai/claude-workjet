@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="jet" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#52c8ff"/>
+      <stop offset=".58" stop-color="#8ddcff"/>
+      <stop offset=".72" stop-color="#ffd66d"/>
+      <stop offset="1" stop-color="#ff593c"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="#091521"/>
+  <path d="M27 128c23-42 54-63 93-63h54l34 24 23 39-23 39-34 24h-54c-39 0-70-21-93-63z" fill="#13354c" stroke="#dff5ff" stroke-width="8"/>
+  <path d="M31 128h196" stroke="url(#jet)" stroke-width="14" stroke-linecap="round"/>
+  <g fill="#eaf8ff">
+    <path d="M69 75h9l16 53-16 53h-9l13-53z"/>
+    <path d="M97 66h9l16 62-16 62h-9l13-62z"/>
+    <path d="M126 65h9l15 63-15 63h-9l12-63z"/>
+  </g>
+  <g fill="#ffb14a">
+    <path d="M157 73h10l11 55-11 55h-10l9-55z"/>
+    <path d="M183 82h10l12 46-12 46h-10l9-46z"/>
+  </g>
+  <circle cx="53" cy="128" r="25" fill="#0b2030" stroke="#72d0ff" stroke-width="7"/>
+  <path d="M53 108l7 14 15 6-15 7-7 14-7-14-15-7 15-6z" fill="#eaf8ff"/>
+  <path d="M210 102l35 26-35 26 9-26z" fill="#ff603d"/>
+</svg>
