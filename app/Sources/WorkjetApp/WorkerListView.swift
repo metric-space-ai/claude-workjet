@@ -1,11 +1,21 @@
 import SwiftUI
 import WorkjetCore
 
+extension Notification.Name {
+    static let workjetOpenComputerRecovery = Notification.Name("workjet.open-computer-recovery")
+    static let workjetOpenSettings = Notification.Name("workjet.open-settings")
+}
+
+private struct WorkerProviderSetupRequest: Identifiable {
+    let worker: Worker
+    let provider: ModelProvider?
+    var id: UUID { worker.id }
+}
+
 struct WorkerListView: View {
     @EnvironmentObject private var model: WorkjetViewModel
     let onEditWorker: (Worker) -> Void
-    @State private var setupWorker: Worker?
-    @State private var initiallyOpenProvider: ModelProvider?
+    @State private var setupRequest: WorkerProviderSetupRequest?
     @State private var recoveringWorkerID: UUID?
 
     var body: some View {
@@ -16,7 +26,7 @@ struct WorkerListView: View {
                         worker: worker,
                         capacity: model.effectiveCapacity(for: worker),
                         status: model.operationalStatus(for: worker),
-                        recovery: model.providerRecovery(for: worker),
+                        recovery: model.recoveryAction(for: worker),
                         isRecovering: recoveringWorkerID == worker.id,
                         onRecover: { recover(worker) },
                         onEdit: { onEditWorker(worker) }
@@ -29,24 +39,33 @@ struct WorkerListView: View {
                 }
             }
         }
-        .sheet(item: $setupWorker) { worker in
+        .sheet(item: $setupRequest) { request in
             ProviderSetupView(
-                selectedRoute: worker.providerRoute,
-                initiallyOpenProvider: initiallyOpenProvider,
+                selectedRoute: request.worker.providerRoute,
+                initiallyOpenProvider: request.provider,
                 onSelect: { route in
-                    var updated = worker
+                    var updated = request.worker
                     updated.providerRoute = route
                     model.upsertWorker(updated)
-                    setupWorker = nil
+                    setupRequest = nil
                 },
-                onClose: { setupWorker = nil }
+                onClose: { setupRequest = nil }
             )
             .environmentObject(model)
         }
     }
 
     private func recover(_ worker: Worker) {
-        guard let recovery = model.providerRecovery(for: worker) else { return }
+        guard let recovery = model.recoveryAction(for: worker) else { return }
+        switch recovery {
+        case let .computer(computerID):
+            NotificationCenter.default.post(name: .workjetOpenComputerRecovery, object: computerID)
+        case let .provider(providerRecovery):
+            recoverProvider(providerRecovery, for: worker)
+        }
+    }
+
+    private func recoverProvider(_ recovery: WorkerProviderRecovery, for worker: Worker) {
         switch recovery {
         case let .connect(provider):
             recoveringWorkerID = worker.id
@@ -66,8 +85,7 @@ struct WorkerListView: View {
                 recoveringWorkerID = nil
             }
         case let .configure(provider):
-            initiallyOpenProvider = provider
-            setupWorker = worker
+            setupRequest = WorkerProviderSetupRequest(worker: worker, provider: provider)
         }
     }
 
@@ -81,7 +99,7 @@ struct WorkerRow: View {
     let worker: Worker
     let capacity: CapacityStatus
     let status: WorkerOperationalStatus
-    let recovery: WorkerProviderRecovery?
+    let recovery: WorkerRecoveryAction?
     let isRecovering: Bool
     let onRecover: () -> Void
     let onEdit: () -> Void
@@ -117,11 +135,15 @@ struct WorkerRow: View {
         .accessibilityIdentifier("worker.row.\(worker.id.uuidString)")
     }
 
-    private func recoveryLabel(_ recovery: WorkerProviderRecovery) -> String {
+    private func recoveryLabel(_ recovery: WorkerRecoveryAction) -> String {
         switch recovery {
-        case .connect: "Anmelden"
-        case .reauthenticate: "Neu anmelden"
-        case let .configure(provider): provider?.usesWebLogin == false ? "API-Key" : "Anbieter wählen"
+        case .computer: "Computer einrichten"
+        case let .provider(providerRecovery):
+            switch providerRecovery {
+            case .connect: "Anmelden"
+            case .reauthenticate: "Neu anmelden"
+            case let .configure(provider): provider?.usesWebLogin == false ? "API-Key" : "Anbieter wählen"
+            }
         }
     }
 }
@@ -165,7 +187,7 @@ struct CapacityIndicator: View {
         }
     }
     private var detail: String {
-        guard let fraction = capacity.fraction else { return capacity.reason ?? "Kapazität nicht verfügbar" }
+        guard let fraction = capacity.fraction else { return "Keine Nutzungsdaten" }
         return "\(Int((fraction * 100).rounded())) Prozent belegt" + (capacity.rateLimited == true ? ", Rate-Limit aktiv" : "")
     }
     var body: some View {
@@ -183,7 +205,7 @@ struct CapacityIndicator: View {
 
     private var rateValue: String {
         guard let limited = capacity.rateLimited else { return "—" }
-        return limited ? "Limit" : "frei"
+        return limited ? "Limit" : "—"
     }
 
     private var rateColor: Color {

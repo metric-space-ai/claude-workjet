@@ -17,7 +17,10 @@ public struct TailscaleDevice: Identifiable, Equatable, Sendable {
         self.os = os
     }
 
-    public var preferredHost: String { dnsName ?? ipv4 ?? hostname }
+    /// The Tailscale IP is the reliable transport address even when MagicDNS
+    /// is disabled or temporarily unavailable on the Mac. DNS remains visible
+    /// in the picker, but must not make an otherwise online peer unreachable.
+    public var preferredHost: String { ipv4 ?? dnsName ?? hostname }
 }
 
 public enum TailscaleDeviceError: LocalizedError, Equatable {
@@ -29,11 +32,10 @@ public enum TailscaleDeviceError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .unavailable: return "Tailscale ist nicht installiert oder kein erlaubtes Executable wurde gefunden."
-        case let .notConnected(state): return "Tailscale ist nicht verbunden (Status: \(state))."
-        case let .commandFailed(detail): return "Tailscale-Status konnte nicht gelesen werden: \(detail)"
-        case .outputTooLarge: return "Die Tailscale-Statusausgabe überschreitet das Sicherheitslimit."
-        case .malformedStatus: return "Tailscale lieferte keine auswertbare Statusantwort."
+        case .unavailable: return "Tailscale wurde auf diesem Mac nicht gefunden."
+        case .notConnected: return "Tailscale ist nicht verbunden. Öffne Tailscale und versuche es erneut."
+        case .commandFailed: return "Die Tailscale-Geräteliste konnte nicht geladen werden. Öffne Tailscale und versuche es erneut."
+        case .outputTooLarge, .malformedStatus: return "Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut."
         }
     }
 }

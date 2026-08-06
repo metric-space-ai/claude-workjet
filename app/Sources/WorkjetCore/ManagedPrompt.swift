@@ -12,6 +12,9 @@ public struct ManagedPromptDocument: Equatable, Sendable {
 public enum ManagedPrompt {
     public static let beginStem = "<!-- WORKJET MANAGED WORKERS BEGIN"
     public static let endMarker = "<!-- WORKJET MANAGED WORKERS END v1 -->"
+    public static let progressBoardStem = "<!-- WORKJET PROGRESS BOARD"
+    public static let progressBoardBeginMarker = "\(progressBoardStem) BEGIN -->"
+    public static let progressBoardEndMarker = "<!-- WORKJET PROGRESS BOARD END -->"
 
     public static func workerBody(
         configuration: WorkjetConfiguration,
@@ -20,31 +23,19 @@ public enum ManagedPrompt {
     ) -> Data {
         let computers = Dictionary(uniqueKeysWithValues: configuration.computers.map { ($0.id, $0) })
         let providers = Dictionary(uniqueKeysWithValues: configuration.providers.map { ($0.id, $0) })
-        var lines = ["## Worker", ""]
+        var lines = ["## Progress Board", "", progressBoardBeginMarker]
+        let progressBoard = configuration.progressBoardRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !progressBoard.isEmpty { lines.append(safeMultilineInstructions(progressBoard)) }
+        lines += [
+            progressBoardEndMarker,
+            "",
+            "## Worker",
+            ""
+        ]
         var renderedModels = Set<String>()
         for worker in configuration.workers {
-            let adapter = HarnessAdapterRegistry.descriptor(for: worker.harness)
-            let computer = computers[worker.computerID]
-            let target = computer?.name ?? "Unbekannter Computer"
-            let providerRoute = providerDescription(for: worker, providers: providers)
-            let effort = worker.reasoningEffort?.rawValue ?? "automatisch"
-            lines += [
-                "### \(worker.mentionTag) — \(safeInline(worker.name))",
-                "- ID: `\(worker.id.uuidString.lowercased())`",
-                "- Modell: `\(safeInline(worker.model))`",
-                "- Reasoning: `\(effort)`",
-                "- Harness: \(adapter.displayName)",
-                "- Invocation-Protokoll: `\(adapter.invocationProtocol.rawValue)`",
-                "- Ziel-Computer: \(safeInline(target)) (`\(worker.computerID.uuidString.lowercased())`)",
-                "- Anbieter/Zugangsroute: \(providerRoute)",
-                "- Fähigkeiten: \(worker.invocation.capabilities.isEmpty ? "Keine deklariert" : worker.invocation.capabilities.map(safeInline).joined(separator: "; "))",
-                "- Executable: `\(safeInline(worker.invocation.executable))`",
-                "- Argumente: \(argumentDescription(worker.invocation.arguments))",
-                "- Harness-Optionen: \(optionDescription(worker.invocation.options))",
-                ""
-            ]
-            let runtime = runtimeNotes(for: worker, configuration: configuration)
-            if !runtime.isEmpty { lines += [runtime, ""] }
+            lines += workerConfigurationLines(for: worker, computers: computers, providers: providers, configuration: configuration)
+            lines.append("")
             if includeModelPrompts {
                 let canonical = ModelPromptCatalog.canonicalName(for: worker.model)
                 if !canonical.isEmpty,
@@ -79,6 +70,45 @@ public enum ManagedPrompt {
         return Data(lines.joined(separator: "\n").trimmingCharacters(in: .newlines).utf8)
     }
 
+    /// Exact generated block inserted for this worker in the managed prompt.
+    /// Settings renders this value verbatim so generated facts have a visible source.
+    public static func generatedWorkerConfiguration(for worker: Worker, configuration: WorkjetConfiguration) -> String {
+        let computers = Dictionary(uniqueKeysWithValues: configuration.computers.map { ($0.id, $0) })
+        let providers = Dictionary(uniqueKeysWithValues: configuration.providers.map { ($0.id, $0) })
+        return workerConfigurationLines(for: worker, computers: computers, providers: providers, configuration: configuration)
+            .joined(separator: "\n")
+    }
+
+    private static func workerConfigurationLines(
+        for worker: Worker,
+        computers: [UUID: Computer],
+        providers: [UUID: Provider],
+        configuration: WorkjetConfiguration
+    ) -> [String] {
+        let adapter = HarnessAdapterRegistry.descriptor(for: worker.harness)
+        let target = computers[worker.computerID]?.name ?? "Unbekannter Computer"
+        let effort = worker.reasoningEffort?.rawValue ?? "automatisch"
+        var lines = [
+            "### \(worker.mentionTag) — \(safeInline(worker.name))",
+            "- ID: `\(worker.id.uuidString.lowercased())`",
+            "- Modell: `\(safeInline(worker.model))`",
+            "- Reasoning: `\(effort)`",
+            "- Harness: \(adapter.displayName)",
+            "- Invocation-Protokoll: `\(adapter.invocationProtocol.rawValue)` (App-Fakt; nicht direkt ausführen)",
+            "- Ziel-Computer: \(safeInline(target)) (`\(worker.computerID.uuidString.lowercased())`)",
+            "- Anbieter/Zugangsroute: \(providerDescription(for: worker, providers: providers))",
+            "- Fähigkeiten: \(worker.invocation.capabilities.isEmpty ? "Keine deklariert" : worker.invocation.capabilities.map(safeInline).joined(separator: "; "))",
+            "- Skills (konfiguriert): \(safeInline(WorkerSkillCatalog.configuredDescription(for: worker)))",
+            "- Skills (effektiv): \(safeInline(WorkerSkillCatalog.effectiveDescription(for: worker))) (Konfigurationsfakt; keine Aussage über Binärverfügbarkeit oder erfolgreiche Nutzung)",
+            "- Executable: `\(safeInline(worker.invocation.executable))` (App-Fakt; nicht direkt ausführen)",
+            "- Argumente: \(argumentDescription(worker.invocation.arguments)) (App-Fakt; nicht direkt ausführen)",
+            "- Harness-Optionen: \(optionDescription(worker.invocation.options)) (App-Fakt; nicht direkt ausführen)"
+        ]
+        let runtime = runtimeNotes(for: worker, configuration: configuration)
+        if !runtime.isEmpty { lines += ["", runtime] }
+        return lines
+    }
+
     /// Generated facts are derived exclusively from the editable Worker and
     /// Computer settings. They are exposed in the collapsed technical section
     /// of Settings and are never an invisible second policy source.
@@ -88,11 +118,12 @@ public enum ManagedPrompt {
             return "- Pi-Laufzeit: Ziel-Computer ist nicht verfügbar."
         }
         if computer.isLocal {
-            return "- Pi-Laufzeit: Pi-Code-Ereignisse sind derzeit nur post-hoc verfügbar; keine Live-Events und keine behauptete Host-Build-/Test-Autorität."
+            return "- Pi-Laufzeit: Workjet fragt Ereignisse mit `workjet events` über einen exklusiven Sequenz-Cursor ab; das ist kein direkter Live-Stream und keine behauptete Host-Build-/Test-Autorität."
         }
         return [
             "- Remote-Status: \(remotePiTruth(computer))",
-            "- Remote-Invocation: \(remotePiInvocation(computer))"
+            "- Remote-Ausführung: Workjet prüft die Installation, löst die Anbieterroute auf, richtet bei Bedarf den laufbezogenen Gateway-Relay ein und startet Pi Code über den Remote-Adapter. Fable verwendet dafür ausschließlich `workjet run` und liest Ereignisse ausschließlich mit `workjet events`.",
+            "- App-Remote-Fakten (sichtbar, nicht direkt ausführen): \(remotePiTechnicalFacts(computer))"
         ].joined(separator: "\n")
     }
 
@@ -195,7 +226,7 @@ public enum ManagedPrompt {
             }
             let route = providerDescription(provider)
             if provider.modelProvider?.usesWebLogin == true, provider.kind.isLocalGateway {
-                return "\(route). Konkrete OAuth-Account-Zuordnung: nicht verfügbar; diese Metadaten pinnen keinen CLIProxy-Account."
+                return "\(route). CLIProxy verwaltet diesen Zugang im gemeinsamen Gateway-Pool; Workjet kann keinen einzelnen OAuth-Account pro Anfrage pinnen."
             }
             return route
         case let .pool(modelProvider):
@@ -206,7 +237,13 @@ public enum ManagedPrompt {
             let order = accounts.enumerated().map { index, account in
                 "\(index + 1). \(safeInline(account.name)) (`\(account.id.uuidString.lowercased())`)"
             }.joined(separator: " → ")
-            return "Pool \(safeInline(modelProvider.rawValue)); deklarierte Reihenfolge: \(order). Automatischer Account-Fallback und konkretes OAuth-Pinning: nicht verfügbar."
+            let directCount = accounts.count(where: { !$0.kind.isLocalGateway })
+            let gatewayCount = accounts.count - directCount
+            if directCount == 0 {
+                return "Pool \(safeInline(modelProvider.rawValue)); \(gatewayCount) OAuth-Zugänge im gemeinsamen CLIProxy-Gateway-Pool: \(order). Die Liste ist Workjets stabile Konfigurationsansicht, nicht die Laufzeitreihenfolge. CLIProxy wählt und wechselt den Zugang nach seiner eigenen konfigurierten Routingstrategie; Workjet kann keinen einzelnen OAuth-Account pro Anfrage festlegen."
+            }
+            let gateway = gatewayCount == 0 ? "" : " Zusätzlich existiert genau ein proxyverwalteter Gateway-Pool ohne Account-Pinning."
+            return "Pool \(safeInline(modelProvider.rawValue)); deterministische Reihenfolge der direkten Zugänge: \(order). Workjet wechselt einen direkten Zugang nur nach eindeutig erkanntem Auth-, Quota- oder Rate-Limit-Fehler; Task-, Transport-, Timeout- und generische Serverfehler wechseln den Zugang nicht.\(gateway)"
         case nil:
             return "Nicht konfiguriert"
         }
@@ -248,45 +285,17 @@ public enum ManagedPrompt {
         } else {
             sandbox = "Agent-Dateiwerkzeuge sehen nur den projizierten In-Memory-Snapshot. Die OS-Sandbox ist deaktiviert; der Daemon hat daher keine zusätzliche Betriebssystem-Dateisystemgrenze."
         }
-        return "\(deployment) \(sandbox) Pi-Ereignisse kommen ausschließlich post-hoc in der finalen Antwort. Fable bleibt für lokale Integration und Verifikation verantwortlich. Remote-Echtmodell-Inferenz ist ohne separaten Loopback-Relay nicht verfügbar; es werden keine CLIProxy-, API-, OAuth- oder Keychain-Geheimnisse übertragen. Faux-/Offline-Turns sind zur Prüfung zulässig."
+        return "\(deployment) \(sandbox) Für CLIProxy-Zugänge richtet Workjet pro Lauf einen Loopback-Relay mit flüchtigem Gateway-Schlüssel ein. Direkte API-Secrets werden flüchtig über die verschlüsselte Request-/Monitor-Pipe zugestellt. OAuth-Dateien, OAuth-Tokens, Keychain-Inhalte und Run-Secrets werden weder kopiert noch auf dem Remote-Computer gespeichert. Fable verwendet ausschließlich die Workjet-CLI und führt kein Transportprotokoll selbst aus. Ereignisse werden mit exklusivem Cursor abgefragt; es gibt keinen WebSocket- oder behaupteten Pi-Live-Stream. Fable bleibt für Integration und Verifikation verantwortlich."
     }
 
-    private static func remotePiInvocation(_ computer: Computer) -> String {
-        guard computer.deploymentStatus == .installed,
-              computer.installedSidecarVersion == PiSidecarRuntime.version,
-              (!computer.sandboxEnabled || computer.bubblewrapExecutablePath?.hasPrefix("/") == true),
-              (try? RemoteCommandBuilder.validate(computer)) != nil else {
-            return "Nicht verfügbar, bis „Prüfen & einrichten“ eine gültige Installation und – falls aktiviert – ein ausführbares `bwrap` bestätigt hat."
-        }
-        var remoteRunner = ["node", ".local/lib/workjet/current/workjet-pi-turn.mjs"]
-        if computer.sandboxEnabled { remoteRunner.append("--sandbox") }
-        let tokens: [String]
-        switch computer.transport {
-        case .ssh:
-            guard computer.knownHostsPath.hasPrefix("/") else { return "Nicht verfügbar: private known-hosts-Datei fehlt." }
-            tokens = [
-                "/usr/bin/ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes",
-                "-o", "UserKnownHostsFile=\(computer.knownHostsPath)", "-o", "ClearAllForwardings=yes", "-p", String(computer.port),
-                "-l", computer.user, "--", computer.host
-            ] + remoteRunner
-        case .tailscale:
-            guard let executable = computer.tailscaleExecutablePath, AllowlistedTailscaleLocator.allowedPaths.contains(executable) else {
-                return "Nicht verfügbar: das bestätigte Tailscale-Executable fehlt. Erneut „Prüfen & einrichten“ ausführen."
-            }
-            tokens = [executable, "ssh", "\(computer.user)@\(computer.host)"] + remoteRunner
-        case .local:
-            return "Nicht als Remote-Invocation verfügbar."
-        }
-        let transport = tokens.map(shellQuoted).joined(separator: " ")
+    private static func remotePiTechnicalFacts(_ computer: Computer) -> String {
         let sandbox = computer.sandboxEnabled
-            ? "Die Invocation aktiviert `--sandbox` ausdrücklich; der Runner darf bei fehlendem Bubblewrap nicht unsandboxed degradieren."
-            : "Die Invocation aktiviert keine OS-Sandbox; diese deaktivierte Grenze wird ausdrücklich beibehalten."
-        return "Fable erzeugt den aktuellen `CtoxTurnRequest`-JSON-Snapshot als genau eine NDJSON-Zeile und leitet ihn über stdin an `\(transport)` weiter. \(sandbox) Genau eine finale NDJSON-Antwort wird über stdout empfangen; darin enthaltene Pi-Ereignisse sind post-hoc."
-    }
-
-    private static func shellQuoted(_ value: String) -> String {
-        let singleLine = value.split(whereSeparator: \.isNewline).joined(separator: " ")
-        return "'" + singleLine.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            ? "Der App-Runner `'node' '.local/lib/workjet/current/workjet-pi-turn.mjs' '--sandbox'` aktiviert `--sandbox` ausdrücklich und darf bei fehlendem Bubblewrap nicht unsandboxed weiterlaufen."
+            : "Der App-Runner aktiviert keine OS-Sandbox; diese deaktivierte Grenze bleibt sichtbar."
+        let transport = computer.transport == .ssh
+            ? "Die App erzwingt beim SSH-Transport `StrictHostKeyChecking=yes` mit der privaten Known-Hosts-Datei."
+            : "Die App verwendet den bestätigten Tailscale-Transport."
+        return "\(sandbox) \(transport) Diese Fakten beschreiben ausschließlich die interne App-Ausführung."
     }
 
     private static func safeMultilineInstructions(_ value: String) -> String {
@@ -294,6 +303,7 @@ public enum ManagedPrompt {
             .replacingOccurrences(of: beginStem, with: "WORKJET-MANAGED-WORKERS-BEGIN")
             .replacingOccurrences(of: endMarker, with: "WORKJET-MANAGED-WORKERS-END")
             .replacingOccurrences(of: "<!-- WORKJET WORKER INSTRUCTIONS", with: "WORKJET-WORKER-INSTRUCTIONS")
+            .replacingOccurrences(of: progressBoardStem, with: "WORKJET-PROGRESS-BOARD")
     }
 
     private static func safeInline(_ value: String) -> String {

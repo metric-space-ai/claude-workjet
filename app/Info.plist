@@ -6,6 +6,8 @@
     <string>de</string>
     <key>CFBundleExecutable</key>
     <string>WorkjetApp</string>
+    <key>CFBundleIconFile</key>
+    <string>WorkjetAppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>dev.workjet.menubar</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -20,6 +22,8 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>

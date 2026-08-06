@@ -5,14 +5,18 @@ public struct CommandSpec: Equatable, Sendable {
     public var executable: String
     public var arguments: [String]
     public var standardInput: Data
+    public var currentDirectory: String?
+    public var environment: [String: String]?
     public var timeout: TimeInterval
     public var stdoutLimit: Int
     public var stderrLimit: Int
 
-    public init(executable: String, arguments: [String], standardInput: Data = Data(), timeout: TimeInterval = 30, stdoutLimit: Int = 1_048_576, stderrLimit: Int = 1_048_576) {
+    public init(executable: String, arguments: [String], standardInput: Data = Data(), currentDirectory: String? = nil, environment: [String: String]? = nil, timeout: TimeInterval = 30, stdoutLimit: Int = 1_048_576, stderrLimit: Int = 1_048_576) {
         self.executable = executable
         self.arguments = arguments
         self.standardInput = standardInput
+        self.currentDirectory = currentDirectory
+        self.environment = environment
         self.timeout = timeout
         self.stdoutLimit = stdoutLimit
         self.stderrLimit = stderrLimit
@@ -44,11 +48,11 @@ public enum CommandRunError: LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .executableMustBeAbsolute: return "Prozesse dürfen nur über absolute Executable-Pfade gestartet werden."
-        case let .launch(detail): return "Prozess konnte nicht gestartet werden: \(detail)"
-        case .standardInputClosed: return "Der Kindprozess hat seine Standardeingabe geschlossen, bevor alle Eingabedaten übertragen waren."
-        case .timedOut: return "Remote-Befehl hat sein Zeitlimit überschritten."
-        case .cancelled: return "Remote-Befehl wurde abgebrochen."
+        case .executableMustBeAbsolute: return "Die ausführbare Datei braucht einen vollständigen Pfad."
+        case .launch: return "Der Worker konnte nicht gestartet werden."
+        case .standardInputClosed: return "Die Ausführung wurde unerwartet beendet."
+        case .timedOut: return "Der Worker hat das Zeitlimit überschritten."
+        case .cancelled: return "Die Ausführung wurde abgebrochen."
         }
     }
 }
@@ -65,6 +69,11 @@ public struct ProcessCommandRunner: CommandRunning, Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command.executable)
         process.arguments = command.arguments
+        if let currentDirectory = command.currentDirectory {
+            guard currentDirectory.hasPrefix("/"), !currentDirectory.contains("\0") else { throw CommandRunError.launch("Ungültiges Arbeitsverzeichnis") }
+            process.currentDirectoryURL = URL(fileURLWithPath: currentDirectory, isDirectory: true)
+        }
+        if let environment = command.environment { process.environment = environment }
         let stdin = Pipe()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -186,14 +195,13 @@ private final class ProcessBox: @unchecked Sendable {
     init(_ process: Process) { self.process = process }
 
     func setTerminationHandler(_ handler: @escaping @Sendable () -> Void) {
-        lock.lock()
-        if process.isRunning {
-            process.terminationHandler = { _ in handler() }
-            lock.unlock()
-        } else {
-            lock.unlock()
-            handler()
-        }
+        // A very short-lived child can exit between an `isRunning` check and
+        // assigning Foundation's termination handler. Install the callback
+        // first, then sample state, and make both paths share an exactly-once
+        // gate so the waiter cannot miss or double-deliver termination.
+        let callback = OnceCallback(handler)
+        process.terminationHandler = { _ in callback.call() }
+        if !process.isRunning { callback.call() }
     }
 
     func terminate() {
@@ -208,5 +216,22 @@ private final class ProcessBox: @unchecked Sendable {
                 if self.process.isRunning { _ = kill(pid, SIGKILL) }
             }
         }
+    }
+}
+
+private final class OnceCallback: @unchecked Sendable {
+    private let lock = NSLock()
+    private var callback: (@Sendable () -> Void)?
+
+    init(_ callback: @escaping @Sendable () -> Void) {
+        self.callback = callback
+    }
+
+    func call() {
+        lock.lock()
+        let pending = callback
+        callback = nil
+        lock.unlock()
+        pending?()
     }
 }

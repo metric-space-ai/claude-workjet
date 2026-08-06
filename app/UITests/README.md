@@ -4,7 +4,10 @@
 `Workjet` macOS application target. It does not maintain a test-only copy of the
 UI. The host uses an ordinary window only when `WORKJET_UI_TEST_WINDOW=1`, so UI
 automation can address the menu-bar application's controls reliably without
-creating a second status-bar icon.
+creating a second status-bar icon. Debug builds use the dedicated bundle ID
+`dev.workjet.menubar.uitest`; the installed release app keeps
+`dev.workjet.menubar`. This allows the click suite to run while the user's
+normal menu-bar app is open without bypassing its single-instance protection.
 
 Each test supplies a unique `WORKJET_UI_TEST_HOME`. Configuration and runtime
 state therefore stay in a temporary directory and never touch the user's
@@ -28,3 +31,10 @@ The journey covers the production Completion Engine pencil and editor fields,
 save/relaunch persistence, the missing-route recovery action, masked provider
 account identity, provider deselection and disconnect, Settings quick
 navigation, and the one-click custom compatible-endpoint form.
+
+The opt-in `testLiveTailscaleComputerSetupScansConfirmsDeploysAndPersists`
+executes the complete production computer-editor flow against a real target.
+It runs only while `/tmp/workjet-live-tailscale-ui-test` exists with exactly
+three lines: Tailscale device name, SSH user, and independently approved SHA256
+host fingerprint. Without that short-lived gate the test is skipped, so the
+ordinary suite never confirms or deploys to a remote computer accidentally.

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/metric-space-ai/claude-workjet/security
+    about: Use GitHub private vulnerability reporting when available. Do not post vulnerability details publicly.
+  - name: Build and troubleshooting guide
+    url: https://github.com/metric-space-ai/claude-workjet/blob/main/docs/troubleshooting.md
+    about: Check supported platforms, build commands, remote trust, and redaction guidance.

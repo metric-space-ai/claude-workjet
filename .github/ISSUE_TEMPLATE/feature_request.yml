@@ -1,0 +1,41 @@
+name: Feature request
+description: Propose a focused change to a real Workjet workflow.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the current user or maintainer problem, not only a proposed control.
+    validations:
+      required: true
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Current workflow
+      description: Explain the steps and where the workflow becomes incorrect or unnecessarily difficult.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Keep Claude as orchestrator and distinguish configuration from observed runtime truth.
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundaries
+    attributes:
+      label: Security and product boundaries
+      description: Note effects on credentials, remote trust, Git transport, prompt transparency, telemetry, providers, or release claims.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

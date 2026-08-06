@@ -7,15 +7,19 @@ public enum RemoteRunLedgerError: LocalizedError, Equatable {
     case runIDMismatch(expected: String, received: String)
     case terminalStateRegression(from: RemoteHostRunState, to: RemoteHostRunState)
     case malformedHeartbeat(String)
+    case adoptionUnavailable(String)
+    case metadataMismatch(String)
 
     public var errorDescription: String? {
         switch self {
-        case .missingRunID: return "Remote-Host lieferte keine Run-ID."
-        case let .sequenceGap(expected, received): return "Remote-Event-Lücke: erwartet \(expected), erhalten \(received)."
-        case let .sequenceRegression(cursor, received): return "Remote-Event-Sequenz ist hinter Cursor \(cursor) auf \(received) zurückgefallen."
-        case let .runIDMismatch(expected, received): return "Remote-Host antwortete für Run \(received) statt \(expected)."
-        case let .terminalStateRegression(from, to): return "Terminaler Remote-Zustand \(from.rawValue) darf nicht auf \(to.rawValue) zurückfallen."
-        case let .malformedHeartbeat(value): return "Remote-Host lieferte keinen gültigen ISO-8601-Heartbeat: \(value)."
+        case .missingRunID: return "Der Remote-Worker konnte nicht gestartet werden."
+        case .sequenceGap: return "Ein Teil der Aktivitätsdetails ist nicht mehr verfügbar."
+        case .sequenceRegression: return "Die Aktivitätsanzeige dieses Workers ist nicht mehr aktuell. Verbindung wird neu aufgebaut."
+        case .runIDMismatch: return "Die Antwort gehört nicht mehr zum aktuellen Worker-Lauf. Bitte erneut versuchen."
+        case .terminalStateRegression, .malformedHeartbeat:
+            return "Aktivitätsdetails konnten nicht aktualisiert werden. Prüfe den Computer."
+        case .adoptionUnavailable: return "Der laufende Remote-Worker konnte nicht wieder verbunden werden."
+        case .metadataMismatch: return "Die gespeicherten Ausführungsdetails dieses Remote-Workers sind widersprüchlich."
         }
     }
 }
@@ -27,6 +31,8 @@ public actor RemoteRunLedger {
     public private(set) var events: [RemoteHostEvent] = []
     public private(set) var lastError: String?
     public private(set) var heartbeatAt: Date?
+    public private(set) var lostThroughSequence: UInt64?
+    public private(set) var metadata: RemoteRunMetadata?
 
     private let client: any RemoteHostCalling
     private let now: @Sendable () -> Date
@@ -45,9 +51,32 @@ public actor RemoteRunLedger {
         state = .unknown
         events = []
         heartbeatAt = nil
+        metadata = nil
+        lostThroughSequence = nil
         lastError = nil
         try ingest(response, expectedRunID: runID)
         return runID
+    }
+
+    /// Re-attaches a fresh app ledger to a host-owned run after an app restart.
+    @discardableResult
+    public func adopt(runID: String, ownerID: String) async throws -> RemoteLedgerSnapshot {
+        let response = try await client.call(RemoteHostRequest(operation: .events, runID: runID, ownerID: ownerID, wireOperation: "adopt"))
+        guard response.runID == runID else { throw RemoteRunLedgerError.adoptionUnavailable(runID) }
+        self.runID = runID
+        cursor = 0
+        state = .unknown
+        events = []
+        heartbeatAt = nil
+        metadata = nil
+        lostThroughSequence = nil
+        lastError = nil
+        try ingest(response, expectedRunID: runID)
+        return snapshot()
+    }
+
+    public func list(ownerID: String? = nil) async throws -> [RemoteHostRunDescriptor] {
+        try await client.call(RemoteHostRequest(operation: .probe, ownerID: ownerID, wireOperation: "list")).runs
     }
 
     @discardableResult
@@ -57,9 +86,10 @@ public actor RemoteRunLedger {
             let requestedCursor = cursor
             let response = try await client.call(RemoteHostRequest(operation: .events, runID: runID, afterSequence: requestedCursor))
             let previousCount = events.count
+            let previousLoss = lostThroughSequence
             try ingest(response, expectedRunID: runID)
             lastError = nil
-            return Array(events.dropFirst(previousCount))
+            return lostThroughSequence != previousLoss ? events : Array(events.dropFirst(previousCount))
         } catch let error as RemoteRunLedgerError {
             state = .error
             lastError = error.localizedDescription
@@ -88,7 +118,7 @@ public actor RemoteRunLedger {
     }
 
     public func snapshot() -> RemoteLedgerSnapshot {
-        RemoteLedgerSnapshot(runID: runID, state: state, cursor: cursor, events: events, heartbeatAt: heartbeatAt, lastError: lastError)
+        RemoteLedgerSnapshot(runID: runID, state: state, cursor: cursor, events: events, heartbeatAt: heartbeatAt, lastError: lastError, metadata: metadata)
     }
 
     private func ingest(_ response: RemoteHostResponse, expectedRunID: String) throws {
@@ -99,13 +129,35 @@ public actor RemoteRunLedger {
             throw RemoteRunLedgerError.terminalStateRegression(from: state, to: response.state)
         }
         if let heartbeat = response.heartbeatAt {
-            guard let parsed = ISO8601DateFormatter().date(from: heartbeat) else {
+            let fractional = ISO8601DateFormatter()
+            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            guard let parsed = fractional.date(from: heartbeat) ?? ISO8601DateFormatter().date(from: heartbeat) else {
                 throw RemoteRunLedgerError.malformedHeartbeat(heartbeat)
             }
             heartbeatAt = parsed
         }
+        if let accepted = response.metadata {
+            if let existing = metadata, existing != accepted {
+                // The active provider account may legitimately advance after a
+                // provider-pool fallback. All other accepted launch facts are
+                // immutable for the lifetime of a run.
+                var comparable = accepted
+                comparable.providerAccountLabel = existing.providerAccountLabel
+                var existingComparable = existing
+                existingComparable.providerAccountLabel = existing.providerAccountLabel
+                guard comparable == existingComparable else {
+                    throw RemoteRunLedgerError.metadataMismatch(expectedRunID)
+                }
+            }
+            metadata = accepted
+        }
         if let oldest = response.oldestSequence, oldest > cursor + 1 {
-            throw RemoteRunLedgerError.sequenceGap(expected: cursor + 1, received: oldest)
+            guard response.gapAfterSequence == cursor else {
+                throw RemoteRunLedgerError.sequenceGap(expected: cursor + 1, received: oldest)
+            }
+            lostThroughSequence = oldest - 1
+            cursor = oldest - 1
+            events.removeAll(keepingCapacity: true)
         }
 
         var appended: [RemoteHostEvent] = []

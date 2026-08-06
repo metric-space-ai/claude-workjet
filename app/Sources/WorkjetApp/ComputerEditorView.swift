@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import WorkjetCore
 
@@ -14,6 +15,11 @@ struct ComputerEditorView: View {
     @State private var deploymentDetail: String
     @State private var manualTailscaleHost = false
     @State private var selectedDeviceID: String?
+    @State private var validationMessage: String?
+    @State private var showDeleteConfirmation = false
+    @State private var pendingHostKey: RemoteHostKeyCandidate?
+    @State private var isScanningHostKey = false
+    @State private var persistenceOperationInFlight = false
 
     init(computer: Computer?, onClose: @escaping () -> Void) {
         self.computer = computer
@@ -42,7 +48,18 @@ struct ComputerEditorView: View {
             }
         }
         .onAppear {
+            prepareDefaults()
             if draft.transport == .tailscale { model.refreshTailscaleDevices() }
+        }
+        .onChange(of: model.tailscaleDevices) { _, devices in
+            restoreTailscaleSelection(from: devices)
+        }
+        .alert("Computer löschen?", isPresented: $showDeleteConfirmation) {
+            Button("Abbrechen", role: .cancel) {}
+            Button("Löschen", role: .destructive) { deleteComputer() }
+                .disabled(persistenceOperationInFlight || isDeploying)
+        } message: {
+            Text(deleteConfirmationMessage)
         }
     }
 
@@ -51,16 +68,18 @@ struct ComputerEditorView: View {
             Text(computer == nil ? "Computer einrichten" : "Computer bearbeiten")
                 .font(.system(size: 15, weight: .semibold)).accessibilityAddTraits(.isHeader)
             Spacer()
-            Button("Speichern") {
-                if let saved = draft.applied(to: workingComputer) {
-                    model.upsertComputer(saved)
-                    Task { await model.flushPersistence(); onClose() }
-                }
+            if computer != nil {
+                Button("Löschen", role: .destructive) { showDeleteConfirmation = true }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(persistenceOperationInFlight || isDeploying)
+                Button(persistenceOperationInFlight ? "Wird gespeichert …" : "Speichern") { saveAndClose() }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    .disabled(computer?.isLocal == true || persistenceOperationInFlight || isDeploying)
             }
-            .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!draft.isValid || computer?.isLocal == true)
             Button(action: onClose) { Image(systemName: "xmark") }
-                .buttonStyle(WJIconButtonStyle()).accessibilityLabel("Schließen ohne Speichern")
+                .buttonStyle(WJIconButtonStyle())
+                .disabled(persistenceOperationInFlight || isDeploying)
+                .accessibilityLabel("Schließen ohne Speichern")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -71,9 +90,15 @@ struct ComputerEditorView: View {
             HStack(spacing: 8) {
                 WJChoiceButton(title: "Tailscale", isSelected: draft.transport == .tailscale) {
                     draft.transport = .tailscale
+                    pendingHostKey = nil
+                    prepareKnownHostsDefault()
                     model.refreshTailscaleDevices()
                 }
-                WJChoiceButton(title: "SSH", isSelected: draft.transport == .ssh) { draft.transport = .ssh }
+                WJChoiceButton(title: "SSH", isSelected: draft.transport == .ssh) {
+                    draft.transport = .ssh
+                    pendingHostKey = nil
+                    prepareKnownHostsDefault()
+                }
             }
         }
     }
@@ -88,6 +113,18 @@ struct ComputerEditorView: View {
                 field(label: "Host", placeholder: "devbox.example.test", text: $draft.host)
             }
             field(label: "SSH-Benutzer", placeholder: "z. B. workjet", text: $draft.user)
+            HStack(spacing: 8) {
+                Text("SSH-Schlüssel").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
+                Text(draft.identityFilePath.isEmpty ? "Automatisch" : URL(fileURLWithPath: draft.identityFilePath).lastPathComponent)
+                    .font(.system(size: 12))
+                    .foregroundStyle(draft.identityFilePath.isEmpty ? WJTheme.secondaryText : .primary)
+                    .lineLimit(1)
+                Spacer()
+                if !draft.identityFilePath.isEmpty {
+                    Button("Zurücksetzen") { draft.identityFilePath = "" }.buttonStyle(.bordered).controlSize(.mini)
+                }
+                Button("Wählen …") { chooseIdentityFile() }.buttonStyle(.bordered).controlSize(.mini)
+            }
         }
     }
 
@@ -107,9 +144,16 @@ struct ComputerEditorView: View {
                 VStack(spacing: 0) {
                     ForEach(model.tailscaleDevices) { device in
                         Button {
+                            guard device.online else { return }
+                            validationMessage = nil
                             selectedDeviceID = device.id
                             draft.host = device.preferredHost
                             draft.name = device.hostname
+                            pendingHostKey = nil
+                            prepareKnownHostsDefault()
+                            if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                draft.user = NSUserName()
+                            }
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -118,10 +162,31 @@ struct ComputerEditorView: View {
                                         .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText).lineLimit(1)
                                 }
                                 Spacer()
+                                if selectedDeviceID == device.id {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundStyle(WJTheme.accent)
+                                }
                                 Text(device.online ? "Online" : "Offline")
                                     .font(.system(size: 10)).foregroundStyle(device.online ? WJTheme.quotaOK : WJTheme.tertiaryText)
-                            }.padding(.vertical, 5)
-                        }.buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 7)
+                            .background(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .fill(selectedDeviceID == device.id ? WJTheme.accent.opacity(0.14) : .clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 7)
+                                    .stroke(selectedDeviceID == device.id ? WJTheme.accent.opacity(0.7) : .clear, lineWidth: 1)
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!device.online)
+                        .opacity(device.online ? 1 : 0.55)
+                        .accessibilityAddTraits(selectedDeviceID == device.id ? .isSelected : [])
+                        .accessibilityLabel("\(device.hostname), \(device.online ? "online" : "offline")")
                         if device.id != model.tailscaleDevices.last?.id { WJDivider() }
                     }
                 }
@@ -140,29 +205,64 @@ struct ComputerEditorView: View {
 
     private var setupSection: some View {
         VStack(alignment: .leading, spacing: 7) {
-            WJSectionHeader(title: "Setup")
-            HStack(spacing: 7) {
-                Text(deploymentStatus.rawValue).font(.system(size: 11, weight: .semibold))
-                if isDeploying { ProgressView().controlSize(.mini) }
-                Spacer()
-                Button("Prüfen & einrichten") { deploy() }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .disabled(!draft.isDeployable || isDeploying || computer?.isLocal == true)
+            if deploymentStatus != .notConfigured || isDeploying {
+                HStack(spacing: 7) {
+                    Text(deploymentStatus.rawValue).font(.system(size: 11, weight: .semibold))
+                    if isDeploying { ProgressView().controlSize(.mini) }
+                }
+                if !deploymentDetail.isEmpty {
+                    Text(deploymentDetail)
+                        .font(.system(size: 10))
+                        .foregroundStyle(deploymentStatus == .failed || deploymentStatus == .blocked ? WJTheme.quotaCritical : WJTheme.secondaryText)
+                }
             }
-            Text(draft.isDeployable ? deploymentDetail : missingDeploymentRequirements)
-                .font(.system(size: 10)).foregroundStyle(draft.isDeployable ? WJTheme.secondaryText : WJTheme.quotaWarning)
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.system(size: 10))
+                    .foregroundStyle(WJTheme.quotaCritical)
+                    .accessibilityIdentifier("computer.editor.inline.error")
+            }
+            if draft.transport == .ssh || draft.transport == .tailscale {
+                hostKeyOnboarding
+            }
+            if pendingHostKey == nil {
+                Button(isScanningHostKey ? "Verbindung wird geprüft …" : "Identität prüfen & einrichten") { scanHostKey() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .disabled(isScanningHostKey || isDeploying || persistenceOperationInFlight || computer?.isLocal == true)
+                    .accessibilityIdentifier("computer.ssh-host-key.scan")
+            }
         }
     }
 
-    private var missingDeploymentRequirements: String {
-        var missing: [String] = []
-        if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("Name oder Geräteauswahl") }
-        if draft.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("Host oder Tailscale-Gerät") }
-        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("SSH-Benutzer") }
-        if draft.sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("auditiertes Bundle unter Technische Details") }
-        if draft.transport == .ssh && draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { missing.append("private known-hosts-Datei unter Technische Details") }
-        if !(1...65535).contains(draft.port) { missing.append("gültiger Port") }
-        return "Für „Prüfen & einrichten“ fehlt: \(missing.joined(separator: ", "))."
+    @ViewBuilder private var hostKeyOnboarding: some View {
+        if let pendingHostKey {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Verbindung bestätigen")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Vergleiche den Fingerabdruck mit dem Ziel-Computer. Erst danach speichert Workjet die Verbindung.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(WJTheme.secondaryText)
+                Text(pendingHostKey.fingerprint)
+                    .font(.system(size: 10, design: .monospaced))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("computer.ssh-host-key.fingerprint")
+                HStack {
+                    Button("Abbrechen") { self.pendingHostKey = nil }
+                        .buttonStyle(.bordered)
+                    Button("Bestätigen & einrichten") { confirmHostKey(pendingHostKey) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("computer.ssh-host-key.confirm")
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+        } else {
+            Text("Workjet prüft zuerst die Identität des Ziel-Computers. Vor deiner Bestätigung wird nichts gespeichert.")
+                .font(.system(size: 10))
+                .foregroundStyle(WJTheme.secondaryText)
+        }
     }
 
     private var technicalDetails: some View {
@@ -172,13 +272,12 @@ struct ComputerEditorView: View {
                     Text("Port").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
                     TextField("22", value: $draft.port, format: .number).textFieldStyle(.plain).fieldSurface()
                 }
-                if draft.transport == .ssh {
+                if draft.transport == .ssh || draft.transport == .tailscale {
                     field(label: "Known hosts", placeholder: "/Users/…/.ssh/workjet_known_hosts", text: $draft.knownHostsPath)
-                    Text("Strikte Host-Key-Prüfung bleibt aktiv; Aufnahme und Freigabe erfolgen außerhalb von Workjet.")
+                    Text("Workjet akzeptiert nur den ausdrücklich bestätigten Schlüssel dieses Computers.")
                         .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
                 }
-                field(label: "Bundle", placeholder: "/absoluter/Pfad/ctox-pi-sidecar.mjs", text: $draft.sidecarBundlePath)
-                Text("Pi-Code-Runtime \(PiSidecarRuntime.version). Workjet überträgt nur das auditierte Bundle, den Turn-Runner und das Manifest und installiert keine Pakete.")
+                Text("Pi Code \(PiSidecarRuntime.version) ist in Workjet enthalten.")
                     .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
                 if let current = model.computer(for: draft.id), let hash = current.installedContentHash {
                     Text("Inhalt \(hash) · Version \(current.installedSidecarVersion ?? "unbekannt")")
@@ -189,24 +288,219 @@ struct ComputerEditorView: View {
     }
 
     private func deploy() {
-        guard let saved = draft.applied(to: workingComputer), draft.isDeployable else { return }
+        guard !isDeploying, !persistenceOperationInFlight else { return }
+        validationMessage = validationMessageForDeployment()
+        guard validationMessage == nil,
+              let saved = draft.applied(to: workingComputer),
+              draft.isDeployable else { return }
         isDeploying = true
         deploymentStatus = .checking
         deploymentDetail = "Prüfung läuft …"
         Task {
-            let deployed = await model.bootstrapRemoteComputer(saved)
+            var deployed = await model.bootstrapRemoteComputer(saved)
             workingComputer = deployed
             draft = ComputerDraft(computer: deployed)
             deploymentStatus = deployed.deploymentStatus
             deploymentDetail = deployed.deploymentDetail
+            guard deployed.deploymentStatus == .installed else {
+                isDeploying = false
+                return
+            }
+
+            let assignedCount = model.workers.filter { $0.computerID == deployed.id }.count
+            if assignedCount > 0 {
+                deploymentStatus = .checking
+                deploymentDetail = assignedCount == 1 ? "Worker-Abhängigkeiten werden eingerichtet …" : "Abhängigkeiten für \(assignedCount) Worker werden eingerichtet …"
+                let provisioning = await model.provisionConfiguredWorkers(on: deployed)
+                if let failure = provisioning.failure {
+                    deploymentStatus = .failed
+                    deploymentDetail = "Worker sind nicht bereit. \(failure.userVisibleDetail)"
+                    validationMessage = deploymentDetail
+                    isDeploying = false
+                    return
+                }
+                deployed.deploymentDetail = assignedCount == 1
+                    ? "Remote-Computer und 1 zugewiesener Worker sind eingerichtet."
+                    : "Remote-Computer und \(assignedCount) zugewiesene Worker sind eingerichtet."
+                workingComputer = deployed
+                draft = ComputerDraft(computer: deployed)
+                deploymentStatus = .installed
+                deploymentDetail = deployed.deploymentDetail
+            }
+
+            persistenceOperationInFlight = true
+            let result = await model.saveComputerDurably(deployed)
+            persistenceOperationInFlight = false
             isDeploying = false
+            switch result {
+            case .succeeded:
+                onClose()
+            case let .failed(message):
+                validationMessage = message
+            }
         }
+    }
+
+    private var selectedTailscaleDeviceIsOffline: Bool {
+        guard draft.transport == .tailscale, let selectedDeviceID else { return false }
+        return model.tailscaleDevices.first(where: { $0.id == selectedDeviceID })?.online == false
+    }
+
+    private func prepareDefaults() {
+        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            draft.user = NSUserName()
+        }
+        if draft.sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let bundledSidecarPath {
+            draft.sidecarBundlePath = bundledSidecarPath
+        }
+        if draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            prepareKnownHostsDefault()
+        }
+        restoreTailscaleSelection(from: model.tailscaleDevices)
+    }
+
+    private func prepareKnownHostsDefault() {
+        guard draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        draft.knownHostsPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/Workjet/ssh/known_hosts")
+            .path
+    }
+
+    private func scanHostKey() {
+        guard !isScanningHostKey, !isDeploying, !persistenceOperationInFlight else { return }
+        validationMessage = validationMessageForSave()
+        guard validationMessage == nil, let target = draft.applied(to: workingComputer) else { return }
+        isScanningHostKey = true
+        deploymentStatus = .checking
+        deploymentDetail = "Die Identität des Computers wird geprüft …"
+        Task {
+            do {
+                pendingHostKey = try await model.scanRemoteHostKey(for: target)
+                deploymentStatus = .blocked
+                deploymentDetail = "Schritt 2: SHA256-Fingerabdruck prüfen und ausdrücklich bestätigen."
+            } catch {
+                deploymentStatus = .failed
+                deploymentDetail = error.localizedDescription
+            }
+            isScanningHostKey = false
+        }
+    }
+
+    private func confirmHostKey(_ candidate: RemoteHostKeyCandidate) {
+        validationMessage = validationMessageForSave()
+        guard validationMessage == nil, let target = draft.applied(to: workingComputer) else { return }
+        do {
+            try model.confirmRemoteHostKey(candidate, for: target)
+            pendingHostKey = nil
+            deploymentDetail = "Host-Key wurde bestätigt und privat gespeichert. Einrichtung wird erneut versucht."
+            deploy()
+        } catch {
+            validationMessage = error.localizedDescription
+        }
+    }
+
+    private var bundledSidecarPath: String? {
+        let bundled = Bundle.main.url(forResource: "ctox-pi-sidecar", withExtension: "mjs")
+        #if DEBUG
+        let development = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Documents/ctox/src/core/coding_agents/pi-sidecar/dist/ctox-pi-sidecar.mjs")
+        return [bundled, development]
+            .compactMap { $0 }
+            .first { FileManager.default.isReadableFile(atPath: $0.path) }?
+            .path
+        #else
+        // Release builds fail closed: only the embedded, build-time verified
+        // sidecar is eligible for deployment to a remote computer.
+        return bundled.flatMap { FileManager.default.isReadableFile(atPath: $0.path) ? $0.path : nil }
+        #endif
+    }
+
+    private func restoreTailscaleSelection(from devices: [TailscaleDevice]) {
+        guard draft.transport == .tailscale, !draft.host.isEmpty else { return }
+        guard let device = devices.first(where: { $0.preferredHost == draft.host || $0.dnsName == draft.host || $0.ipv4 == draft.host }) else { return }
+        selectedDeviceID = device.id
+        if device.online { draft.host = device.preferredHost }
+    }
+
+    private func chooseIdentityFile() {
+        let panel = NSOpenPanel()
+        panel.title = "SSH-Schlüssel wählen"
+        panel.prompt = "Wählen"
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".ssh", isDirectory: true)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        draft.identityFilePath = url.path
+        validationMessage = nil
+        pendingHostKey = nil
+    }
+
+    private func saveAndClose() {
+        guard !persistenceOperationInFlight else { return }
+        validationMessage = validationMessageForSave()
+        guard validationMessage == nil, let saved = draft.applied(to: workingComputer) else { return }
+        persistenceOperationInFlight = true
+        Task {
+            let result = await model.saveComputerDurably(saved)
+            persistenceOperationInFlight = false
+            switch result {
+            case .succeeded:
+                onClose()
+            case let .failed(message):
+                validationMessage = message
+            }
+        }
+    }
+
+    private var deleteConfirmationMessage: String {
+        let count = model.workers.filter { $0.computerID == computer?.id }.count
+        if count == 0 { return "Die Verbindung wird aus Workjet entfernt." }
+        return "Die Verbindung wird entfernt. \(count) Worker werden auf Local verschoben."
+    }
+
+    private func deleteComputer() {
+        guard !persistenceOperationInFlight, let computer, !computer.isLocal else { return }
+        validationMessage = nil
+        persistenceOperationInFlight = true
+        Task {
+            let result = await model.deleteComputerDurably(id: computer.id)
+            persistenceOperationInFlight = false
+            switch result {
+            case .succeeded:
+                onClose()
+            case let .failed(message):
+                validationMessage = message
+            }
+        }
+    }
+
+    private func validationMessageForSave() -> String? {
+        if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Wähle einen Computer oder gib einen Namen ein." }
+        if draft.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Wähle einen Computer oder gib einen Host ein." }
+        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Gib den SSH-Benutzer dieses Computers ein." }
+        if !(1...65535).contains(draft.port) { return "Der SSH-Port muss zwischen 1 und 65535 liegen." }
+        return nil
+    }
+
+    private func validationMessageForDeployment() -> String? {
+        if let message = validationMessageForSave() { return message }
+        if selectedTailscaleDeviceIsOffline { return "Dieser Computer ist offline. Wähle einen erreichbaren Computer." }
+        if draft.sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Die Pi-Code-Komponente fehlt in dieser Workjet-App."
+        }
+        if draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Bestätige zuerst die Identität dieses Computers."
+        }
+        return nil
     }
 
     private func field(label: String, placeholder: String, text: Binding<String>) -> some View {
         HStack(spacing: 8) {
             Text(label).font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
             TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 13)).fieldSurface()
+                .onChange(of: text.wrappedValue) { validationMessage = nil }
         }
     }
 }

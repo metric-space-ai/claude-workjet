@@ -34,6 +34,27 @@ public protocol RunTelemetryReading: Sendable {
 }
 
 public struct RunTelemetryStore: RunTelemetryReading, Sendable {
+    private struct CanonicalRunSnapshot: Decodable {
+        var schemaVersion: Int
+        var sequence: UInt64
+        var state: String
+        var heartbeatAt: String
+        var model: String?
+        var reasoning: String?
+        var speed: String?
+        var providerRoute: String?
+    }
+
+    private struct RecordedProcessIdentity: Decodable {
+        var pid: Int32
+        var executablePath: String
+        var startToken: String
+
+        var processIdentity: ProcessIdentity {
+            ProcessIdentity(pid: pid, executablePath: executablePath, startToken: startToken)
+        }
+    }
+
     public let paths: WorkjetPaths
     public let processProbe: any ProcessProbing
     public let now: @Sendable () -> Date
@@ -49,6 +70,56 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
     public func scan(workers: [Worker]) -> [RunRecord] {
         let candidates = runCandidates().prefix(maximumRuns)
         return candidates.map { inspect(runID: $0.runID, directory: $0.directory, indexFile: $0.indexFile, workers: workers) }
+    }
+
+    /// Removes only old local run journals that can no longer belong to a
+    /// live Workjet process. Cleanup is deliberately conservative: an
+    /// identity-confirmed process, a fresh file, an unowned entry, a symlink,
+    /// or an unreadable tree keeps the complete journal intact.
+    public func cleanup(retentionDays: Int) {
+        guard retentionDays > 0,
+              isOwnedDirectory(paths.runsDirectory),
+              isOwnedDirectory(paths.runIndexDirectory) else { return }
+        let interval = TimeInterval(retentionDays) * 86_400
+        guard interval.isFinite else { return }
+        let cutoff = now().addingTimeInterval(-interval)
+        let fm = FileManager.default
+        let indexes = safeIndexEntries()
+
+        let runDirectories = (try? fm.contentsOfDirectory(
+            at: paths.runsDirectory,
+            includingPropertiesForKeys: nil,
+            options: []
+        )) ?? []
+        for directory in runDirectories {
+            guard isDirectChild(directory, of: paths.runsDirectory),
+                  isOwnedDirectory(directory),
+                  safeTreeIsOlder(than: cutoff, at: directory),
+                  canRemoveRunDirectory(directory) else { continue }
+            let linkedIndexes = indexes.filter { $0.directory == directory.standardizedFileURL }
+            do {
+                // Remove discoverability entries before the journal itself so
+                // observers never see a deleted run with a dangling index.
+                // If journal removal then fails, the intact directory remains
+                // discoverable through the runs directory fallback.
+                for entry in linkedIndexes {
+                    try fm.removeItem(at: entry.file)
+                }
+                try fm.removeItem(at: directory)
+            } catch {
+                continue
+            }
+        }
+
+        // A crash can leave an index after its journal was never created or
+        // was removed successfully. Only remove an old, bounded index whose
+        // target is a direct child of Workjet's runs directory and is absent.
+        for entry in safeIndexEntries() {
+            guard isDirectChild(entry.directory, of: paths.runsDirectory),
+                  !fm.fileExists(atPath: entry.directory.path),
+                  safeTreeIsOlder(than: cutoff, at: entry.file) else { continue }
+            try? fm.removeItem(at: entry.file)
+        }
     }
 
     public func stop(_ run: ActiveRun) throws {
@@ -91,6 +162,58 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
         return result
     }
 
+    private func safeIndexEntries() -> [(file: URL, directory: URL)] {
+        let entries = (try? FileManager.default.contentsOfDirectory(
+            at: paths.runIndexDirectory,
+            includingPropertiesForKeys: nil,
+            options: []
+        )) ?? []
+        return entries.compactMap { file in
+            guard isDirectChild(file, of: paths.runIndexDirectory),
+                  isOwnedRegularFile(file),
+                  let rawPath = boundedString(at: file, maximumBytes: 4096) else { return nil }
+            let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !path.isEmpty else { return nil }
+            return (file, URL(fileURLWithPath: path).standardizedFileURL)
+        }
+    }
+
+    private func canRemoveRunDirectory(_ directory: URL) -> Bool {
+        guard let pid = readPID(directory.appendingPathComponent("pid")), pid > 1 else {
+            return true
+        }
+        guard let current = processProbe.identity(for: pid) else { return true }
+        if let recorded = readRecordedIdentity(directory.appendingPathComponent("process-identity.json")) {
+            return recorded.processIdentity != current
+        }
+        if let startedAt = readDate(directory.appendingPathComponent("started-at")) {
+            return !processStartMatches(current.startToken, runStartedAt: startedAt)
+        }
+        // A live PID without enough evidence to prove or disprove ownership is
+        // ambiguous. Keeping its journal is safer than terminating visibility.
+        return false
+    }
+
+    private func safeTreeIsOlder(than cutoff: Date, at url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              info.st_uid == geteuid(),
+              Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec)) < cutoff else { return false }
+        let type = info.st_mode & S_IFMT
+        if type == S_IFREG { return true }
+        guard type == S_IFDIR,
+              let children = try? FileManager.default.contentsOfDirectory(
+                  at: url,
+                  includingPropertiesForKeys: nil,
+                  options: []
+              ) else { return false }
+        return children.allSatisfy { safeTreeIsOlder(than: cutoff, at: $0) }
+    }
+
+    private func isDirectChild(_ url: URL, of directory: URL) -> Bool {
+        url.standardizedFileURL.deletingLastPathComponent() == directory.standardizedFileURL
+    }
+
     private func inspect(runID: String, directory: URL, indexFile: URL?, workers: [Worker]) -> RunRecord {
         if hasTerminalMarker(directory) { return RunRecord(sourceRunID: runID, state: .completed) }
         guard let pid = readPID(directory.appendingPathComponent("pid")), pid > 1 else {
@@ -102,17 +225,62 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
         guard let identity = processProbe.identity(for: pid) else {
             return RunRecord(sourceRunID: runID, state: .interrupted, diagnostic: "Prozess ist ohne Terminalmarker beendet")
         }
-        guard processStartMatches(identity.startToken, runStartedAt: startedAt) else {
+        let recordedIdentity = readRecordedIdentity(directory.appendingPathComponent("process-identity.json"))
+        guard recordedIdentity.map({ $0.processIdentity == identity })
+            ?? processStartMatches(identity.startToken, runStartedAt: startedAt) else {
             return RunRecord(sourceRunID: runID, state: .interrupted, diagnostic: "PID gehört zu einem später gestarteten Prozess")
         }
+        let snapshot = readSnapshot(directory.appendingPathComponent("run-state.json"))
+        if let snapshot {
+            guard snapshot.schemaVersion == 1, snapshot.sequence > 0 else {
+                return RunRecord(sourceRunID: runID, state: .malformed, diagnostic: "Run-Snapshot hat eine unbekannte Version oder Sequenz")
+            }
+            guard snapshot.state == "running" else {
+                return RunRecord(sourceRunID: runID, state: snapshot.state == "completed" ? .completed : .interrupted, diagnostic: "Run-Snapshot meldet \(snapshot.state)")
+            }
+            guard let heartbeatAt = ISO8601DateFormatter().date(from: snapshot.heartbeatAt),
+                  abs(now().timeIntervalSince(heartbeatAt)) <= 45 else {
+                return RunRecord(sourceRunID: runID, state: .interrupted, diagnostic: "Run-Heartbeat ist veraltet")
+            }
+        }
         let wrapper = boundedString(at: directory.appendingPathComponent("worker"), maximumBytes: 256)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let worker = matchWorker(wrapper: wrapper, workers: workers)
-        let unknownName = wrapper.isEmpty ? "Unbekannter Worker" : "Unbekannter Worker (\(safeLabel(wrapper)))"
-        let heartbeat = fileModificationDate(directory.appendingPathComponent("heartbeat"))
+        let recordedWorkerID: UUID?
+        if let value = boundedString(at: directory.appendingPathComponent("worker-id"), maximumBytes: 64) {
+            recordedWorkerID = UUID(uuidString: value.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            recordedWorkerID = nil
+        }
+        let worker = recordedWorkerID.flatMap { id in workers.first(where: { $0.id == id }) }
+            ?? matchWorker(wrapper: wrapper, workers: workers)
+        let wrapperName = URL(fileURLWithPath: wrapper).lastPathComponent
+        let unmappedName = wrapperName.isEmpty
+            ? "Nicht zugeordneter Prozess"
+            : "\(wrapperName) · nicht konfiguriert"
+        let heartbeat = snapshot.flatMap { ISO8601DateFormatter().date(from: $0.heartbeatAt) }
+            ?? fileModificationDate(directory.appendingPathComponent("heartbeat"))
         let activity = safeActivity(directory: directory, runID: runID)
         let delivery = deliveryKind(directory: directory, worker: worker)
         let stableID = deterministicUUID(runID)
-        let active = ActiveRun(id: stableID, sourceRunID: runID, workerID: worker?.id, workerName: worker?.name ?? unknownName, workerModel: worker?.model, activity: activity, startedAt: startedAt, observedAt: now(), lastHeartbeat: heartbeat, delivery: delivery, pid: pid, processIdentity: identity, runDirectory: directory, indexFile: indexFile)
+        let active = ActiveRun(
+            id: stableID,
+            sourceRunID: runID,
+            workerID: worker?.id,
+            workerName: worker?.name ?? unmappedName,
+            workerModel: nil,
+            effectiveModel: snapshot.flatMap { safeMetadata($0.model, maximumLength: 256) },
+            effectiveReasoning: snapshot.flatMap { $0.reasoning.flatMap(ReasoningEffort.init(rawValue:)) },
+            effectiveSpeed: snapshot.flatMap { $0.speed.flatMap(RunSpeed.init(rawValue:)) },
+            effectiveProviderRoute: snapshot.flatMap { safeMetadata($0.providerRoute, maximumLength: 256) },
+            activity: activity,
+            startedAt: startedAt,
+            observedAt: now(),
+            lastHeartbeat: heartbeat,
+            delivery: delivery,
+            pid: pid,
+            processIdentity: identity,
+            runDirectory: directory,
+            indexFile: indexFile
+        )
         return RunRecord(sourceRunID: runID, state: .running, activeRun: active)
     }
 
@@ -143,8 +311,13 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
         let fm = FileManager.default
         let liveArtifacts = ["stream-json", "stream.jsonl", "claude-stream.jsonl"]
         if worker?.harness == .claudeCode && liveArtifacts.contains(where: { fm.fileExists(atPath: directory.appendingPathComponent($0).path) }) { return .live }
-        let piArtifacts = ["pi-response-events", "response-events.jsonl", "pi-events.jsonl"]
-        if piArtifacts.contains(where: { fm.fileExists(atPath: directory.appendingPathComponent($0).path) }) { return .postHoc }
+        if worker?.harness == .piSidecar {
+            let piArtifacts = ["pi-response-events", "response-events.jsonl", "pi-events.jsonl"]
+            if piArtifacts.contains(where: { fm.fileExists(atPath: directory.appendingPathComponent($0).path) }) { return .postHoc }
+        }
+        // Codex, Cursor, OpenCode and Grok have protocol-specific event
+        // streams. Until Workjet has a decoder for those canonical events,
+        // generic files must not be presented as live telemetry.
         return .unavailable
     }
 
@@ -173,8 +346,25 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
         (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
     }
 
+    private func readSnapshot(_ url: URL) -> CanonicalRunSnapshot? {
+        guard isOwnedRegularFile(url), let data = try? Data(contentsOf: url), data.count <= 4_096 else { return nil }
+        return try? JSONDecoder().decode(CanonicalRunSnapshot.self, from: data)
+    }
+
+    private func readRecordedIdentity(_ url: URL) -> RecordedProcessIdentity? {
+        guard isOwnedRegularFile(url), let data = try? Data(contentsOf: url), data.count <= 4_096 else { return nil }
+        return try? JSONDecoder().decode(RecordedProcessIdentity.self, from: data)
+    }
+
     private func safeLabel(_ value: String) -> String {
         value.replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }.map(String.init).joined()
+    }
+
+    private func safeMetadata(_ value: String?, maximumLength: Int) -> String? {
+        guard let value else { return nil }
+        let clean = safeLabel(value).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.count <= maximumLength else { return nil }
+        return clean
     }
 
     private func deterministicUUID(_ text: String) -> UUID {
@@ -199,8 +389,8 @@ public enum StopError: LocalizedError, Equatable {
     case runAlreadyFinished
     public var errorDescription: String? {
         switch self {
-        case .pidMismatch: return "Stop verweigert: PID oder Prozessidentität gehört nicht mehr zu diesem Run."
-        case .runAlreadyFinished: return "Der Run ist bereits beendet."
+        case .pidMismatch: return "Dieser Worker kann nicht mehr eindeutig zugeordnet werden. Aktualisiere die Anzeige."
+        case .runAlreadyFinished: return "Dieser Worker ist bereits beendet."
         }
     }
 }

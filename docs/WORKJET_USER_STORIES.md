@@ -2,9 +2,13 @@
 
 Status: normative release contract. This document describes required behavior; it does **not** claim that the current build implements it.
 
+Current implementation and test coverage are audited separately in
+[`WORKJET_RELEASE_GAPS.md`](WORKJET_RELEASE_GAPS.md). The audit status is
+evidence-based and never changes the normative acceptance criteria below.
+
 ## 1. Product boundary and test doctrine
 
-Workjet is a native macOS menu-bar companion for the `/workjet` Claude Code skill. Claude/Fable remains the orchestrator. The app manages the visible orchestration rules, worker definitions, provider access, computers, runtime health, and telemetry. It is not a second orchestrator and must not invent workflows or silently choose workers.
+Workjet is a native macOS menu-bar companion for a global Claude Code and Claude Desktop system-prompt extension. The installer adds one marked `@workjet/AGENTS.md` include to the user's global `~/.claude/CLAUDE.md`; no opt-in command is required. Claude/Fable remains the orchestrator. The app manages the visible orchestration rules, worker definitions, provider access, computers, runtime health, and telemetry. It is not a second orchestrator and must not invent workflows or silently choose workers.
 
 Every release candidate is accepted against the stories below using the real production views and real persisted configuration. A Core test may prove data transformation, but it cannot substitute for a click test where the acceptance criterion concerns navigation, focus, labels, visibility, or editor identity. A mocked remote test may prove protocol behavior, but it cannot substitute for the named real-remote smoke test. No alternate UI hierarchy may exist solely for tests.
 
@@ -25,6 +29,7 @@ Every release candidate is accepted against the stories below using the real pro
 6. An unavailable dependency produces an explicit visible state and recovery action. It never silently falls back, reports a fake success, or deletes the user's editable configuration.
 7. Save closes an editor only after configuration and managed prompt are durably synchronized. A failed save stays open and explains the exact field or persistence failure.
 8. Telemetry is evidence, not inference from an old file or process name. Stale sessions expire and cannot remain “active” indefinitely.
+9. Global activation owns only its clearly marked include in `~/.claude/CLAUDE.md`. Install, update, and uninstall preserve all unrelated global content and never modify project-local `CLAUDE.md` or `AGENTS.md` files.
 
 ### 1.3 Release-wide fixtures
 
@@ -32,7 +37,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 2. App shell, launch, and global status
 
-### WJ-APP-001 — Launch and reopen the actual Workjet menu
+### WJ-APP-001 - Launch and reopen the actual Workjet menu
 
 - **Persona / goal:** A Claude Code user wants one reliable click target in the macOS menu bar.
 - **Preconditions:** Workjet is installed in `/Applications`; no Workjet process runs; another status item with a popover is adjacent.
@@ -43,21 +48,21 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** UI click; manual visual brand check; signed-app launch smoke.
 - **Done:** Five launch/open/close cycles and an adjacent-item test pass on a clean macOS account; process inspection shows exactly one status item owner.
 
-### WJ-APP-002 — At-a-glance Workjet activation state
+### WJ-APP-002 - At-a-glance Workjet activation state
 
-- **Persona / goal:** The user wants to know whether the Workjet skill is active and functioning in Claude Code without opening logs.
+- **Persona / goal:** The user wants to know whether the global Workjet prompt extension is installed and functioning in Claude without opening logs.
 - **Preconditions:** Fixture states: not observed, ready, one active orchestration, degraded synchronization, fatal/unavailable.
 - **Steps:** Start each fixture/state; observe the icon; open the popover.
 - **Expected visible states:** Icon treatment and header status agree. The header uses concise language such as “Bereit”, “Aktiv · 1”, “Nicht bestätigt”, or “Fehler”, with a short reason on hover/details. “Active” is shown only from current, attributable runtime evidence.
 - **Persistence / prompt / runtime effect:** Status changes do not mutate worker/prompt configuration.
-- **Errors / recovery:** If Claude/skill telemetry is unavailable, show “Nicht bestätigt” rather than “Aus” or “Aktiv”. A synchronization failure links to the affected Settings section.
+- **Errors / recovery:** If Claude runtime telemetry is unavailable, show “Nicht bestätigt” rather than “Aus” or “Aktiv”. A synchronization failure links to the affected Settings section.
 - **Automation:** Core integration + UI click + real local Claude smoke.
 - **Done:** A matrix test proves icon/header consistency and no false positive after the Claude process exits.
 
-### WJ-APP-003 — No unsolicited Keychain or OAuth dialogs on launch
+### WJ-APP-003 - No unsolicited Keychain or OAuth dialogs on launch
 
 - **Persona / goal:** A user wants to inspect Workjet without security prompts appearing every time.
-- **Preconditions:** Accounts exist in Keychain; the keychain is locked in one run and unlocked in another.
+- **Preconditions:** Accounts exist in Keychain; the keychain is locked in one run and available in another.
 - **Steps:** Launch and open Workjet; switch computers; open Settings/Prompt; do not enter Providers or start a worker.
 - **Expected visible states:** No Keychain password dialog and no browser OAuth window appears. Credential access is lazy and tied to an explicit “Verbinden”, “Neu anmelden”, capacity refresh, or execution action.
 - **Persistence / prompt / runtime effect:** None.
@@ -67,7 +72,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 3. Main list and worker identity/status
 
-### WJ-MAIN-001 — Direct computer switching without dropdowns
+### WJ-MAIN-001 - Direct computer switching without dropdowns
 
 - **Persona / goal:** A user wants to switch between Local and any number of configured computers in one click.
 - **Preconditions:** Local and at least three remote computers exist; each has distinct workers.
@@ -78,7 +83,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** UI click.
 - **Done:** Accessibility assertions prove selection and exact worker UUID set after each click.
 
-### WJ-MAIN-002 — Every worker row shows its own operational status
+### WJ-MAIN-002 - Every worker row shows its own operational status
 
 - **Persona / goal:** The user wants to see whether each configured worker can actually run.
 - **Preconditions:** Workers representing ready, active, unverified, degraded, unavailable/missing provider, offline computer, unsupported harness, and rate-limited states.
@@ -89,18 +94,18 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + real local and remote smoke.
 - **Done:** Tests assert a nonempty accessibility status for every row and show no state leakage between workers sharing a model or name.
 
-### WJ-MAIN-003 — Compact quota and rate next to the model
+### WJ-MAIN-003 - Compact quota and rate next to the model
 
 - **Persona / goal:** The user wants quota and rate-limit awareness without opening Settings.
 - **Preconditions:** Measured normal, warning, critical/rate-limited, aggregate pool, and unavailable data.
 - **Steps:** Open main list; inspect `Q` and `R` on each worker; open the capacity detail.
-- **Expected visible states:** Compact values appear next to model/harness, not as task progress bars. Measured percentages/limits use restrained severity colors; unknown is `—` with an explicit reason. Pool capacity is labelled as pool data and never fabricated from incompatible accounts.
+- **Expected visible states:** Compact values appear next to model/harness, not as task progress bars. Measured percentages/limits use restrained severity colors; unknown is ` - ` with an explicit reason. Pool capacity is labelled as pool data and never fabricated from incompatible accounts.
 - **Persistence / prompt / runtime effect:** Refresh updates observation cache only.
 - **Errors / recovery:** Failed capacity fetch retains last-known value only with timestamp and “veraltet”; otherwise unknown. No infinite spinner.
 - **Automation:** Core integration + UI click + provider smoke where supported.
 - **Done:** Fixture matrix renders exact values/reasons and stale transition; no static placeholder passes as measured data.
 
-### WJ-MAIN-004 — Active runs map to configured workers and expire safely
+### WJ-MAIN-004 - Active runs map to configured workers and expire safely
 
 - **Persona / goal:** The user wants concise current activity, without ghosts or “Unbekannter Worker” when identity is available.
 - **Preconditions:** One direct wrapper run, one dispatcher run, one remote run, a legacy unmapped executable, and a 48-hour stale journal.
@@ -113,29 +118,29 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 4. Worker create, edit, move, and delete
 
-### WJ-WRK-001 — Create a complete worker through progressive disclosure
+### WJ-WRK-001 - Create a complete worker through progressive disclosure
 
 - **Persona / goal:** A non-expert wants to add a named role without technical invocation jargon.
 - **Preconditions:** At least one connected provider route and Local exist.
 - **Steps:** Click the worker-list `+`; enter name; choose harness, provider/account or pool, model, supported reasoning and optional speed; enter “Aufgabe dieses Workers”; choose computer; save.
 - **Expected visible states:** The primary form shows only these user concepts. Technical invocation details are collapsed. Save succeeds only when required fields are complete and the new row appears under the chosen computer with status.
-- **Persistence / prompt / runtime effect:** New stable worker UUID persists; worker instructions and model block appear once in the managed prompt; skill file synchronizes before editor closes.
+- **Persistence / prompt / runtime effect:** New stable worker UUID persists; worker instructions and model block appear once in the managed prompt; configuration and managed prompt synchronize before editor closes.
 - **Errors / recovery:** Save on an incomplete form focuses the first invalid field, outlines it, and shows plain-language guidance. Entered values remain. Persistence/prompt failure stays in editor with retry.
 - **Automation:** Core integration + UI click.
 - **Done:** Create, relaunch, reopen editor, and byte-check composed prompt all pass.
 
-### WJ-WRK-002 — Pencil edits the exact worker and all of its saved fields
+### WJ-WRK-002 - Pencil edits the exact worker and all of its saved fields
 
 - **Persona / goal:** The user clicks a row pencil and expects that exact worker, not a template or another same-named worker.
 - **Preconditions:** Two workers share name/model but have different UUIDs, harness options, provider routes, instructions, computers, and invocation details.
 - **Steps:** Click the pencil on the first row; compare fields; close; click the second; change nothing and save; reopen both.
-- **Expected visible states:** Title is “Worker bearbeiten”. Name, harness, concrete account/pool, model, reasoning, speed/options, worker instructions, model block, computer, and technical invocation match the clicked UUID. Saving unchanged never creates a new UUID.
+- **Expected visible states:** Title is “Worker bearbeiten”. Name, harness, concrete account/pool, model, reasoning, speed/options, the single worker-specific task, computer, and technical invocation match the clicked UUID. Shared model rules are not duplicated in this editor. Saving unchanged never creates a new UUID.
 - **Persistence / prompt / runtime effect:** Only the targeted record may change; prompt ordering/source remains stable.
 - **Errors / recovery:** If its provider was deleted, all model/rules/instructions remain visible and editable with an inline route error.
 - **Automation:** Core integration + UI click.
 - **Done:** UUID-keyed accessibility actions and before/after persistence assertions prove exact routing; this is not accepted by a Core-only draft test.
 
-### WJ-WRK-003 — Edit worker instructions as the worker-specific prompt source
+### WJ-WRK-003 - Edit worker instructions as the worker-specific prompt source
 
 - **Persona / goal:** The user wants a substantial role description, including `@Other-Worker` references.
 - **Preconditions:** Several workers with stable mention tags.
@@ -146,18 +151,18 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click.
 - **Done:** Input, save, relaunch, editor round-trip, and exact prompt section assertion pass.
 
-### WJ-WRK-004 — Edit shared model rules in context, with one canonical source
+### WJ-WRK-004 - Edit shared model rules once in Settings, with one canonical source
 
 - **Persona / goal:** The user wants the role guidance for GPT-5.6 Sol, Kimi K3, MiniMax M3, Grok, or any custom canonical model directly next to a worker.
 - **Preconditions:** Two workers share the same canonical model; one uses a model alias.
-- **Steps:** Open one worker; edit “Modellregeln · …”; save; open the second; open Settings/Prompt.
-- **Expected visible states:** The editor clearly labels the block “gemeinsam”/model-owned and shows the full current text. Both workers and Settings show byte-identical content. There is no separate “Modellregeln” modal or orphan editor.
+- **Steps:** Open Settings/Prompt; edit the colored model-owned block; save; open both workers and return to Settings/Prompt.
+- **Expected visible states:** Settings clearly labels the block as model-owned and shows the full current text. Each worker editor has exactly one worker-specific task field and no second model-rule description. There is no separate “Modellregeln” modal or orphan editor.
 - **Persistence / prompt / runtime effect:** One `modelPrompts[canonicalName]` value updates; the composed prompt includes the model block once, even if multiple workers use it.
 - **Errors / recovery:** Changing model warns if unsaved edits would switch canonical source; user can save/discard/cancel. Missing rules show an editable empty model block, not stale defaults from another model.
 - **Automation:** Core integration + UI click.
 - **Done:** Cross-editor round-trip, alias canonicalization, and exactly-once prompt tests pass.
 
-### WJ-WRK-005 — Model-specific controls come from model/harness capabilities
+### WJ-WRK-005 - Model-specific controls come from model/harness capabilities
 
 - **Persona / goal:** The user wants valid reasoning and speed choices, not a generic list that the runtime ignores.
 - **Preconditions:** Fixtures for GPT-5.6 Sol/Terra/Luna, Claude Sonnet/Opus/Fable 5, Kimi, MiniMax M3, GLM 5.2, Grok, Gemini, plus unknown custom model.
@@ -168,7 +173,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + harness smoke.
 - **Done:** Capability matrix asserts both UI choices and actual command/protocol payload.
 
-### WJ-WRK-006 — Move a worker between computers
+### WJ-WRK-006 - Move a worker between computers
 
 - **Persona / goal:** The user wants to move an existing worker from Local to a remote computer or back.
 - **Preconditions:** Local and a configured remote; worker is not currently running.
@@ -179,7 +184,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + remote compatibility test.
 - **Done:** Move both directions, relaunch, prompt check, and UUID preservation pass.
 
-### WJ-WRK-007 — Delete a worker safely
+### WJ-WRK-007 - Delete a worker safely
 
 - **Persona / goal:** The user wants obsolete workers removed without damaging shared model rules.
 - **Preconditions:** Worker shares model with another worker and has historical runs.
@@ -192,7 +197,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 5. Prompt transparency and navigation
 
-### WJ-PRM-001 — Read the entire effective system prompt in source-aware blocks
+### WJ-PRM-001 - Read the entire effective system prompt in source-aware blocks
 
 - **Persona / goal:** The user wants to audit everything Fable receives.
 - **Preconditions:** Unique sentinel text in every prompt source.
@@ -203,7 +208,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click.
 - **Done:** Every byte of the emitted prompt maps to a visible source block or visible composition delimiter; a test fails on any hidden appended text.
 
-### WJ-PRM-002 — Edit general rules without absorbing generated content
+### WJ-PRM-002 - Edit general rules without absorbing generated content
 
 - **Persona / goal:** The user wants to change only universal Fable/orchestrator rules.
 - **Preconditions:** Existing general and generated content.
@@ -214,7 +219,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click.
 - **Done:** Byte diff proves no generated content was copied into or deleted from general rules.
 
-### WJ-PRM-003 — Edit model and worker blocks from the prompt page via their owners
+### WJ-PRM-003 - Edit model and worker blocks from the prompt page via their owners
 
 - **Persona / goal:** While reading the composed prompt, the user wants a convenient edit action without losing source ownership.
 - **Preconditions:** Model and worker blocks visible.
@@ -225,7 +230,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** UI click + Core integration.
 - **Done:** Deep-link identity, round-trip, and source-only diffs pass.
 
-### WJ-PRM-004 — Settings tabs scroll the one-page Settings view
+### WJ-PRM-004 - Settings tabs scroll the one-page Settings view
 
 - **Persona / goal:** The user wants fast navigation without separate cryptic settings pages.
 - **Preconditions:** Settings content exceeds viewport.
@@ -236,18 +241,18 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** UI click only (Core test insufficient).
 - **Done:** Screenshot/frame assertions pass for every tab from multiple scroll positions.
 
-### WJ-PRM-005 — Persistent Ad-hoc Learnings from UI and CLI
+### WJ-PRM-005 - Persistent Ad-hoc Learnings from UI and CLI
 
 - **Persona / goal:** Fable wants to retain systematic orchestration lessons across projects; user wants to inspect/edit them.
 - **Preconditions:** Shared Workjet state; CLI available.
 - **Steps:** Read the in-app explanation; run `workjet learn --systematic "…"`; reopen Settings; edit the entry; list via CLI; restart app/project.
-- **Expected visible states:** Section explains what qualifies: systematic, predictable orchestration failures—not daily/random struggles—and how Fable can add/edit them. Entries are readable/editable and persistent globally.
+- **Expected visible states:** Section explains what qualifies: systematic, predictable orchestration failures - not daily/random struggles - and how Fable can add/edit them. Entries are readable/editable and persistent globally.
 - **Persistence / prompt / runtime effect:** Learning store and Ad-hoc Learnings prompt section update atomically; no duplicate insertion.
 - **Errors / recovery:** Concurrent app/CLI edits are lock-safe; conflicts are surfaced, never last-write-lost silently. Non-systematic CLI input is rejected or requires explicit systematic confirmation.
 - **Automation:** Core/CLI integration + UI click.
 - **Done:** Cross-process concurrency, project switch, relaunch, edit/list, and exact prompt tests pass.
 
-### WJ-PRM-006 — Technical rules are visible, editable, and collapsed by default
+### WJ-PRM-006 - Technical rules are visible, editable, and collapsed by default
 
 - **Persona / goal:** An advanced user wants no hidden runtime policy while keeping normal Settings uncluttered.
 - **Preconditions:** Technical rules and generated invocation facts exist.
@@ -258,42 +263,53 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click.
 - **Done:** Source-coverage test accounts for 100% of emitted bytes and technical section defaults collapsed.
 
-### WJ-PRM-007 — Configuration changes become effective immediately and observably
+### WJ-PRM-007 - Configuration changes become effective immediately and observably
 
-- **Persona / goal:** The user expects a saved worker/prompt change to affect the next `/workjet` delegation.
-- **Preconditions:** Claude Code installed; managed skill path watched.
-- **Steps:** Change a sentinel in app; save; inspect sync status; invoke a fresh `/workjet` task/CLI read; repeat with app closed and reopened.
-- **Expected visible states:** App shows “Gespeichert”/“Prompt aktualisiert” with timestamp or an explicit error. No ambiguous silent delay.
-- **Persistence / prompt / runtime effect:** Durable config and `~/.claude/workjet/AGENTS.md` are synchronized before success. Running turns retain their captured prompt; next turn gets the new one.
+- **Persona / goal:** The user expects a saved worker/prompt change to affect the next delegation in a fresh Claude session.
+- **Preconditions:** Claude Code installed; global Workjet include installed.
+- **Steps:** Change a sentinel in app; save; inspect sync status; start a fresh Claude CLI/Desktop session and inspect the loaded Workjet configuration; repeat with app closed and reopened.
+- **Expected visible states:** While saving, the app shows that changes are being applied. After success it visibly switches to “Claude · Neustart erforderlich” and “Claude neu starten, um Änderungen zu laden”; a failed write shows an explicit error instead. No ambiguous silent delay and no claim that a running session is current.
+- **Persistence / prompt / runtime effect:** Durable config and `~/.claude/workjet/AGENTS.md` are synchronized before success. Every already-running Claude process retains its captured prompt; only a fully restarted CLI/Desktop session gets the new one.
 - **Errors / recovery:** Permission, malformed prompt, disk-full, or lock errors remain visible with retry and path; editor stays open and data remains.
-- **Automation:** Core integration + UI click + real Claude skill smoke.
+- **Automation:** Core integration + UI click + real fresh-session Claude CLI and Desktop smoke.
 - **Done:** Save-to-next-turn latency is bounded and proven; injected sync failure never reports success.
+
+### WJ-PRM-008 - Global activation install, update, migration, and uninstall
+
+- **Persona / goal:** The user installs Workjet once and expects every new Claude Code CLI and Desktop session to receive it automatically without losing personal Claude instructions.
+- **Preconditions:** Exercise four homes: no global prompt, an existing unrelated global prompt, a former `/workjet`-only installation, and a current Workjet installation.
+- **Steps:** Install; inspect `~/.claude/CLAUDE.md`; install again; update; start fresh CLI/Desktop sessions; uninstall the global integration.
+- **Expected visible states:** Workjet reports “Bereit” only when the managed prompt is current and exactly one marked `@workjet/AGENTS.md` include exists. A malformed or duplicate marked block produces an actionable error and is never guessed at or silently rewritten.
+- **Persistence / prompt / runtime effect:** Install/update atomically writes the app-managed `~/.claude/workjet/AGENTS.md` and replaces only Workjet's marked global block. Repeated installation is byte-idempotent. Migration removes dependence on the former skill. Uninstall removes only the marked include; unrelated global content and project-local `CLAUDE.md`/`AGENTS.md` files remain byte-identical.
+- **Errors / recovery:** A failure during either write restores the previous global prompt and managed prompt. Symlinks, wrong ownership, malformed markers, and unwritable paths fail closed with recovery guidance.
+- **Automation:** Core transaction tests + installer integration in an isolated home + real fresh-session Claude CLI and Desktop smoke.
+- **Done:** All four homes pass install/update/uninstall, rollback injection, idempotency, project-nonmutation, and fresh-session prompt sentinel checks.
 
 ## 6. Computers and remote setup
 
-### WJ-CMP-001 — Add a Tailscale computer by clicking a discovered device
+### WJ-CMP-001 - Add a Tailscale computer by clicking a discovered device
 
 - **Persona / goal:** The user wants to select an existing Tailscale machine and set it up without copying a hostname.
 - **Preconditions:** Tailscale is connected; online and offline Linux devices are returned.
-- **Steps:** Click top computer `+`; choose Tailscale; click an online device row; enter SSH user if absent; click “Einrichten & speichern”.
-- **Expected visible states:** Selected row gains checkmark/highlight; hostname/address populate internally; offline rows are visibly disabled; setup button explains any missing prerequisite. Successful computer becomes a top peer button.
-- **Persistence / prompt / runtime effect:** Computer UUID/transport/host/user and verified deployment facts persist; no secrets are copied to remote.
+- **Steps:** Click top computer `+`; choose Tailscale; click an online device row; enter SSH user if absent; select the matching SSH key when automatic SSH authentication is insufficient; click “Identität prüfen & einrichten”; compare the host fingerprint and click “Bestätigen & einrichten”. Confirmation continues deployment and persistence automatically.
+- **Expected visible states:** Selected row gains checkmark/highlight; the reachable Tailscale IPv4 address populates internally even when Tailscale DNS naming is unavailable; offline rows are visibly disabled; the selected SSH-key filename is visible without revealing key contents; setup explains the next missing prerequisite. Successful computer becomes a top peer button.
+- **Persistence / prompt / runtime effect:** Computer UUID/transport/host/user, the local absolute identity-file path, and verified deployment facts persist; private-key contents and provider secrets are never stored in configuration or copied to remote.
 - **Errors / recovery:** Tailscale absent/disconnected shows plain-language install/connect/retry. Offline selection cannot proceed. Refresh preserves selection if device remains.
 - **Automation:** Core integration + UI click + real Tailscale smoke.
-- **Done:** Actual row click—not manual host workaround—leads to successful probe/deployment and persisted button.
+- **Done:** Actual row click - not manual host workaround - leads to successful probe/deployment and persisted button.
 
-### WJ-CMP-002 — Add a strict SSH computer
+### WJ-CMP-002 - Add a strict SSH computer
 
 - **Persona / goal:** The user wants a non-Tailscale host with explicit trust.
 - **Preconditions:** Reachable SSH host and separately approved known-hosts entry.
-- **Steps:** Add computer; choose SSH; enter name, host, user; expand technical only for non-default port/known-hosts; set up.
+- **Steps:** Add computer; choose SSH; enter name, host, user; select the SSH key if required; expand technical only for non-default port/known-hosts; scan and explicitly confirm the host fingerprint; set up.
 - **Expected visible states:** Primary UI stays concise. Strict host-key validation is stated. Success/failure is visible.
-- **Persistence / prompt / runtime effect:** Connection metadata persists; private keys/passwords are never stored by Workjet.
+- **Persistence / prompt / runtime effect:** Connection metadata and only the local key-file path persist; private-key contents and passwords are never stored by Workjet.
 - **Errors / recovery:** Unknown/mismatched host key blocks setup with exact external remediation; no `StrictHostKeyChecking=no` fallback.
 - **Automation:** Core integration + UI click + real SSH smoke + manual security.
 - **Done:** Good key succeeds; unknown and changed keys fail safely.
 
-### WJ-CMP-003 — Minimal sandbox is enforced, not decorative
+### WJ-CMP-003 - Minimal sandbox is enforced, not decorative
 
 - **Persona / goal:** The user wants Pi Code on a remote host to see only the projected turn snapshot.
 - **Preconditions:** Linux host with and without approved `bwrap` cases.
@@ -304,7 +320,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Real remote smoke + manual security.
 - **Done:** Security canary proves filesystem boundary and fail-closed behavior.
 
-### WJ-CMP-004 — Edit, switch, and delete a computer
+### WJ-CMP-004 - Edit, switch, and delete a computer
 
 - **Persona / goal:** The user wants lifecycle control over every remote button.
 - **Preconditions:** Remote computer with assigned workers.
@@ -315,7 +331,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click.
 - **Done:** Edit/relaunch/select/delete/migration/prompt assertions pass.
 
-### WJ-CMP-005 — Remote setup is minimal, versioned, and auditable
+### WJ-CMP-005 - Remote setup is minimal, versioned, and auditable
 
 - **Persona / goal:** The user wants fast deployment of the pinned Pi core/host without a source fork or package sprawl.
 - **Preconditions:** Clean supported Linux host; audited bundled artifacts.
@@ -328,7 +344,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 7. Providers, accounts, pools, models, and capacity
 
-### WJ-PRV-001 — Add OAuth provider in one homogeneous flow
+### WJ-PRV-001 - Add OAuth provider in one homogeneous flow
 
 - **Persona / goal:** The user wants Kimi, OpenAI, Anthropic, Antigravity/Google, or xAI access via CLIProxy with one click to web authentication.
 - **Preconditions:** Loopback-only CLIProxy service available with management authentication.
@@ -339,7 +355,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click with test server + manual real OAuth/security.
 - **Done:** One real supported provider completes E2E; remaining provider adapters pass contract tests; no fake connected state.
 
-### WJ-PRV-002 — Add API-key provider in the same provider language
+### WJ-PRV-002 - Add API-key provider in the same provider language
 
 - **Persona / goal:** The user wants MiniMax M3, z.ai GLM 5.2, or compatible API services without confronting proxy internals.
 - **Preconditions:** Valid/invalid test credentials and endpoint.
@@ -350,7 +366,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + provider sandbox/manual security.
 - **Done:** MiniMax and z.ai compatible contract smokes prove authentication and model listing.
 
-### WJ-PRV-003 — Edit, re-authenticate, disable, and delete an account
+### WJ-PRV-003 - Edit, re-authenticate, disable, and delete an account
 
 - **Persona / goal:** The user wants complete provider-account lifecycle control.
 - **Preconditions:** Account referenced by workers and another unreferenced account.
@@ -361,7 +377,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + manual Keychain/OAuth.
 - **Done:** Lifecycle matrix and referential-integrity tests pass.
 
-### WJ-PRV-004 — Stack multiple subscriptions for the same provider
+### WJ-PRV-004 - Stack multiple subscriptions for the same provider
 
 - **Persona / goal:** A power user wants several OpenAI/xAI/etc. subscriptions as separately visible accounts.
 - **Preconditions:** Two real or contract-test accounts of same provider.
@@ -372,7 +388,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + CLIProxy contract + UI click + manual OAuth.
 - **Done:** Requests attributed by proxy evidence prove A and B are actually distinct, not two labels over one token.
 
-### WJ-PRV-005 — Select a deterministic provider pool with real failover
+### WJ-PRV-005 - Select a deterministic provider pool with real failover
 
 - **Persona / goal:** The user wants stacked accounts used as a pool.
 - **Preconditions:** Three accounts same provider with explicit priority; one healthy, one quota-exhausted, one auth-failed.
@@ -383,7 +399,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + CLIProxy/runtime integration + UI click + real provider smoke.
 - **Done:** Attribution logs prove order and failure semantics E2E.
 
-### WJ-PRV-006 — Discover and choose only real available models
+### WJ-PRV-006 - Discover and choose only real available models
 
 - **Persona / goal:** The user wants to authenticate first, then choose the models that account actually exposes.
 - **Preconditions:** Provider response includes several models and capability metadata.
@@ -394,12 +410,12 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + provider contract.
 - **Done:** Per-account model isolation and refresh/update tests pass.
 
-### WJ-PRV-007 — Capacity and rate refresh for account and pool
+### WJ-PRV-007 - Capacity and rate refresh for account and pool
 
 - **Persona / goal:** The user wants trustworthy quota/rate information in rows and Settings.
 - **Preconditions:** Providers with measured usage, rate-limit response, unsupported metrics, and multiple pool accounts.
 - **Steps:** Open Settings/Anbieter; refresh; observe main rows; trigger a rate limit; wait for reset.
-- **Expected visible states:** Account details show source, value, reset/timestamp. Main row reflects selected account/pool. Unsupported data says unavailable; it does not display `Q— R—` without an accessible explanation.
+- **Expected visible states:** Account details show source, value, reset/timestamp when the provider actually exposes them. Main row reflects selected account/pool. A connected account with no measurable quota remains simply “Verbunden”; missing telemetry is neither green warning copy nor a fake capacity restriction.
 - **Persistence / prompt / runtime effect:** Observation cache only; no prompt mutation.
 - **Errors / recovery:** Backoff prevents polling storms. Last-known data is marked stale. Pool aggregates only compatible measured units or shows account-wise status.
 - **Automation:** Core integration + UI click + real provider smoke.
@@ -407,7 +423,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 8. Harnesses and execution
 
-### WJ-HAR-001 — Harness selection is honest and capability-driven
+### WJ-HAR-001 - Harness selection is honest and capability-driven
 
 - **Persona / goal:** The user wants Claude Code, Pi Code, Codex CLI, OpenCode, Cursor Agent, or Grok CLI only when Workjet can actually invoke it.
 - **Preconditions:** Adapter registry contains supported and unavailable adapters.
@@ -418,18 +434,18 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + harness smokes.
 - **Done:** Registry/UI/runtime support matrix has no contradictory state.
 
-### WJ-HAR-002 — Claude Code local and remote execution
+### WJ-HAR-002 - Claude Code local and remote execution
 
 - **Persona / goal:** Fable delegates to a configured Claude Code worker and receives attributable live status/result.
 - **Preconditions:** Valid account/model; local and remote target variants.
-- **Steps:** Invoke through the Workjet CLI contract from a `/workjet` turn; observe app; receive events/result; stop one run.
+- **Steps:** Invoke through the Workjet CLI contract from a globally configured Claude turn; observe app; receive events/result; stop one run.
 - **Expected visible states:** Correct worker becomes active; concise activity/elapsed target shown; stop reaches that run; terminal result clears active state.
 - **Persistence / prompt / runtime effect:** Run ledger records worker/computer/account/harness; prompt config unchanged.
 - **Errors / recovery:** Auth/quota/task/transport failures are distinct; fallback follows declared dispatcher rules only.
 - **Automation:** Core integration + real local/remote smoke + UI click.
 - **Done:** Start/events/stop/result E2E passes and output identity matches worker UUID.
 
-### WJ-HAR-003 — Pi Code fresh-daemon bounded turn
+### WJ-HAR-003 - Pi Code fresh-daemon bounded turn
 
 - **Persona / goal:** Fable delegates one bounded snapshot turn to the custom Pi harness.
 - **Preconditions:** Pinned `@earendil-works/pi-agent-core@0.80.2` bundle and verified target sandbox.
@@ -440,7 +456,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + real local/remote smoke + sandbox security.
 - **Done:** Process lifecycle, single-turn bound, snapshot isolation, and cleanup are proven.
 
-### WJ-HAR-004 — Codex CLI and OpenCode protocol execution
+### WJ-HAR-004 - Codex CLI and OpenCode protocol execution
 
 - **Persona / goal:** The user wants additional genuine harnesses beyond Claude and Pi.
 - **Preconditions:** Supported executables/config on target.
@@ -451,7 +467,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + real local/remote smoke + UI click.
 - **Done:** Independent start/event/stop/result smoke for each harness.
 
-### WJ-HAR-005 — Cursor Agent and Grok CLI require real adapters before enablement
+### WJ-HAR-005 - Cursor Agent and Grok CLI require real adapters before enablement
 
 - **Persona / goal:** The user wants these harnesses if and only if genuine invocation and telemetry exist.
 - **Preconditions:** Adapter unavailable state; later supported build fixture.
@@ -462,20 +478,20 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click; real smoke mandatory before release flag.
 - **Done:** Feature flag/support status is evidence-backed; a button alone never satisfies story.
 
-### WJ-HAR-006 — CLI is the stable bridge from Fable to workers
+### WJ-HAR-006 - CLI is the stable bridge from Fable to workers
 
-- **Persona / goal:** Claude/Fable receives only the Workjet skill/config and can invoke a declared worker without the app orchestrating for it.
+- **Persona / goal:** Claude/Fable receives the globally included Workjet configuration and can invoke a declared worker without the app orchestrating for it.
 - **Preconditions:** App-generated configuration; `workjet` CLI installed.
 - **Steps:** From Claude Code call list/describe/run/events/stop for a worker mention/UUID; repeat after app configuration change.
 - **Expected visible states:** App reflects CLI run; CLI emits stable machine-readable output and human diagnostics. Fable chooses worker; app does not choose for it.
 - **Persistence / prompt / runtime effect:** Managed prompt contains exact invocation contract. CLI resolves current config atomically.
 - **Errors / recovery:** Unknown/ambiguous mention, unsupported adapter, stale config, and connection loss return distinct nonzero codes.
 - **Automation:** CLI/Core integration + real local/remote smoke.
-- **Done:** Fresh Claude `/workjet` session can perform E2E delegation using only visible skill/config instructions.
+- **Done:** A fresh Claude CLI and Desktop session can perform E2E delegation using only the globally included, user-visible Workjet instructions.
 
 ## 9. Telemetry, reconnection, stop, and errors
 
-### WJ-TEL-001 — Local telemetry follows real lifecycle events
+### WJ-TEL-001 - Local telemetry follows real lifecycle events
 
 - **Persona / goal:** The user wants to trust the Active area.
 - **Preconditions:** Direct wrapper, dispatcher, and CLI-run fixtures.
@@ -486,7 +502,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + real process smoke.
 - **Done:** Lifecycle timing bounds and no-ghost assertions pass.
 
-### WJ-TEL-002 — Remote events reconnect without gaps or duplication
+### WJ-TEL-002 - Remote events reconnect without gaps or duplication
 
 - **Persona / goal:** The user wants reliable telemetry over flaky Tailscale/SSH.
 - **Preconditions:** Running remote harness with cursor/event replay protocol.
@@ -497,7 +513,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + real remote smoke + UI click.
 - **Done:** Network fault injection proves exclusive replay, gap detection, and eventual terminal state.
 
-### WJ-TEL-003 — Stop targets exactly one run and confirms outcome
+### WJ-TEL-003 - Stop targets exactly one run and confirms outcome
 
 - **Persona / goal:** The user wants the red stop control to stop the intended active worker safely.
 - **Preconditions:** Two concurrent runs, local and remote.
@@ -508,7 +524,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core integration + UI click + real local/remote smoke.
 - **Done:** Run-ID isolation and acknowledgement semantics pass.
 
-### WJ-TEL-004 — Full error awareness stays concise and actionable
+### WJ-TEL-004 - Full error awareness stays concise and actionable
 
 - **Persona / goal:** The user wants subtle status at a glance and complete diagnostics when needed.
 - **Preconditions:** Inject prompt sync, provider, quota, computer, harness, telemetry, and persistence errors.
@@ -521,7 +537,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 10. Worktree lifecycle and storage
 
-### WJ-RUN-001 — Isolated run worktrees are recoverable and bounded
+### WJ-RUN-001 - Isolated run worktrees are recoverable and bounded
 
 - **Persona / goal:** The orchestrator wants isolated changes without another 101 GB of ghost worktrees.
 - **Preconditions:** Clean/dirty repos, successful/failed/abandoned/integrated runs, ignored files, active process handles.
@@ -532,7 +548,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Shell/Core integration + manual disk audit.
 - **Done:** Safety matrix, disk-growth regression, recovery from protected ref, and 24-hour auto-policy tests pass.
 
-### WJ-RUN-002 — Dispatcher fallback and quota semantics remain explicit
+### WJ-RUN-002 - Dispatcher fallback and quota semantics remain explicit
 
 - **Persona / goal:** Fable wants predictable routing when a required worker is unavailable.
 - **Preconditions:** Probe fixtures for primary available, auth/quota unavailable, task failure, and explicit degradation.
@@ -545,7 +561,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 ## 11. Release, install, and update
 
-### WJ-REL-001 — Clean reproducible release build
+### WJ-REL-001 - Clean reproducible release build
 
 - **Persona / goal:** A maintainer wants a release, not an ad-hoc development bundle.
 - **Preconditions:** Clean checkout and pinned toolchain/dependencies.
@@ -556,18 +572,18 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** CI + artifact audit.
 - **Done:** All Core/UI/shell/remote-contract tests green, `git diff --check` green, reproducible manifest documented.
 
-### WJ-REL-002 — Signed, notarized, quiet installation
+### WJ-REL-002 - Signed, notarized, quiet installation
 
 - **Persona / goal:** A user wants to install and launch without Gatekeeper confusion or unsolicited prompts.
 - **Preconditions:** Fresh supported macOS account.
 - **Steps:** Install signed artifact to Applications; launch; inspect signature/notarization; open/quit/relaunch.
 - **Expected visible states:** Correct Workjet turbine icon and menu status item; no terminal required; no Keychain dialog until explicit credential use.
-- **Persistence / prompt / runtime effect:** Creates versioned Application Support state with secure permissions; never modifies global Claude prompt.
+- **Persistence / prompt / runtime effect:** Creates versioned Application Support state with secure permissions and installs only Workjet's marked global Claude include while preserving unrelated content.
 - **Errors / recovery:** Unsupported OS or migration failure explains and preserves prior data.
 - **Automation:** CI signing verification + manual clean-machine smoke.
 - **Done:** `codesign`/`spctl`/notarization and clean-user acceptance pass.
 
-### WJ-REL-003 — Update and configuration migration preserve user intent
+### WJ-REL-003 - Update and configuration migration preserve user intent
 
 - **Persona / goal:** Existing users want new versions without losing workers, prompts, accounts, computers, learnings, or histories.
 - **Preconditions:** Fixtures from every released schema and legacy “Pi Sidecar” naming/single-provider format.
@@ -578,7 +594,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Automation:** Core migration + UI smoke + manual update.
 - **Done:** Golden fixtures and rollback/readability policy pass.
 
-### WJ-REL-004 — Accessibility and dense-layout release check
+### WJ-REL-004 - Accessibility and dense-layout release check
 
 - **Persona / goal:** Keyboard, VoiceOver, and low-vision users need the same compact but understandable app.
 - **Preconditions:** Default and increased text size/contrast settings.
@@ -610,7 +626,7 @@ This matrix ensures every recurring complaint from the design/implementation con
 | No hidden prompts; technical prompts visible/editable and collapsed at end | WJ-PRM-006 |
 | One-page Settings with working navigation tabs | WJ-PRM-004 |
 | Persistent Ad-hoc Learnings with guidance for Fable CLI | WJ-PRM-005 |
-| Changes in app immediately affect next Claude `/workjet` turn, with status/errors | WJ-PRM-007 |
+| Changes in app immediately affect the next fresh Claude turn, with status/errors | WJ-PRM-007 |
 | App icon clearly Workjet/turbine and status at a glance | WJ-APP-001, WJ-APP-002 |
 | App must open correct popover, not neighbor's “No Active Sessions” | WJ-APP-001 |
 | No launch-time Keychain password popups | WJ-APP-003 |
@@ -621,7 +637,7 @@ This matrix ensures every recurring complaint from the design/implementation con
 | Provider edit/delete/re-auth and actual account pinning | WJ-PRV-003, WJ-PRV-004 |
 | Discover model after auth, then choose reasoning/speed | WJ-PRV-006, WJ-WRK-005 |
 | Harness names are Claude Code and Pi Code; more real harnesses via t3code-like capability | WJ-HAR-001 through WJ-HAR-005 |
-| Workjet remains a skill/config; Fable chooses and invokes workers | WJ-HAR-006 |
+| Workjet remains a global prompt/config extension; Fable chooses and invokes workers | WJ-HAR-006 |
 | Minimal Pi sandbox over Tailscale/SSH, pinned upstream core | WJ-CMP-003, WJ-CMP-005, WJ-HAR-003 |
 | Select a Tailscale device directly; edit/delete/switch computers | WJ-CMP-001, WJ-CMP-004 |
 | Move worker between computers | WJ-WRK-006 |

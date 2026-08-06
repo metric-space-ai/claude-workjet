@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import XCTest
 @testable import WorkjetCore
@@ -51,11 +52,17 @@ final class RemoteHostProtocolTests: XCTestCase {
         private var eventResponses: [RemoteHostResponse]
         private let startResponse: RemoteHostResponse
         private let stopResponse: RemoteHostResponse
+        private var listResponse: RemoteHostResponse
+        private var adoptResponses: [RemoteHostResponse]
+        private var wireOperations: [(String, String?, String?)] = []
+        private var startOwnerIDs: [String] = []
 
-        init(start: RemoteHostResponse, events: [RemoteHostResponse], stop: RemoteHostResponse) {
+        init(start: RemoteHostResponse, events: [RemoteHostResponse], stop: RemoteHostResponse, list: RemoteHostResponse = RemoteHostResponse(ok: true), adopts: [RemoteHostResponse] = []) {
             startResponse = start
             eventResponses = events
             stopResponse = stop
+            listResponse = list
+            adoptResponses = adopts
         }
 
         func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws {}
@@ -73,6 +80,22 @@ final class RemoteHostProtocolTests: XCTestCase {
             record(.start)
             return startResponse
         }
+        func startRemoteWorker(_ worker: Worker, on computer: Computer, input: Data, ownerID: String) async throws -> RemoteHostResponse {
+            lock.withLock { startOwnerIDs.append(ownerID) }
+            return try await startRemoteWorker(worker, on: computer, input: input)
+        }
+        func listRemoteRuns(on computer: Computer, ownerID: String?) async throws -> RemoteHostResponse {
+            lock.withLock {
+                wireOperations.append(("list", nil, ownerID))
+                return listResponse
+            }
+        }
+        func adoptRemoteRun(on computer: Computer, runID: String, ownerID: String) async throws -> RemoteHostResponse {
+            lock.withLock {
+                wireOperations.append(("adopt", runID, ownerID))
+                return adoptResponses.removeFirst()
+            }
+        }
         func remoteEvents(on computer: Computer, runID: String, after sequence: UInt64) async throws -> RemoteHostResponse {
             lock.withLock {
                 operations.append(.events)
@@ -87,6 +110,8 @@ final class RemoteHostProtocolTests: XCTestCase {
             lock.lock(); defer { lock.unlock() }
             return operations
         }
+        func recordedWireOperations() -> [(String, String?, String?)] { lock.withLock { wireOperations } }
+        func recordedStartOwnerIDs() -> [String] { lock.withLock { startOwnerIDs } }
         private func record(_ operation: RemoteHostOperation) {
             lock.lock(); operations.append(operation); lock.unlock()
         }
@@ -121,10 +146,135 @@ final class RemoteHostProtocolTests: XCTestCase {
         let recordedCommands = await runner.recordedCommands()
         let command = try XCTUnwrap(recordedCommands.first)
         XCTAssertEqual(command.executable, "/usr/bin/ssh")
-        XCTAssertTrue(command.arguments.suffix(2).elementsEqual(["node", ".local/lib/workjet/current/workjet-host.mjs"]))
+        XCTAssertTrue(command.arguments.suffix(2).elementsEqual([".local/lib/workjet/current/workjet-node", ".local/lib/workjet/current/workjet-host.mjs"]))
         let request = try JSONDecoder().decode(RemoteHostRequest.self, from: command.standardInput)
         XCTAssertEqual(request.operation, .events)
         XCTAssertEqual(request.afterSequence, 7)
+    }
+
+    func testSecureProviderExecutionRoundTripsOnlyOnStartRequest() throws {
+        let sentinel = "secret-transport-only"
+        let execution = RemoteProviderExecution(displayName: "Account", candidates: [
+            RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .openAI, displayName: "Account", endpoint: "https://api.openai.com/v1", authentication: .bearerToken, secret: sentinel)
+        ])
+        let launch = RemoteHarnessLaunch(harnessID: "codex-cli", model: "gpt", reasoning: "high", sandbox: false, input: Data("brief".utf8))
+        let request = RemoteHostRequest(operation: .start, launch: launch, ownerID: "owner", providerExecution: execution)
+        let encoded = try JSONEncoder().encode(request)
+        XCTAssertEqual(try JSONDecoder().decode(RemoteHostRequest.self, from: encoded), request)
+        XCTAssertTrue(String(decoding: encoded, as: UTF8.self).contains(sentinel), "the credential exists only in the encrypted SSH request body")
+
+        let events = try JSONEncoder().encode(RemoteHostRequest(operation: .events, runID: "run-1", afterSequence: 0))
+        XCTAssertFalse(String(decoding: events, as: UTF8.self).contains("providerExecution"))
+        XCTAssertFalse(String(decoding: events, as: UTF8.self).contains(sentinel))
+    }
+
+    func testGatewayTunnelCommandIsStrictRunScopedLoopbackOnlySSH() throws {
+        let command = try RemoteGatewayTunnelCommandBuilder.command(for: installedComputer())
+        XCTAssertEqual(command.executable, "/usr/bin/ssh")
+        XCTAssertTrue(command.arguments.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(command.arguments.contains("UserKnownHostsFile=\"/private/workjet-known-hosts\""))
+        XCTAssertTrue(command.arguments.contains("ExitOnForwardFailure=yes"))
+        XCTAssertTrue(command.arguments.contains("ClearAllForwardings=yes"))
+        XCTAssertTrue(command.arguments.contains("127.0.0.1:0:127.0.0.1:8317"))
+        XCTAssertFalse(command.arguments.contains(where: { $0.contains("0.0.0.0") || $0.contains("tailscale serve") || $0.contains("sh -c") }))
+        XCTAssertEqual(command.arguments.suffix(4), ["-T", "-N", "--", "remote.tailnet.ts.net"])
+
+        let tailscale = try RemoteGatewayTunnelCommandBuilder.command(for: installedComputer(transport: .tailscale))
+        XCTAssertEqual(tailscale.executable, "/usr/bin/ssh", "Tailscale addresses still require strict OpenSSH host-key verification")
+        XCTAssertTrue(tailscale.arguments.contains("127.0.0.1:0:127.0.0.1:8317"))
+    }
+
+    func testOnlyPiRemoteAdapterCanClaimTheVerifiedBubblewrapSandbox() throws {
+        let computer = installedComputer()
+        var worker = WorkjetDefaults.configuration().workers[0]
+        worker.computerID = computer.id
+        worker.model = "model"
+        let registry = RemoteHarnessAdapterRegistry()
+        let workspace = RemoteWorkspaceDescriptor(repoID: String(repeating: "a", count: 64), snapshotCommitOID: String(repeating: "b", count: 40))
+
+        for harness in [Harness.claudeCode, .codexCLI, .openCode] {
+            worker.harness = harness
+            let launch = try registry.launch(worker: worker, computer: computer, input: Data("brief".utf8), workspace: workspace)
+            XCTAssertFalse(launch.sandbox, "\(harness.rawValue) has no verified remote filesystem sandbox")
+        }
+
+        worker.harness = .piSidecar
+        let launch = try registry.launch(worker: worker, computer: computer, input: Data("{\"files\":[]}".utf8))
+        XCTAssertTrue(launch.sandbox, "Pi Code is the only harness protected by the deployed bubblewrap turn runner")
+    }
+
+    func testGatewayTunnelBlocksBeforeSSHWhenPrivateKnownHostsIsUnconfirmed() async {
+        var computer = installedComputer()
+        computer.knownHostsPath = "/private/workjet-does-not-exist-\(UUID().uuidString)"
+        let manager = RemoteGatewayTunnelManager()
+        do {
+            _ = try await manager.open(for: computer)
+            XCTFail("an unconfirmed host key must block before starting the relay")
+        } catch let error as RemoteGatewayTunnelError {
+            XCTAssertEqual(error, .invalidKnownHosts)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testClientHarnessMaintenanceSendsOnlyTypedIDAndAction() async throws {
+        let result = RemoteHarnessLifecycleResult(harnessID: "claude-code", action: .install, state: .installed, version: "2.0")
+        let response = RemoteHostResponse(ok: true, harnessResult: result)
+        let runner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: try responseLine(response)))
+        let client = RemoteHostClient(computer: installedComputer(), runner: runner, tailscaleLocator: Locator(path: nil))
+
+        let received = try await client.maintain(harnessID: "claude-code", action: .install)
+        XCTAssertEqual(received, result)
+        let commands = await runner.recordedCommands()
+        let command = try XCTUnwrap(commands.first)
+        let request = try JSONDecoder().decode(RemoteHostRequest.self, from: command.standardInput)
+        XCTAssertEqual(request.operation, .harnessInstall)
+        XCTAssertEqual(request.harnessID, "claude-code")
+        XCTAssertNil(request.launch)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: command.standardInput) as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["protocolVersion", "operation", "harnessID"])
+    }
+
+    func testClientManagedSkillMaintenanceSendsOnlyTypedIDAndAction() async throws {
+        let result = RemoteManagedSkillLifecycleResult(skillID: "greppy", action: .install, state: .installed, version: "1.3.0")
+        let response = RemoteHostResponse(ok: true, managedSkillResult: result)
+        let runner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: try responseLine(response)))
+        let client = RemoteHostClient(computer: installedComputer(), runner: runner, tailscaleLocator: Locator(path: nil))
+
+        let received = try await client.maintain(skillID: "greppy", action: .install)
+        XCTAssertEqual(received, result)
+        let commands = await runner.recordedCommands()
+        let command = try XCTUnwrap(commands.first)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: command.standardInput) as? [String: Any])
+        XCTAssertEqual(object["operation"] as? String, "managed-skill-install")
+        XCTAssertEqual(object["skillID"] as? String, "greppy")
+        XCTAssertEqual(Set(object.keys), ["protocolVersion", "operation", "skillID"])
+        XCTAssertNil(object["url"])
+        XCTAssertNil(object["command"])
+        XCTAssertNil(object["arguments"])
+    }
+
+    func testClientPreservesStructuredUnknownHarnessAndUnavailableAction() async throws {
+        let result = RemoteHarnessLifecycleResult(harnessID: "future-harness", action: .remove, state: .unavailable)
+        let response = RemoteHostResponse(ok: true, harnessResult: result)
+        let runner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: try responseLine(response)))
+        let client = RemoteHostClient(computer: installedComputer(), runner: runner, tailscaleLocator: Locator(path: nil))
+
+        let received = try await client.maintain(harnessID: "future-harness", action: .remove)
+        XCTAssertEqual(received, result)
+    }
+
+    func testRemoteHostAllowsOnlyTheFourTypedLifecycleActions() {
+        let source = RemotePiBootstrap.hostRuntimeSource
+        XCTAssertTrue(source.contains(#"["harness-inspect", "harness-install", "harness-update", "harness-remove"].includes(request.operation)"#))
+        XCTAssertTrue(source.contains(#"path.join(path.dirname(process.execPath), "npm")"#), "the verified Node runtime must use its matching npm before a potentially incompatible system npm")
+        XCTAssertTrue(source.contains(#"["managed-skill-inspect", "managed-skill-install"].includes(request.operation)"#))
+        XCTAssertTrue(source.contains(#"reject("client commands and URLs are forbidden")"#))
+        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppyLinuxX8664URL))
+        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppyLinuxX8664SHA256))
+        XCTAssertTrue(source.contains(#"reject("unsupported operation")"#))
+        XCTAssertFalse(source.contains("harness-execute"))
+        XCTAssertFalse(source.contains("harness-command"))
     }
 
     func testStartReplayAndStopPreserveAuthoritativeRemoteState() async throws {
@@ -149,6 +299,54 @@ final class RemoteHostProtocolTests: XCTestCase {
         let requests = await host.recordedRequests()
         XCTAssertEqual(requests.map(\.operation), [.start, .events, .stop])
         XCTAssertEqual(requests[1].afterSequence, 0)
+    }
+
+    func testRestartAdoptionPreservesAcceptedRemoteMetadataAndAllowsOnlyAccountAdvance() async throws {
+        let workerID = UUID()
+        let initial = RemoteRunMetadata(
+            workerID: workerID,
+            workerName: "Reviewer",
+            harnessID: "claude-code",
+            model: "k3[1m]",
+            reasoning: "high",
+            speed: "fast",
+            providerRoute: "Kimi Pool",
+            startedAt: "2026-08-04T10:00:00Z"
+        )
+        var running = initial
+        running.providerAccountLabel = "owner@example.test"
+        let host = ScriptedHost([
+            .response(RemoteHostResponse(ok: true, runID: "run-metadata", state: .running, metadata: initial)),
+            .response(RemoteHostResponse(ok: true, runID: "run-metadata", state: .running, heartbeatAt: "2026-08-04T10:00:01Z", metadata: running))
+        ])
+        let firstApp = RemoteRunLedger(client: host)
+        _ = try await firstApp.start(RemoteHostRequest(operation: .start))
+        let firstSnapshot = await firstApp.snapshot()
+        XCTAssertEqual(firstSnapshot.metadata, initial)
+
+        let restartedApp = RemoteRunLedger(client: host)
+        let adopted = try await restartedApp.adopt(runID: "run-metadata", ownerID: "workjet-worker-\(workerID.uuidString.lowercased())")
+        XCTAssertEqual(adopted.metadata, running)
+        XCTAssertEqual(adopted.metadata?.workerName, "Reviewer")
+        XCTAssertEqual(adopted.metadata?.model, "k3[1m]")
+    }
+
+    func testLedgerRejectsRemoteMetadataThatChangesAcceptedLaunchFacts() async throws {
+        let accepted = RemoteRunMetadata(harnessID: "claude-code", model: "accepted-model", providerRoute: "Route")
+        let changed = RemoteRunMetadata(harnessID: "claude-code", model: "different-model", providerRoute: "Route")
+        let host = ScriptedHost([
+            .response(RemoteHostResponse(ok: true, runID: "run-tampered", state: .running, metadata: accepted)),
+            .response(RemoteHostResponse(ok: true, runID: "run-tampered", state: .running, metadata: changed))
+        ])
+        let ledger = RemoteRunLedger(client: host)
+        _ = try await ledger.start(RemoteHostRequest(operation: .start))
+
+        do {
+            _ = try await ledger.replay()
+            XCTFail("changed accepted launch facts must not replace restart telemetry")
+        } catch {
+            XCTAssertEqual(error as? RemoteRunLedgerError, .metadataMismatch("run-tampered"))
+        }
     }
 
     func testReconnectRetriesTransportFailureWithoutReplayingCursor() async throws {
@@ -212,7 +410,7 @@ final class RemoteHostProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testViewModelWiresProbeStartEventsAndStopThroughService() async throws {
+    func testViewModelDoesNotStartRemoteWorkerFromLocalProviderCredentials() async throws {
         let event = RemoteHostEvent(sequence: 1, timestamp: "2026-08-03T10:00:00Z", kind: "started", text: "claude-code")
         let freshHeartbeat = ISO8601DateFormatter().string(from: Date())
         let service = RemoteService(
@@ -229,15 +427,83 @@ final class RemoteHostProtocolTests: XCTestCase {
         let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
 
         let started = await model.startRemoteWorker(id: workerID, input: Data("implement".utf8))
-        XCTAssertEqual(started?.state, .starting)
-        model.refreshRemoteTelemetry()
-        for _ in 0..<50 where model.remoteRuns[workerID]?.cursor != 1 {
+        XCTAssertNil(started)
+        XCTAssertNil(model.remoteRuns[workerID])
+        XCTAssertEqual(service.recordedOperations(), [])
+        XCTAssertTrue(model.statusMessages.contains(where: { $0.localizedCaseInsensitiveContains("Anbieter") }))
+    }
+
+    func testRemoteServiceHostClientDispatchesV2WireOperations() async throws {
+        let computer = installedComputer()
+        let descriptor = RemoteHostRunDescriptor(runID: "run-bridge", state: .running, ownerID: "owner-bridge")
+        let service = RemoteService(
+            start: RemoteHostResponse(ok: true),
+            events: [],
+            stop: RemoteHostResponse(ok: true),
+            list: RemoteHostResponse(ok: true, runs: [descriptor]),
+            adopts: [RemoteHostResponse(ok: true, runID: "run-bridge", state: .running)]
+        )
+        let client = RemoteServiceHostClient(service: service, computer: computer)
+
+        let listed = try await client.call(RemoteHostRequest(operation: .probe, ownerID: "owner-bridge", wireOperation: "list"))
+        let adopted = try await client.call(RemoteHostRequest(operation: .events, runID: "run-bridge", ownerID: "owner-bridge", wireOperation: "adopt"))
+
+        XCTAssertEqual(listed.runs, [descriptor])
+        XCTAssertEqual(adopted.runID, "run-bridge")
+        let calls = service.recordedWireOperations()
+        XCTAssertEqual(calls.map(\.0), ["list", "adopt"])
+        XCTAssertEqual(calls.map(\.1), [nil, "run-bridge"])
+        XCTAssertEqual(calls.map(\.2), ["owner-bridge", "owner-bridge"])
+        XCTAssertTrue(service.recordedOperations().isEmpty, "wire operations must not degrade to probe/events")
+    }
+
+    @MainActor
+    func testFreshViewModelListsAndAdoptsOnlyPersistentlyAttributedRun() async throws {
+        var computer = installedComputer()
+        computer.sandboxEnabled = false
+        var configuration = WorkjetDefaults.configuration()
+        configuration.computers.append(computer)
+        configuration.workers[0].computerID = computer.id
+        let worker = configuration.workers[0]
+        let ownerID = "workjet-worker-\(worker.id.uuidString.lowercased())"
+
+        let event = RemoteHostEvent(sequence: 1, timestamp: "2026-08-04T10:00:00Z", kind: "stdout", text: "raw diagnostic")
+        let heartbeat = ISO8601DateFormatter().string(from: Date())
+        let recoveryService = RemoteService(
+            start: RemoteHostResponse(ok: true),
+            events: [
+                RemoteHostResponse(ok: true, runID: "run-owned", state: .running, cursor: 1, oldestSequence: 1, heartbeatAt: heartbeat, events: [event]),
+                RemoteHostResponse(ok: true, runID: "run-owned", state: .running, cursor: 1, oldestSequence: 1, heartbeatAt: heartbeat)
+            ],
+            stop: RemoteHostResponse(ok: true),
+            list: RemoteHostResponse(ok: true, runs: [
+                RemoteHostRunDescriptor(runID: "run-owned", state: .running, cursor: 1, oldestSequence: 1, heartbeatAt: heartbeat, ownerID: ownerID),
+                RemoteHostRunDescriptor(runID: "run-foreign", state: .running, ownerID: "workjet-worker-\(UUID().uuidString.lowercased())"),
+                RemoteHostRunDescriptor(runID: "run-unattributed", state: .running, ownerID: nil)
+            ]),
+            adopts: [RemoteHostResponse(ok: true, runID: "run-owned", state: .running, heartbeatAt: heartbeat)]
+        )
+        let afterRestart = WorkjetViewModel(configuration: configuration, service: recoveryService, persistenceDelay: 60)
+
+        afterRestart.refreshRemoteTelemetry()
+        for _ in 0..<100 where afterRestart.remoteRuns[worker.id]?.cursor != 1 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(model.remoteRuns[workerID]?.events, [event])
-        await model.stopRemoteWorker(id: workerID)
-        XCTAssertEqual(model.remoteRuns[workerID]?.state, .stopped)
-        XCTAssertEqual(service.recordedOperations(), [.probe, .start, .probe, .events, .stop])
+        XCTAssertEqual(afterRestart.remoteRuns.count, 1)
+        XCTAssertEqual(afterRestart.remoteRuns[worker.id]?.runID, "run-owned")
+        XCTAssertEqual(afterRestart.remoteRuns[worker.id]?.events, [event])
+        XCTAssertEqual(
+            afterRestart.remoteHostErrors[computer.id],
+            "Ein laufender Remote-Worker konnte nicht zugeordnet werden. Öffne den Computer und prüfe die Verbindung."
+        )
+
+        afterRestart.refreshRemoteTelemetry()
+        for _ in 0..<100 where recoveryService.recordedWireOperations().filter({ $0.0 == "list" }).count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let wireCalls = recoveryService.recordedWireOperations()
+        XCTAssertEqual(wireCalls.filter { $0.0 == "adopt" }.count, 1, "refresh must deduplicate an already adopted run")
+        XCTAssertEqual(afterRestart.remoteRuns.count, 1, "foreign and unattributable runs must never be assigned heuristically")
     }
 
     func testSequenceGapBecomesErrorAndIsNotRetried() async throws {
@@ -267,17 +533,57 @@ final class RemoteHostProtocolTests: XCTestCase {
         worker.computerID = computer.id
         worker.model = "gpt-5.6-sol"
         let registry = RemoteHarnessAdapterRegistry()
+        let workspace = RemoteWorkspaceDescriptor(repoID: String(repeating: "a", count: 64), snapshotCommitOID: String(repeating: "b", count: 40))
 
         worker.harness = .codexCLI
-        XCTAssertEqual(try registry.launch(worker: worker, computer: computer, input: Data("implement".utf8)).harnessID, "codex-cli")
+        XCTAssertEqual(try registry.launch(worker: worker, computer: computer, input: Data("implement".utf8), workspace: workspace).harnessID, "codex-cli")
         worker.harness = .openCode
-        XCTAssertEqual(try registry.launch(worker: worker, computer: computer, input: Data("implement".utf8)).harnessID, "opencode")
+        XCTAssertEqual(try registry.launch(worker: worker, computer: computer, input: Data("implement".utf8), workspace: workspace).harnessID, "opencode")
         for harness in [Harness.cursorAgent, .grokCLI] {
             worker.harness = harness
             XCTAssertThrowsError(try registry.launch(worker: worker, computer: computer, input: Data("implement".utf8))) {
                 XCTAssertEqual($0 as? RemoteHarnessAdapterError, .unsupportedHarness(harness.rawValue))
             }
         }
+    }
+
+    func testWorkspaceResultClientUsesStrictRawBinaryTransportAndRejectsIdentityOrHashMismatch() async throws {
+        let request = RemoteWorkspaceResultRequest(
+            runID: "run-result-1",
+            ownerID: "workjet-worker-00000000-0000-0000-0000-000000000123",
+            repoID: String(repeating: "a", count: 64),
+            snapshotCommitOID: String(repeating: "b", count: 40)
+        )
+        let bundle = Data([0, 10, 255, 1, 2, 0, 13])
+        let hash = SHA256.hash(data: bundle).map { String(format: "%02x", $0) }.joined()
+        let manifest = WorkspaceResultManifest(runID: request.runID, repoID: request.repoID, snapshotCommitOID: request.snapshotCommitOID, resultCommitOID: String(repeating: "c", count: 40), bundleSHA256: hash, byteSize: bundle.count, terminalState: .completed)
+        var output = try JSONEncoder().encode(manifest); output.append(0x0a); output.append(bundle)
+        let runner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: output))
+        let result = try await RemoteHostClient(computer: installedComputer(), runner: runner, tailscaleLocator: Locator(path: nil)).exportWorkspaceResult(request, verifiedCapabilities: ["workspace-result-v1"])
+        XCTAssertEqual(result.bundle, bundle)
+        let commands = await runner.recordedCommands()
+        let command = try XCTUnwrap(commands.first)
+        XCTAssertEqual(command.executable, "/usr/bin/ssh")
+        XCTAssertTrue(command.arguments.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(command.arguments.suffix(2).elementsEqual([".local/lib/workjet/current/workjet-host.mjs", "--workspace-result"]))
+        XCTAssertGreaterThan(command.stdoutLimit, LocalWorkspaceResultImporter.maximumBundleBytes)
+        XCTAssertFalse(String(decoding: command.standardInput, as: UTF8.self).contains("/Users/"))
+
+        var badManifest = manifest; badManifest.bundleSHA256 = String(repeating: "0", count: 64)
+        var badOutput = try JSONEncoder().encode(badManifest); badOutput.append(0x0a); badOutput.append(bundle)
+        let badRunner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: badOutput))
+        do {
+            _ = try await RemoteHostClient(computer: installedComputer(), runner: badRunner, tailscaleLocator: Locator(path: nil)).exportWorkspaceResult(request, verifiedCapabilities: ["workspace-result-v1"])
+            XCTFail("expected hash rejection")
+        } catch { XCTAssertEqual(error as? RemoteHostProtocolError, .malformedResponse) }
+
+        var wrongRun = manifest; wrongRun.runID = "run-other"
+        var wrongOutput = try JSONEncoder().encode(wrongRun); wrongOutput.append(0x0a); wrongOutput.append(bundle)
+        let wrongRunner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: wrongOutput))
+        do {
+            _ = try await RemoteHostClient(computer: installedComputer(), runner: wrongRunner, tailscaleLocator: Locator(path: nil)).exportWorkspaceResult(request, verifiedCapabilities: ["workspace-result-v1"])
+            XCTFail("expected run identity rejection")
+        } catch { XCTAssertEqual(error as? RemoteHostProtocolError, .malformedResponse) }
     }
 
     func testMalformedTruncatedAndRejectedResponsesStayExplicitErrors() async throws {

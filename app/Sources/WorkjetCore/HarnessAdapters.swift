@@ -3,9 +3,9 @@ import Foundation
 public enum HarnessInvocationProtocol: String, Codable, Equatable, Sendable {
     case claudePrompt
     case piTurnNDJSON
-    case codexAppServer
+    case codexExec
     case agentClientProtocol
-    case openCodeHTTP
+    case openCodeRun
 }
 
 public struct HarnessOptionChoice: Identifiable, Equatable, Sendable {
@@ -50,14 +50,14 @@ public struct HarnessAdapterDescriptor: Identifiable, Equatable, Sendable {
     public func reasoningEfforts(for model: String) -> [ReasoningEffort] {
         switch harness {
         case .claudeCode:
-            return [.low, .medium, .high, .xhigh, .max, .ultra, .ultracode, .ultrathink]
+            return [.low, .medium, .high, .xhigh, .max, .ultra]
         case .piSidecar:
             return [.low, .medium, .high, .xhigh, .max, .ultra]
         case .codexCLI:
-            // app-server negotiates model settings through its protocol. Workjet
-            // must not invent unsupported executable flags for that protocol.
-            return []
-        case .cursorAgent, .openCode, .grokCLI:
+            return [.low, .medium, .high, .xhigh]
+        case .openCode:
+            return [.low, .medium, .high, .xhigh, .max, .ultra]
+        case .cursorAgent, .grokCLI:
             return []
         }
     }
@@ -80,16 +80,79 @@ public enum HarnessAdapterRegistry {
     public static let all: [HarnessAdapterDescriptor] = [
         HarnessAdapterDescriptor(id: "claude-code", displayName: "Claude Code", harness: .claudeCode, invocationProtocol: .claudePrompt, defaultInvocation: WorkerInvocation(executable: "claude", arguments: ["-p", "<WORKJET_BRIEF>"])),
         HarnessAdapterDescriptor(id: "pi-code", displayName: "Pi Code", harness: .piSidecar, invocationProtocol: .piTurnNDJSON, defaultInvocation: WorkerInvocation(executable: "node")),
-        HarnessAdapterDescriptor(id: "codex-cli", displayName: "Codex CLI", harness: .codexCLI, invocationProtocol: .codexAppServer, defaultInvocation: WorkerInvocation(executable: "codex", arguments: ["app-server"])),
+        HarnessAdapterDescriptor(id: "codex-cli", displayName: "Codex CLI", harness: .codexCLI, invocationProtocol: .codexExec, defaultInvocation: WorkerInvocation(executable: "codex", arguments: ["exec", "--json", "<WORKJET_BRIEF>"])),
         HarnessAdapterDescriptor(id: "cursor-agent", displayName: "Cursor Agent", harness: .cursorAgent, invocationProtocol: .agentClientProtocol, defaultInvocation: WorkerInvocation(executable: "cursor-agent", arguments: ["acp"])),
-        HarnessAdapterDescriptor(id: "opencode", displayName: "OpenCode", harness: .openCode, invocationProtocol: .openCodeHTTP, defaultInvocation: WorkerInvocation(executable: "opencode", arguments: ["serve"])),
+        HarnessAdapterDescriptor(id: "opencode", displayName: "OpenCode", harness: .openCode, invocationProtocol: .openCodeRun, defaultInvocation: WorkerInvocation(executable: "opencode", arguments: ["run", "--format", "json", "<WORKJET_BRIEF>"])),
         HarnessAdapterDescriptor(id: "grok-cli", displayName: "Grok CLI", harness: .grokCLI, invocationProtocol: .agentClientProtocol, defaultInvocation: WorkerInvocation(executable: "grok", arguments: ["agent", "stdio"]))
     ]
+
+    /// Harnesses with a verified local, non-interactive one-shot contract.
+    /// Pi is intentionally absent until LocalRunService speaks the bundled
+    /// sidecar's NDJSON protocol instead of treating it as an argv program.
+    public static let local: [HarnessAdapterDescriptor] = all.filter {
+        switch $0.harness {
+        case .claudeCode, .codexCLI, .openCode: true
+        case .piSidecar, .cursorAgent, .grokCLI: false
+        }
+    }
+
+    public static func supportsLocalExecution(_ harness: Harness) -> Bool {
+        local.contains(where: { $0.harness == harness })
+    }
+
+    /// Resolves the lifecycle-probed executable instead of persisting a PATH
+    /// lookup that LocalRunService cannot verify later.
+    public static func defaultLocalInvocation(for harness: Harness) -> WorkerInvocation? {
+        guard supportsLocalExecution(harness) else { return nil }
+        let driver = lifecycleDriver(for: harness)
+        guard let executable = FileSystemHarnessBinaryLocator().firstExecutable(in: driver.binaryCandidates) else { return nil }
+        var invocation = descriptor(for: harness).defaultInvocation
+        invocation.executable = executable
+        return invocation
+    }
+
+    public static func localInvocationIssue(harness: Harness, invocation: WorkerInvocation) -> String? {
+        guard supportsLocalExecution(harness) else {
+            return "Dieses Harness besitzt noch keine verifizierte lokale One-Shot-Schnittstelle."
+        }
+        let expanded = (invocation.executable as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: expanded) else {
+            return "Die lokale ausführbare Datei muss als vorhandener absoluter Pfad gewählt werden."
+        }
+        let placeholderCount = invocation.arguments.filter { $0 == "<WORKJET_BRIEF>" }.count
+        guard placeholderCount == 1 else {
+            return "Der lokale Aufruf benötigt genau einen eigenen <WORKJET_BRIEF>-Argumentplatzhalter."
+        }
+        switch harness {
+        case .claudeCode:
+            guard invocation.arguments.contains("-p") || invocation.arguments.contains("--print") else {
+                return "Claude Code muss als nicht interaktiver Print-Aufruf (-p) konfiguriert sein."
+            }
+        case .codexCLI:
+            guard invocation.arguments.first == "exec" else {
+                return "Codex CLI muss über den verifizierten One-Shot-Aufruf „codex exec“ gestartet werden."
+            }
+        case .openCode:
+            guard invocation.arguments.first == "run" else {
+                return "OpenCode muss über den verifizierten One-Shot-Aufruf „opencode run“ gestartet werden."
+            }
+        case .piSidecar, .cursorAgent, .grokCLI:
+            return "Dieses Harness besitzt noch keine verifizierte lokale One-Shot-Schnittstelle."
+        }
+        return nil
+    }
 
     public static func descriptor(for harness: Harness) -> HarnessAdapterDescriptor {
         // `all` is intentionally exhaustive and verified by tests. The fallback
         // remains deterministic for corrupt future enum migrations.
         all.first(where: { $0.harness == harness }) ?? all[0]
+    }
+
+    /// Static invocation metadata and lifecycle truth are deliberately kept
+    /// separate. Callers must run this driver before presenting a harness as
+    /// usable; a non-empty `defaultInvocation.executable` is not readiness.
+    public static func lifecycleDriver(for harness: Harness) -> any HarnessLifecycleDriving {
+        HarnessLifecycleRegistry.driver(for: harness)
     }
 }
 
@@ -97,12 +160,14 @@ public enum RemoteHarnessAdapterError: LocalizedError, Equatable {
     case unsupportedHarness(String)
     case invalidModel
     case invalidInput(String)
+    case workspaceRequired
 
     public var errorDescription: String? {
         switch self {
         case let .unsupportedHarness(value): return "Remote-Harness wird nicht unterstützt: \(value)."
         case .invalidModel: return "Das Remote-Harness benötigt eine gültige Modell-ID."
         case let .invalidInput(detail): return "Remote-Harness-Eingabe ist ungültig: \(detail)"
+        case .workspaceRequired: return "Dieses Remote-Harness benötigt einen vorbereiteten Git-Workspace."
         }
     }
 }
@@ -114,14 +179,16 @@ public struct RemoteHarnessLaunch: Codable, Equatable, Sendable {
     public var sandbox: Bool
     public var inputBase64: String
     public var options: [String: String]
+    public var workspace: RemoteWorkspaceDescriptor?
 
-    public init(harnessID: String, model: String, reasoning: String?, sandbox: Bool, input: Data, options: [String: String] = [:]) {
+    public init(harnessID: String, model: String, reasoning: String?, sandbox: Bool, input: Data, options: [String: String] = [:], workspace: RemoteWorkspaceDescriptor? = nil) {
         self.harnessID = harnessID
         self.model = model
         self.reasoning = reasoning
         self.sandbox = sandbox
         self.inputBase64 = input.base64EncodedString()
         self.options = options
+        self.workspace = workspace
     }
 }
 
@@ -156,7 +223,9 @@ public struct CodexCLIRemoteAdapter: RemoteHarnessAdapting, Sendable {
         guard !brief.isEmpty, brief.utf8.count <= 1_048_576 else {
             throw RemoteHarnessAdapterError.invalidInput("Codex CLI erwartet einen nicht leeren Brief bis 1 MiB.")
         }
-        return RemoteHarnessLaunch(harnessID: id, model: model, reasoning: worker.reasoningEffort?.rawValue, sandbox: computer.sandboxEnabled, input: Data(brief.utf8), options: worker.invocation.options)
+        // The current remote Codex runner has no verified filesystem sandbox.
+        // Never advertise the computer's Pi-only bubblewrap boundary here.
+        return RemoteHarnessLaunch(harnessID: id, model: model, reasoning: worker.reasoningEffort?.rawValue, sandbox: false, input: Data(brief.utf8), options: worker.invocation.options)
     }
 }
 
@@ -173,7 +242,9 @@ public struct OpenCodeRemoteAdapter: RemoteHarnessAdapting, Sendable {
         guard !brief.isEmpty, brief.utf8.count <= 32_768 else {
             throw RemoteHarnessAdapterError.invalidInput("OpenCode erwartet einen nicht leeren Brief bis 32 KiB.")
         }
-        return RemoteHarnessLaunch(harnessID: id, model: model, reasoning: worker.reasoningEffort?.rawValue, sandbox: computer.sandboxEnabled, input: Data(brief.utf8), options: worker.invocation.options)
+        // The current remote OpenCode runner has no verified filesystem
+        // sandbox. Only Pi Code may request the deployed bubblewrap boundary.
+        return RemoteHarnessLaunch(harnessID: id, model: model, reasoning: worker.reasoningEffort?.rawValue, sandbox: false, input: Data(brief.utf8), options: worker.invocation.options)
     }
 }
 
@@ -187,7 +258,7 @@ public struct PiCodeRemoteAdapter: RemoteHarnessAdapting, Sendable {
               (try? JSONSerialization.jsonObject(with: Data(lines[0].utf8))) != nil else {
             throw RemoteHarnessAdapterError.invalidInput("Pi Code erwartet genau einen CtoxTurnRequest als NDJSON-Zeile bis 1 MiB.")
         }
-        return RemoteHarnessLaunch(harnessID: id, model: worker.model, reasoning: worker.reasoningEffort?.rawValue, sandbox: computer.sandboxEnabled, input: Data(lines[0].utf8))
+        return RemoteHarnessLaunch(harnessID: id, model: worker.model, reasoning: worker.reasoningEffort?.rawValue, sandbox: computer.sandboxEnabled, input: Data(lines[0].utf8), options: worker.invocation.options)
     }
 }
 
@@ -201,18 +272,26 @@ public struct RemoteHarnessAdapterRegistry: Sendable {
         }
     }
 
-    public func launch(worker: Worker, computer: Computer, input: Data) throws -> RemoteHarnessLaunch {
+    public func launch(worker: Worker, computer: Computer, input: Data, workspace: RemoteWorkspaceDescriptor? = nil) throws -> RemoteHarnessLaunch {
+        var launch: RemoteHarnessLaunch
         switch worker.harness {
         case .claudeCode:
-            return try ClaudeCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
+            launch = try ClaudeCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
         case .piSidecar:
-            return try PiCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
+            launch = try PiCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
         case .codexCLI:
-            return try CodexCLIRemoteAdapter().launch(worker: worker, computer: computer, input: input)
+            launch = try CodexCLIRemoteAdapter().launch(worker: worker, computer: computer, input: input)
         case .openCode:
-            return try OpenCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
+            launch = try OpenCodeRemoteAdapter().launch(worker: worker, computer: computer, input: input)
         case .cursorAgent, .grokCLI:
             throw RemoteHarnessAdapterError.unsupportedHarness(worker.harness.rawValue)
         }
+        if worker.harness == .piSidecar {
+            launch.workspace = nil // Preserve Pi Code's explicit in-memory request contract.
+        } else {
+            guard let workspace else { throw RemoteHarnessAdapterError.workspaceRequired }
+            launch.workspace = workspace
+        }
+        return launch
     }
 }

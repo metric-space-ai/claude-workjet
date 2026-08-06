@@ -23,7 +23,7 @@ final class DefaultsAndLogicTests: XCTestCase {
     func testWorkerDraftPersistsInvocation() {
         let providerID = UUID()
         var draft = WorkerDraft(); draft.name = "Reviewer"; draft.model = "k3[1m]"; draft.computerID = WorkjetDefaults.localID; draft.providerID = providerID
-        XCTAssertFalse(draft.isValid)
+        XCTAssertTrue(draft.isValid)
         draft.executable = "~/.local/bin/claude-kimi"; draft.arguments = "-p\n<WORKJET_BRIEF>"; draft.capabilities = "Review\nTests"
         let worker = draft.applied(to: nil)
         XCTAssertEqual(worker?.invocation.arguments, ["-p", "<WORKJET_BRIEF>"])
@@ -47,6 +47,60 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertTrue(defaults.arguments.isEmpty)
     }
 
+    func testHarnessRegistryIsCompleteUniqueAndUsesVerifiedInvocationFoundations() {
+        let adapters = HarnessAdapterRegistry.all
+        XCTAssertEqual(Set(adapters.map(\.id)).count, adapters.count)
+        XCTAssertEqual(Set(adapters.map(\.harness)), Set(Harness.allCases))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation, WorkerInvocation(executable: "claude", arguments: ["-p", "<WORKJET_BRIEF>"]))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .piSidecar).defaultInvocation, WorkerInvocation(executable: "node"))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .codexCLI).defaultInvocation, WorkerInvocation(executable: "codex", arguments: ["exec", "--json", "<WORKJET_BRIEF>"]))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .cursorAgent).defaultInvocation, WorkerInvocation(executable: "cursor-agent", arguments: ["acp"]))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .openCode).defaultInvocation, WorkerInvocation(executable: "opencode", arguments: ["run", "--format", "json", "<WORKJET_BRIEF>"]))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .grokCLI).defaultInvocation, WorkerInvocation(executable: "grok", arguments: ["agent", "stdio"]))
+    }
+
+    func testHarnessLegacyDecodingAndInvocationOptionsMigration() throws {
+        let legacyValues: [(String, Harness)] = [
+            ("Claude Code", .claudeCode), ("Pi Code", .piSidecar), ("Pi Sidecar", .piSidecar),
+            ("Codex", .codexCLI), ("Cursor", .cursorAgent), ("Open Code", .openCode), ("Grok", .grokCLI)
+        ]
+        for (value, expected) in legacyValues {
+            XCTAssertEqual(try JSONDecoder().decode(Harness.self, from: Data("\"\(value)\"".utf8)), expected)
+        }
+        let oldInvocation = Data(#"{"executable":"claude","arguments":["-p"],"capabilities":[]}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(WorkerInvocation.self, from: oldInvocation).options, [:])
+    }
+
+    func testDraftUsesAdapterDefaultsPreservesCustomInvocationAndFiltersOptions() {
+        var draft = WorkerDraft()
+        draft.model = "gpt-5.6-sol"
+        draft.selectHarness(.codexCLI)
+        XCTAssertTrue(draft.executable.hasSuffix("/codex") || draft.executable == "codex")
+        XCTAssertEqual(draft.arguments, "exec\n--json\n<WORKJET_BRIEF>")
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .codexCLI).reasoningEfforts(for: draft.model), [.low, .medium, .high, .xhigh])
+        XCTAssertEqual(
+            HarnessAdapterRegistry.descriptor(for: .claudeCode).reasoningEfforts(for: draft.model),
+            [.low, .medium, .high, .xhigh, .max, .ultra]
+        )
+
+        draft.executable = "/opt/custom/codex-wrapper"
+        draft.arguments = "--custom"
+        draft.selectHarness(.cursorAgent)
+        XCTAssertEqual(draft.executable, "/opt/custom/codex-wrapper")
+        XCTAssertEqual(draft.arguments, "--custom")
+
+        draft.name = "Custom"
+        draft.computerID = WorkjetDefaults.localID
+        draft.harness = .claudeCode
+        draft.model = "claude-opus-5"
+        draft.harnessOptions = ["fastMode": "true", "invented": "yes"]
+        let worker = draft.applied(to: nil)
+        XCTAssertEqual(worker?.invocation.options, ["fastMode": "true"])
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .cursorAgent).reasoningEfforts(for: "auto"), [])
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .openCode).options(for: "openai/gpt-5"), [])
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .grokCLI).options(for: "grok-build"), [])
+    }
+
     func testBootstrapNormalizesSkillOnlyAndDispatcherBounds() {
         var config = WorkjetDefaults.configuration()
         config.skillActivation = .global
@@ -55,11 +109,86 @@ final class DefaultsAndLogicTests: XCTestCase {
         config.turnTimeoutSeconds = 99_999
         config.injectWorkerDeclarations = false
         let normalized = WorkjetBootstrap.normalized(config)
-        XCTAssertEqual(normalized.skillActivation, .skillOnly)
+        XCTAssertEqual(normalized.skillActivation, .global)
         XCTAssertTrue(normalized.injectWorkerDeclarations)
         XCTAssertEqual(normalized.providerSlots, 3)
         XCTAssertEqual(normalized.probeTimeoutSeconds, 5)
         XCTAssertEqual(normalized.turnTimeoutSeconds, 10_800)
+    }
+
+    func testLegacyMonolithicPromptMovesModelSectionsOutOfEditableRules() {
+        var config = WorkjetDefaults.configuration()
+        config.modelPrompts = nil
+        config.skillRules = """
+        General before.
+
+        You control these agents:
+
+        GPT-5.6 Sol
+        - Sol rule.
+
+        MiniMax-M3
+        - Mini rule.
+
+        Kimi-K3
+        - Kimi rule.
+
+        Review model (two tiers):
+        General after.
+        """
+        let migrated = WorkjetBootstrap.normalized(config)
+        XCTAssertFalse(migrated.skillRules.contains("You control these agents:"))
+        XCTAssertEqual(migrated.skillRules, "General before.\n\nReview model (two tiers):\nGeneral after.")
+        XCTAssertEqual(migrated.modelPrompts?["GPT-5.6 Sol"], "- Sol rule.")
+        XCTAssertEqual(migrated.modelPrompts?["MiniMax M3"], "- Mini rule.")
+        XCTAssertEqual(migrated.modelPrompts?["Kimi K3"], "- Kimi rule.")
+    }
+
+    func testKnownPromptDefaultsMigrateWithoutTouchingOwnerText() {
+        let ownerBefore = "OWNER RULE BEFORE"
+        let ownerAfter = "OWNER RULE AFTER"
+        let legacyBoard = """
+        ## Progress board (mandatory for every larger orchestrated task)
+
+        Whenever orchestration is engaged for a larger task (multiple workers, multiple waves, or work spanning sessions), create and maintain an HTML progress board, published as an Artifact with a stable URL per project. It is the shared workflow picture: the user checks it instead of asking, and it survives context compaction.
+
+        Structure: overall progress bar · milestone/wave table with worker assignment and state (done / in progress / review open / blocked) · a dynamic "now next" list that absorbs follow-up tasks and subtasks as they appear · decisions log (short, with dates) · findings/risks strip.
+
+        Update duty is EVENT-driven, never time-driven: milestone done, worker landed, review verdict, decision taken, new subtask discovered → update the board immediately (edit the same file, republish to the same URL). A board that lags reality is worse than no board — it lies with authority. No board for single-delegation errands: there, the smallest useful pattern is the task list alone.
+        """
+        let general = [ownerBefore, legacyBoard, ownerAfter].joined(separator: "\n\n")
+        XCTAssertEqual(
+            LegacyPromptMigration.removingKnownProgressBoardDefault(from: general),
+            "\(ownerBefore)\n\n\(ownerAfter)"
+        )
+        XCTAssertEqual(
+            LegacyPromptMigration.removingKnownProgressBoardDefault(from: "OWNER progress board wording"),
+            "OWNER progress board wording"
+        )
+
+        let oldTechnical = """
+        OWNER TECH BEFORE
+
+        Der Skill `/workjet` lädt ausschließlich diesen vollständigen, in der Workjet-App sichtbaren Prompt. Der Skill selbst fügt keine Routing- oder Worker-Regeln hinzu.
+
+        Direkte Anbieter-Pools werden deterministisch abgearbeitet und wechseln nur nach klassifizierten Auth-, Quota- oder Netzwerkfehlern zum nächsten Zugang; Task-Fehler lösen keinen Fallback aus.
+
+        OWNER TECH AFTER
+        """
+        let migrated = LegacyPromptMigration.correctingKnownTechnicalDefaults(in: oldTechnical)
+        XCTAssertTrue(migrated.contains("OWNER TECH BEFORE"))
+        XCTAssertTrue(migrated.contains("OWNER TECH AFTER"))
+        XCTAssertTrue(migrated.contains(LegacyPromptMigration.currentSkillActivationSentence))
+        XCTAssertTrue(migrated.contains(LegacyPromptMigration.currentFallbackSentence))
+        XCTAssertFalse(migrated.contains("Der Skill `/workjet`"))
+        XCTAssertFalse(migrated.contains("Quota- oder Netzwerkfehlern"))
+
+        var configuration = WorkjetDefaults.configuration()
+        configuration.skillRules = general
+        configuration.technicalRules = oldTechnical
+        let normalized = WorkjetBootstrap.normalized(configuration)
+        XCTAssertEqual(normalized.skillRules, "\(ownerBefore)\n\n\(ownerAfter)")
+        XCTAssertEqual(normalized.technicalRules, migrated)
     }
 
     func testLegacyCLIProxyMigrationIsOneTime() {
@@ -102,16 +231,48 @@ final class ConfigurationStoreTests: XCTestCase {
         XCTAssertNotNil(try ManagedPrompt.parse(prompt).body)
         XCTAssertTrue(bootstrap.messages.isEmpty)
     }
+
+    func testAdHocLearningsAreGlobalAtomicAndDeduplicated() throws {
+        let root = try temporaryDirectory()
+        let store = AdHocLearningStore(fileURL: root.appendingPathComponent(".claude/workjet/LEARNINGS.md"))
+        XCTAssertNil(try store.load())
+        XCTAssertEqual(try store.appendSystematic("Repeatable failure → use explicit run ID"), "- Repeatable failure → use explicit run ID")
+        XCTAssertEqual(try store.appendSystematic("Repeatable failure → use explicit run ID"), "- Repeatable failure → use explicit run ID")
+        try store.replace(with: "- Edited persistent rule")
+        XCTAssertEqual(try store.load(), "- Edited persistent rule")
+        XCTAssertThrowsError(try store.appendSystematic(""))
+    }
+
+    func testBootstrapImportsExistingKimiLoginWithoutReopeningBrowser() throws {
+        let root = try temporaryDirectory()
+        let authDirectory = root.appendingPathComponent(".cli-proxy-api", isDirectory: true)
+        try FileManager.default.createDirectory(at: authDirectory, withIntermediateDirectories: true)
+        let authFile = authDirectory.appendingPathComponent("kimi-1785829326952.json")
+        try Data(#"{"type":"kimi","scope":"kimi-code","access_token":"not-copied"}"#.utf8).write(to: authFile)
+
+        let bootstrap = WorkjetBootstrap.live(paths: WorkjetPaths(homeDirectory: root))
+        let account = try XCTUnwrap(bootstrap.configuration.providers.first(where: { $0.modelProvider == .kimi }))
+
+        XCTAssertEqual(account.accountLabel, "Kimi Code")
+        XCTAssertEqual(account.externalCredentialID, authFile.lastPathComponent)
+        XCTAssertEqual(account.credentialReference, CLIProxyGatewayCredentialStore.reference)
+        XCTAssertFalse(String(describing: account).contains("not-copied"))
+    }
 }
 
 final class ManagedPromptTests: XCTestCase {
     func testRendererIsDeterministicAndTruthful() {
         let config = WorkjetDefaults.configuration(); let body = ManagedPrompt.workerBody(configuration: config)
         XCTAssertEqual(body, ManagedPrompt.workerBody(configuration: config)); let text = String(decoding: body, as: UTF8.self)
-        XCTAssertTrue(text.contains("Fable (Claude Code) bleibt der einzige Orchestrator")); XCTAssertTrue(text.contains("genau einen deklarierten Worker"))
-        XCTAssertTrue(text.contains("höchstens 3 parallele Aufrufe je Provider"))
-        XCTAssertTrue(text.contains("Probe-Timeout 120 s"))
-        XCTAssertTrue(text.contains("Turn-Timeout 5400 s"))
+        let workerOffset = try! XCTUnwrap(text.range(of: "## Worker")?.lowerBound)
+        let learningOffset = try! XCTUnwrap(text.range(of: "## Ad-hoc Learnings")?.lowerBound)
+        let technicalOffset = try! XCTUnwrap(text.range(of: "## Technische Regeln")?.lowerBound)
+        XCTAssertLessThan(workerOffset, learningOffset)
+        XCTAssertLessThan(learningOffset, technicalOffset)
+        XCTAssertTrue(text.contains("#### Modellregeln · Kimi K3"))
+        XCTAssertEqual(text.components(separatedBy: "#### Modellregeln · Kimi K3").count - 1, 1)
+        XCTAssertTrue(text.contains("Kimi is the wildcard, independent reviewer, and dispute resolver."))
+        XCTAssertTrue(text.contains(config.technicalRules!))
         for worker in config.workers { XCTAssertTrue(text.contains(worker.id.uuidString.lowercased())); XCTAssertTrue(text.contains(worker.invocation.executable)); XCTAssertTrue(text.contains(worker.model)) }
         var hostile = config; hostile.workers[0].instructions = ManagedPrompt.endMarker
         XCTAssertNoThrow(try ManagedPrompt.parse(ManagedPrompt.block(body: ManagedPrompt.workerBody(configuration: hostile))))
@@ -124,7 +285,7 @@ final class ManagedPromptTests: XCTestCase {
         XCTAssertFalse(routedText.contains("must-not-render"))
         routed.providers = []
         let unavailable = String(decoding: ManagedPrompt.workerBody(configuration: routed), as: UTF8.self)
-        XCTAssertTrue(unavailable.contains("gelöscht oder nicht verfügbar"))
+        XCTAssertTrue(unavailable.contains("Nicht verfügbar"))
         XCTAssertTrue(unavailable.contains(provider.id.uuidString.lowercased()))
     }
 
@@ -140,11 +301,37 @@ final class ManagedPromptTests: XCTestCase {
         XCTAssertTrue(text.contains("Erste Zeile\n\n- Markdown bleibt\nArbeite mit @UI-UX-Experte."))
         XCTAssertEqual(text.components(separatedBy: "Erste Zeile").count - 1, 1)
         XCTAssertTrue(text.contains("Reasoning: `xhigh`"))
-        XCTAssertTrue(text.contains("Fable muss den konfigurierten Effort `xhigh`"))
+        XCTAssertFalse(text.contains("Fable muss den konfigurierten Effort"))
         XCTAssertTrue(ManagedPrompt.unresolvedMentions(in: config.workers[0].instructions, workers: config.workers).isEmpty)
         XCTAssertEqual(ManagedPrompt.unresolvedMentions(in: "Frage @Missing und @Missing", workers: config.workers), ["@Missing"])
         config.workers[0].instructions = "<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->"
         XCTAssertFalse(String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self).contains("<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->\n<!-- WORKJET WORKER INSTRUCTIONS END @Kimi-K3 -->"))
+    }
+
+    func testWorkerInstructionsCanBeSeparatedFromProtectedRuntimePreview() {
+        var config = WorkjetDefaults.configuration()
+        config.workers[0].instructions = "UNIQUE WORKER TASK"
+        let full = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        let runtime = String(decoding: ManagedPrompt.workerBody(configuration: config, includeModelPrompts: false, includeWorkerInstructions: false), as: UTF8.self)
+        XCTAssertTrue(full.contains("UNIQUE WORKER TASK"))
+        XCTAssertFalse(runtime.contains("UNIQUE WORKER TASK"))
+        XCTAssertTrue(runtime.contains(config.workers[0].mentionTag))
+    }
+
+    func testManagedPromptUsesAdapterNameProtocolAndPersistedInvocation() {
+        var config = WorkjetDefaults.configuration()
+        config.workers[0].harness = .grokCLI
+        config.workers[0].invocation = WorkerInvocation(
+            executable: "/opt/bin/grok",
+            arguments: ["agent", "stdio"],
+            options: ["future": "kept-in-existing-config"]
+        )
+        let text = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        XCTAssertTrue(text.contains("- Harness: Grok CLI"))
+        XCTAssertTrue(text.contains("- Invocation-Protokoll: `agentClientProtocol`"))
+        XCTAssertTrue(text.contains("- Executable: `/opt/bin/grok`"))
+        XCTAssertTrue(text.contains("- Argumente: [`agent`, `stdio`]"))
+        XCTAssertTrue(text.contains("- Harness-Optionen: `future=kept-in-existing-config`"))
     }
 
     func testReasoningCodableDraftAndLegacyDecode() throws {
@@ -160,6 +347,44 @@ final class ManagedPromptTests: XCTestCase {
         legacy.removeValue(forKey: "reasoningEffort")
         let legacyData = try JSONSerialization.data(withJSONObject: legacy)
         XCTAssertNil(try JSONDecoder().decode(Worker.self, from: legacyData).reasoningEffort)
+    }
+
+    func testVersionOneConfigurationWithoutModelPromptsRemainsDecodable() throws {
+        let encoded = try JSONEncoder().encode(WorkjetDefaults.configuration())
+        var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        object.removeValue(forKey: "modelPrompts")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertNil(try JSONDecoder().decode(WorkjetConfiguration.self, from: legacy).modelPrompts)
+    }
+
+    func testVersionOneConfigurationWithoutLearningAndTechnicalRulesRemainsDecodable() throws {
+        let encoded = try JSONEncoder().encode(WorkjetDefaults.configuration())
+        var object = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+        object.removeValue(forKey: "adHocLearnings")
+        object.removeValue(forKey: "technicalRules")
+        let legacy = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(WorkjetConfiguration.self, from: legacy)
+        XCTAssertNil(decoded.adHocLearnings)
+        XCTAssertNil(decoded.technicalRules)
+        let normalized = WorkjetBootstrap.normalized(decoded)
+        XCTAssertEqual(normalized.adHocLearnings, "")
+        XCTAssertFalse(normalized.technicalRules?.isEmpty ?? true)
+    }
+
+    func testPromptSectionOrderAndNoRendererOnlyPolicy() {
+        var config = WorkjetDefaults.configuration()
+        config.adHocLearnings = "LEARNING SENTINEL"
+        config.technicalRules = "TECHNICAL SENTINEL"
+        config.workers[0].instructions = "WORKER SENTINEL"
+        let text = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
+        let worker = text.range(of: "WORKER SENTINEL")!.lowerBound
+        let learning = text.range(of: "LEARNING SENTINEL")!.lowerBound
+        let technical = text.range(of: "TECHNICAL SENTINEL")!.lowerBound
+        XCTAssertLessThan(worker, learning)
+        XCTAssertLessThan(learning, technical)
+        XCTAssertEqual(text.components(separatedBy: "LEARNING SENTINEL").count - 1, 1)
+        XCTAssertEqual(text.components(separatedBy: "TECHNICAL SENTINEL").count - 1, 1)
+        XCTAssertFalse(text.contains("automatisch erzeugt · nicht editierbar"))
     }
 
     func testAppendReplaceAndHandwrittenEdit() throws {
@@ -238,7 +463,7 @@ final class RunTelemetryTests: XCTestCase {
         let records = f.store.scan(workers: WorkjetDefaults.configuration().workers)
         let running = records.first { $0.sourceRunID == "running" }; XCTAssertEqual(running?.state, .running); XCTAssertEqual(running?.activeRun?.delivery, .live); XCTAssertEqual(running?.activeRun?.activity, "safe title"); XCTAssertNotNil(running?.activeRun?.lastHeartbeat)
         XCTAssertEqual(records.first { $0.sourceRunID == "completed" }?.state, .completed); XCTAssertEqual(records.first { $0.sourceRunID == "dead" }?.state, .interrupted); XCTAssertEqual(records.first { $0.sourceRunID == "malformed" }?.state, .malformed)
-        let unknown = records.first { $0.sourceRunID == "unknown" }; XCTAssertEqual(unknown?.state, .running); XCTAssertTrue(unknown?.activeRun?.workerName.contains("mystery-wrapper") == true); XCTAssertNil(unknown?.activeRun?.workerModel)
+        let unknown = records.first { $0.sourceRunID == "unknown" }; XCTAssertEqual(unknown?.state, .running); XCTAssertEqual(unknown?.activeRun?.workerName, "mystery-wrapper · nicht konfiguriert"); XCTAssertNil(unknown?.activeRun?.workerModel)
     }
 
     func testPiIsPostHocAndStopChecksPIDIdentity() throws {
@@ -250,6 +475,21 @@ final class RunTelemetryTests: XCTestCase {
         f.probe.identities[105] = identity(105); try f.store.stop(active); XCTAssertEqual(f.probe.terminated, [105])
     }
 
+    func testProtocolHarnessesDoNotClaimClaudeOrPiTelemetry() throws {
+        for (offset, harness) in [Harness.codexCLI, .cursorAgent, .openCode, .grokCLI].enumerated() {
+            let f = try Fixture()
+            var worker = WorkjetDefaults.configuration().workers[0]
+            worker.harness = harness
+            worker.invocation = HarnessAdapterRegistry.descriptor(for: harness).defaultInvocation
+            let pid = Int32(700 + offset)
+            let run = try f.make("protocol-\(offset)", pid, worker.invocation.executable)
+            FileManager.default.createFile(atPath: run.appendingPathComponent("stream-json").path, contents: Data())
+            FileManager.default.createFile(atPath: run.appendingPathComponent("response-events.jsonl").path, contents: Data())
+            f.probe.identities[pid] = identity(pid)
+            XCTAssertEqual(f.store.scan(workers: [worker]).first?.activeRun?.delivery, .unavailable)
+        }
+    }
+
     func testReusedPIDWithLaterProcessStartIsInterrupted() throws {
         let f = try Fixture()
         _ = try f.make("old-run", 691, "claude-sol")
@@ -259,11 +499,56 @@ final class RunTelemetryTests: XCTestCase {
         XCTAssertNil(record.activeRun)
         XCTAssertTrue(record.diagnostic?.contains("später gestarteten Prozess") == true)
     }
+
+    func testCanonicalRunSnapshotRequiresFreshHeartbeat() throws {
+        let f = try Fixture()
+        let run = try f.make("snapshot", 692, "claude-sol")
+        f.probe.identities[692] = identity(692)
+        let fresh = "{\"schemaVersion\":1,\"sequence\":1,\"state\":\"running\",\"heartbeatAt\":\"\(ISO8601DateFormatter().string(from: Date()))\"}"
+        try Data(fresh.utf8).write(to: run.appendingPathComponent("run-state.json"))
+        XCTAssertEqual(f.store.scan(workers: WorkjetDefaults.configuration().workers).first?.state, .running)
+
+        let stale = "{\"schemaVersion\":1,\"sequence\":2,\"state\":\"running\",\"heartbeatAt\":\"2026-08-03T09:00:00Z\"}"
+        try Data(stale.utf8).write(to: run.appendingPathComponent("run-state.json"))
+        let record = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first)
+        XCTAssertEqual(record.state, .interrupted)
+        XCTAssertTrue(record.diagnostic?.contains("Heartbeat") == true)
+    }
 }
 
 final class CLIProxyTests: XCTestCase {
     private final class Client: HTTPClient, @unchecked Sendable { var responses: [HTTPResponse] = []; var requests: [URLRequest] = []; func request(_ request: URLRequest) async throws -> HTTPResponse { requests.append(request); if responses.isEmpty { throw URLError(.cannotConnectToHost) }; return responses.removeFirst() } }
     private final class Credentials: CredentialStoring, @unchecked Sendable { var values: [String: Data] = [:]; func read(reference: String) throws -> Data? { values[reference] }; func write(_ secret: Data, reference: String) throws { values[reference] = secret }; func delete(reference: String) throws { values[reference] = nil } }
+
+    func testAccountDiscoveryUsesProviderAuthIdentityWithoutReadingTokensIntoConfiguration() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let authDirectory = home.appendingPathComponent(".cli-proxy-api", isDirectory: true)
+        try FileManager.default.createDirectory(at: authDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let first = authDirectory.appendingPathComponent("codex-michael@example.com-pro.json")
+        let second = authDirectory.appendingPathComponent("codex-team@example.org-pro.json")
+        let ignored = authDirectory.appendingPathComponent("xai-other@example.net.json")
+        let kimi = authDirectory.appendingPathComponent("kimi-1785829326952.json")
+        try Data(#"{"email":"michael@example.com","access_token":"must-not-escape"}"#.utf8).write(to: first)
+        try Data(#"{"email":"team@example.org","refresh_token":"must-not-escape"}"#.utf8).write(to: second)
+        try Data(#"{"email":"other@example.net"}"#.utf8).write(to: ignored)
+        try Data(#"{"type":"kimi","scope":"kimi-code","access_token":"must-not-escape"}"#.utf8).write(to: kimi)
+
+        let accounts = CLIProxyAccountAuthenticator.availableAccounts(for: .openAI, homeDirectory: home)
+
+        XCTAssertEqual(accounts.map(\.label), ["michael@example.com", "team@example.org"])
+        XCTAssertEqual(Set(accounts.flatMap(\.sourceRecordIDs)), Set([first.lastPathComponent, second.lastPathComponent]))
+        XCTAssertEqual(Set(accounts.map(\.externalID)).count, 2)
+        XCTAssertFalse(String(describing: accounts).contains("must-not-escape"))
+        XCTAssertEqual(CLIProxyAccountAuthenticator.availableAccounts(for: .xAI, homeDirectory: home).map(\.label), ["other@example.net"])
+        XCTAssertEqual(CLIProxyAccountAuthenticator.availableAccounts(for: .kimi, homeDirectory: home), [
+            CLIProxyAuthenticatedAccount(label: "Kimi Code", externalID: kimi.lastPathComponent, sourceRecordID: kimi.lastPathComponent)
+        ])
+
+        let provider = Provider(name: "OpenAI 1", kind: .cliProxyAPI, endpoint: "http://127.0.0.1:8317", accountLabel: accounts[0].label)
+        XCTAssertEqual(provider.compactAccountLabel, "mi…@example.com")
+    }
 
     func testUnsafeUsageDisabledAndDistinctStates() async {
         let unsafeClient = Client(); let unsafe = await CLIProxyInspector(client: unsafeClient, credentials: Credentials()).inspect(CLIProxyConfiguration(endpoint: "http://192.168.1.5:8317")); XCTAssertEqual(unsafe.state, .unsafeEndpoint); XCTAssertTrue(unsafeClient.requests.isEmpty)
@@ -327,7 +612,12 @@ final class CLIProxyTests: XCTestCase {
         for kind in [ProviderKind.cliProxyAPI, .cliProxyRust] {
             let client = Client()
             client.responses = [HTTPResponse(statusCode: 200, data: Data(#"{"data":[{"id":"gateway-model"}]}"#.utf8))]
-            let result = await ProviderInspector(client: client, credentials: Credentials()).inspect(Provider(name: kind.rawValue, kind: kind, endpoint: "http://127.0.0.1:8317"))
+            let result = await ProviderInspector(client: client, credentials: Credentials()).inspect(Provider(
+                name: kind.rawValue,
+                kind: kind,
+                endpoint: "http://127.0.0.1:8317",
+                authentication: .none
+            ))
             XCTAssertEqual(result.status, .connected)
             XCTAssertEqual(result.modelIDs, ["gateway-model"])
             XCTAssertTrue(result.detail.contains("lokalen Gateway"))
@@ -365,7 +655,9 @@ final class TailscaleDeviceTests: XCTestCase {
         let devices = try TailscaleDeviceParser.parse(statusJSON)
         XCTAssertEqual(devices.map(\.id), ["on-id", "off-id"])
         XCTAssertEqual(devices[0].dnsName, "alpha.tailnet.ts.net")
+        XCTAssertEqual(devices[0].preferredHost, "100.64.0.1")
         XCTAssertEqual(devices[1].ipv4, "100.64.0.2")
+        XCTAssertEqual(devices[1].preferredHost, "100.64.0.2")
         XCTAssertTrue(devices[0].online)
         XCTAssertFalse(devices[1].online)
     }
@@ -416,7 +708,7 @@ final class RemotePiBootstrapTests: XCTestCase {
     }
 
     private var successfulPreflight: CommandResult {
-        CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
+        CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_NODE_PATH=/usr/bin/node\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
     }
 
     private func sshComputer(bundle: String = "/audit/ctox-pi-sidecar.mjs") -> Computer {
@@ -427,18 +719,71 @@ final class RemotePiBootstrapTests: XCTestCase {
         let computer = sshComputer()
         let command = try RemoteCommandBuilder.command(for: computer, tailscaleExecutable: nil, remoteExecutable: "/bin/sh", remoteArguments: ["-s", "--", String(repeating: "a", count: 64)], standardInput: Data("fixed".utf8), timeout: 20)
         XCTAssertEqual(command.executable, "/usr/bin/ssh")
-        XCTAssertEqual(command.arguments, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=/private/workjet-known-hosts", "-o", "ClearAllForwardings=yes", "-p", "2222", "-l", "workjet", "--", "pi.example.test", "/bin/sh", "-s", "--", String(repeating: "a", count: 64)])
+        XCTAssertEqual(command.arguments, ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=\"/private/workjet-known-hosts\"", "-o", "ClearAllForwardings=yes", "-o", "ForwardAgent=no", "-p", "2222", "-l", "workjet", "--", "pi.example.test", "/bin/sh", "-s", "--", String(repeating: "a", count: 64)])
         XCTAssertFalse(command.arguments.contains { $0.contains("StrictHostKeyChecking=no") || $0.contains("accept-new") })
         XCTAssertFalse(command.arguments.contains("-c"))
     }
 
-    func testTailscaleExecutableMissingDoesNotFallBackToSSH() async {
+    func testSSHQuotesKnownHostsPathForOpenSSHConfigParser() throws {
+        var computer = sshComputer()
+        computer.knownHostsPath = "/Users/test/Library/Application Support/Workjet/ssh/known_hosts"
+
+        let command = try RemoteCommandBuilder.command(
+            for: computer,
+            tailscaleExecutable: nil,
+            remoteExecutable: "/usr/bin/true",
+            remoteArguments: [],
+            standardInput: Data(),
+            timeout: 20
+        )
+
+        XCTAssertTrue(command.arguments.contains(
+            "UserKnownHostsFile=\"/Users/test/Library/Application Support/Workjet/ssh/known_hosts\""
+        ))
+    }
+
+    func testExplicitSSHIdentityIsUsedWithoutFallingBackToOtherKeys() throws {
+        var computer = sshComputer()
+        computer.identityFilePath = "/Users/test/.ssh/id_ed25519_workjet"
+
+        let command = try RemoteCommandBuilder.command(
+            for: computer,
+            tailscaleExecutable: nil,
+            remoteExecutable: "/usr/bin/true",
+            remoteArguments: [],
+            standardInput: Data(),
+            timeout: 20
+        )
+
+        let identityIndex = try XCTUnwrap(command.arguments.firstIndex(of: "IdentitiesOnly=yes"))
+        XCTAssertEqual(command.arguments[identityIndex - 1], "-o")
+        XCTAssertEqual(command.arguments[identityIndex + 1], "-i")
+        XCTAssertEqual(command.arguments[identityIndex + 2], "/Users/test/.ssh/id_ed25519_workjet")
+    }
+
+    func testRelativeSSHIdentityPathIsRejected() throws {
+        var computer = sshComputer()
+        computer.identityFilePath = ".ssh/id_ed25519"
+
+        XCTAssertThrowsError(
+            try RemoteCommandBuilder.command(
+                for: computer,
+                tailscaleExecutable: nil,
+                remoteExecutable: "/usr/bin/true",
+                remoteArguments: [],
+                standardInput: Data(),
+                timeout: 20
+            )
+        )
+    }
+
+    func testTailscaleMissingConfirmedHostKeyBlocksBeforeAnyNetworkCommand() async {
         let runner = Runner([])
         let files = Files()
         var computer = sshComputer(); computer.transport = .tailscale; computer.knownHostsPath = ""
         let result = await RemotePiBootstrap(runner: runner, files: files, tailscaleLocator: Locator(path: nil)).deploy(computer)
         XCTAssertEqual(result.deploymentStatus, .blocked)
-        XCTAssertTrue(result.deploymentDetail.contains("fällt nicht"))
+        XCTAssertEqual(result.deploymentDetail, "Bestätige zuerst die Identität dieses Computers.")
         let commands = await runner.commands()
         XCTAssertTrue(commands.isEmpty)
     }
@@ -457,19 +802,20 @@ final class RemotePiBootstrapTests: XCTestCase {
         let wrongOwnerFiles = Files(); wrongOwnerFiles.failure = LocalStateError.wrongOwner("/audit/ctox-pi-sidecar.mjs")
         let wrongOwner = await RemotePiBootstrap(runner: runner, files: wrongOwnerFiles, tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
         XCTAssertEqual(wrongOwner.deploymentStatus, .failed)
-        XCTAssertTrue(wrongOwner.deploymentDetail.contains("falschem Eigentümer"))
+        XCTAssertTrue(wrongOwner.deploymentDetail.contains("beschädigt"))
 
         let relative = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer(bundle: "relative-sidecar.mjs"))
         XCTAssertEqual(relative.deploymentStatus, .failed)
-        XCTAssertTrue(relative.deploymentDetail.contains("absolut"))
+        XCTAssertTrue(relative.deploymentDetail.contains("beschädigt"))
     }
 
     func testNodePreflightFailureIsBlockedWithoutInstallingAnything() async {
-        let unavailable = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=missing\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
+        let unavailable = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=missing\nWORKJET_NODE_PATH=missing\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=/usr/bin/bwrap\n".utf8))
         let runner = Runner([unavailable])
         let result = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
         XCTAssertEqual(result.deploymentStatus, .blocked)
-        XCTAssertTrue(result.deploymentDetail.contains("Node >=20"))
+        XCTAssertTrue(result.deploymentDetail.contains("JavaScript-Laufzeit"))
+        XCTAssertFalse(result.deploymentDetail.contains("Node"))
         XCTAssertNil(result.lastSuccessfulPreflightAt)
         XCTAssertNil(result.installedContentHash)
         let commands = await runner.commands()
@@ -477,12 +823,13 @@ final class RemotePiBootstrapTests: XCTestCase {
     }
 
     func testSandboxEnabledPreflightBlocksWithoutBubblewrapAndDoesNotInstall() async {
-        let noBubblewrap = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))
+        let noBubblewrap = CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_NODE_PATH=/usr/bin/node\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))
         let runner = Runner([noBubblewrap])
         let result = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(sshComputer())
         XCTAssertEqual(result.deploymentStatus, .blocked)
-        XCTAssertTrue(result.deploymentDetail.contains("kein ausführbares Linux-`bwrap`"))
-        XCTAssertTrue(result.deploymentDetail.contains("niemals stillschweigend ohne OS-Sandbox"))
+        XCTAssertTrue(result.deploymentDetail.contains("Minimal-Sandbox ist auf diesem Computer nicht verfügbar"))
+        XCTAssertFalse(result.deploymentDetail.contains("bwrap"))
+        XCTAssertTrue(result.deploymentDetail.contains("deaktiviere die Minimal-Sandbox"))
         XCTAssertNil(result.bubblewrapExecutablePath)
         XCTAssertNil(result.installedContentHash)
         let commands = await runner.commands()
@@ -520,7 +867,7 @@ final class RemotePiBootstrapTests: XCTestCase {
     func testSandboxDisabledInvocationIsExplicitlyUnsandboxed() async {
         var computer = sshComputer()
         computer.sandboxEnabled = false
-        let runner = Runner([CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))])
+        let runner = Runner([CommandResult(exitCode: 0, standardOutput: Data("WORKJET_OS=Linux\nWORKJET_ARCH=aarch64\nWORKJET_HOME_WRITABLE=1\nWORKJET_SH=1\nWORKJET_NODE=v20.18.0\nWORKJET_NODE_PATH=/usr/bin/node\nWORKJET_SHA=sha256sum\nWORKJET_BWRAP=missing\n".utf8))])
         let installed = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(computer)
         XCTAssertEqual(installed.deploymentStatus, .installed)
         XCTAssertNil(installed.bubblewrapExecutablePath)
@@ -550,7 +897,7 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertTrue(commands.allSatisfy { $0.executable == "/usr/bin/ssh" })
         XCTAssertTrue(String(decoding: commands[1].standardInput, as: UTF8.self).contains("releases/$hash"))
         XCTAssertTrue(String(decoding: commands[5].standardInput, as: UTF8.self).contains("fs.renameSync(temporary, current)"))
-        XCTAssertEqual(commands.filter { $0.arguments.contains("node") }.count, 3)
+        XCTAssertEqual(commands.filter { $0.arguments.contains("/usr/bin/node") }.count, 4)
 
         let root = try temporaryDirectory(); let store = JSONConfigurationStore(fileURL: root.appendingPathComponent("config.v1.json"))
         var config = WorkjetDefaults.configuration(); config.computers.append(installed); try store.save(config)
@@ -565,7 +912,8 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertEqual(result.deploymentStatus, .failed)
         XCTAssertNil(result.installedContentHash)
         XCTAssertNil(result.installedSidecarVersion)
-        XCTAssertTrue(result.deploymentDetail.contains("außerhalb von Workjet"))
+        XCTAssertTrue(result.deploymentDetail.contains("Identität dieses Computers"))
+        XCTAssertFalse(result.deploymentDetail.localizedCaseInsensitiveContains("host key"))
         let commands = await runner.commands()
         XCTAssertFalse(commands.flatMap(\.arguments).contains { $0.contains("accept-new") || $0.contains("StrictHostKeyChecking=no") })
     }
@@ -583,10 +931,9 @@ final class RemotePiBootstrapTests: XCTestCase {
         var config = WorkjetDefaults.configuration(); config.providers = [provider]; config.workers[0].providerID = provider.id; config.workers[0].harness = .piSidecar; config.workers[0].computerID = installed.id; config.computers.append(installed)
         let prompt = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
         XCTAssertFalse(prompt.contains(secret))
-        XCTAssertTrue(prompt.contains("lokalen Keychain"))
-        XCTAssertTrue(prompt.contains("CtoxTurnRequest"))
-        XCTAssertTrue(prompt.contains("post-hoc"))
-        XCTAssertTrue(prompt.contains("Loopback-Relay nicht verfügbar"))
+        XCTAssertTrue(prompt.contains("projizierten In-Memory-Snapshot"))
+        XCTAssertTrue(prompt.contains("Loopback-Relay mit flüchtigem Gateway-Schlüssel"))
+        XCTAssertTrue(prompt.contains("exklusivem Cursor"))
         XCTAssertTrue(prompt.contains("StrictHostKeyChecking=yes"))
         XCTAssertTrue(prompt.contains("--sandbox"))
         XCTAssertTrue(RemotePiBootstrap.turnRunnerSource.contains("env: cleanEnvironment"))
@@ -596,6 +943,17 @@ final class RemotePiBootstrapTests: XCTestCase {
 }
 
 final class ProcessCommandRunnerTests: XCTestCase {
+    func testShortLivedProcessCannotOutrunTerminationObservation() async throws {
+        for _ in 0..<20 {
+            let started = Date()
+            let result = try await ProcessCommandRunner().run(
+                CommandSpec(executable: "/usr/bin/true", arguments: [], timeout: 0.5)
+            )
+            XCTAssertEqual(result.exitCode, 0)
+            XCTAssertLessThan(Date().timeIntervalSince(started), 0.5)
+        }
+    }
+
     func testEarlyChildExitDuringLargeStdinReturnsControlledFailureWithoutSIGPIPEOrHang() async {
         let payload = Data(repeating: 0x41, count: 16 * 1_024 * 1_024)
         let command = CommandSpec(executable: "/bin/sh", arguments: ["-c", "exit 0"], standardInput: payload, timeout: 2)
@@ -613,11 +971,21 @@ final class ProcessCommandRunnerTests: XCTestCase {
 @MainActor final class ViewModelTests: XCTestCase {
     private final class Service: WorkjetService, @unchecked Sendable {
         var saves: [(WorkjetConfiguration, Bool)] = []
+        var saveError: Error?
+        var failNextSave = false
+        var runRecords: [RunRecord] = []
         var proxyStatus: CLIProxyStatus?
         var providerProbe = ProviderProbeResult(status: .unverified, detail: "test")
         var credentials: [String: Data] = [:]
-        func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws { saves.append((configuration, handwrittenRulesChanged)) }
-        func runs(workers: [Worker]) -> [RunRecord] { [] }
+        func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws {
+            if failNextSave {
+                failNextSave = false
+                throw LocalStateError.io("Einmaliger Testfehler")
+            }
+            if let saveError { throw saveError }
+            saves.append((configuration, handwrittenRulesChanged))
+        }
+        func runs(workers: [Worker]) -> [RunRecord] { runRecords }
         func stop(_ run: ActiveRun) throws {}
         func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus {
             proxyStatus ?? CLIProxyStatus(endpoint: configuration.endpoint, state: .offline, detail: "test", capacity: .unavailable(reason: "test"))
@@ -628,7 +996,7 @@ final class ProcessCommandRunnerTests: XCTestCase {
         func hasCredential(reference: String) -> Bool { credentials[reference] != nil }
     }
     func testSelectionIsExclusiveAndDebouncedChangesCoalesceOnExplicitFlush() async {
-        let service = Service(); let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id)
+        let service = Service(); let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60); model.searchQuery = "Completion"; model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id); XCTAssertEqual(model.searchQuery, "Completion"); model.toggleComputerSelection(PreviewData.devbox.id); XCTAssertEqual(model.selectedComputerID, PreviewData.devbox.id)
         model.providerSlots = 2; model.telemetryRetentionDays = 30; model.cliProxyConfiguration.usageStatisticsEnabled = true; model.skillRules = "n"; model.skillRules = "new rules"; model.addProvider(Provider(name: "API", kind: .apiKey, endpoint: "https://example.test"))
         XCTAssertTrue(service.saves.isEmpty)
         await model.flushPersistence()
@@ -636,6 +1004,289 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(service.saves.first?.1, true)
         XCTAssertEqual(service.saves.first?.0.skillRules, "new rules")
         XCTAssertEqual(service.saves.first?.0.providers.count, 2)
+        guard case .synchronized = model.promptSyncStatus else { return XCTFail("Expected synchronized prompt") }
+        XCTAssertTrue(model.claudeRestartRequired)
+        XCTAssertEqual(model.runtimeStatus, .attention)
+        XCTAssertEqual(model.runtimeSubtitle, "Claude neu starten, um Änderungen zu laden")
+    }
+
+    func testPromptSyncFailureIsPersistentHealthStateAndFlushReportsFailure() async {
+        let service = Service()
+        service.saveError = LocalStateError.io("Prompt nicht schreibbar")
+        let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60)
+        model.skillRules = "changed"
+        XCTAssertEqual(model.promptSyncStatus, .pending)
+        let saved = await model.flushPersistence()
+        XCTAssertFalse(saved)
+        guard case let .failed(message) = model.promptSyncStatus else { return XCTFail("Expected failed prompt sync") }
+        XCTAssertEqual(message, "Eine Workjet-Datei konnte nicht gelesen oder gespeichert werden.")
+        XCTAssertEqual(model.runtimeStatus, .attention)
+        XCTAssertEqual(model.runtimeSubtitle, "Änderungen konnten nicht übernommen werden")
+        XCTAssertFalse(model.claudeRestartRequired)
+    }
+
+    func testPriorPersistenceFailureDoesNotTrapNoOpCloseBehindAnEmptyFlush() async {
+        let service = Service()
+        service.saveError = LocalStateError.io("Prompt nicht schreibbar")
+        let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60)
+        model.skillRules = "changed"
+
+        let failedSave = await model.flushPersistence()
+        XCTAssertFalse(failedSave)
+        service.saveError = nil
+
+        let emptyFlush = await model.flushPersistence()
+        XCTAssertTrue(emptyFlush, "Ein leerer Flush darf einen Schließen-Button nicht wegen eines früheren Fehlers blockieren.")
+        guard case .failed = model.promptSyncStatus else {
+            return XCTFail("Der frühere Fehler muss weiterhin sichtbar bleiben, bis er behoben oder verworfen wird.")
+        }
+    }
+
+    func testConfigurationOnlySaveDoesNotClaimClaudeRestartIsRequired() async {
+        let service = Service()
+        let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60)
+
+        model.telemetryClaudeCodeEvents.toggle()
+        let saved = await model.flushPersistence()
+
+        XCTAssertTrue(saved)
+        XCTAssertFalse(model.claudeRestartRequired)
+    }
+
+    func testBackgroundProviderObservationUpdatesUIWithoutSchedulingPersistence() async {
+        let service = Service()
+        service.providerProbe = ProviderProbeResult(
+            status: .connected,
+            detail: "Live beobachtet",
+            modelIDs: ["observed-model"],
+            capacity: .unavailable(reason: "Nicht gemessen")
+        )
+        var configuration = PreviewData.configuration()
+        configuration.providers = [
+            Provider(
+                name: "Beobachteter Anbieter",
+                kind: .directAPI,
+                endpoint: "https://example.test",
+                authentication: .none,
+                status: .unverified,
+                statusDetail: "Noch nicht geprüft"
+            )
+        ]
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+        let promptStatusBefore = model.promptSyncStatus
+
+        await model.refreshProvidersNow()
+
+        XCTAssertEqual(model.providers.first?.status, .connected)
+        XCTAssertEqual(model.providers.first?.statusDetail, "Live beobachtet")
+        XCTAssertEqual(model.providers.first?.modelIDs, ["observed-model"])
+        XCTAssertEqual(model.promptSyncStatus, promptStatusBefore)
+        XCTAssertTrue(service.saves.isEmpty)
+        let flushed = await model.flushPersistence()
+        XCTAssertTrue(flushed)
+        XCTAssertTrue(service.saves.isEmpty)
+        XCTAssertTrue(model.statusMessages.isEmpty)
+    }
+
+    func testAdHocLearningParticipatesInPromptSyncStateAndExplicitFlush() async {
+        let service = Service()
+        let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60)
+
+        model.adHocLearnings = "Persistent orchestration learning"
+        XCTAssertEqual(model.promptSyncStatus, .pending)
+        let saved = await model.flushPersistence()
+        XCTAssertTrue(saved)
+
+        guard case .synchronized = model.promptSyncStatus else {
+            return XCTFail("Ad-hoc learning must finish as a synchronized prompt change")
+        }
+        XCTAssertTrue(model.claudeRestartRequired)
+    }
+
+    func testRemovingRemoteComputerMovesItsWorkersToLocal() async {
+        var configuration = PreviewData.configuration()
+        let remote = PreviewData.devbox
+        configuration.selectedComputerID = remote.id
+        configuration.workers[0].computerID = remote.id
+        let model = WorkjetViewModel(configuration: configuration, persistenceDelay: 60)
+        model.removeComputer(id: remote.id)
+        XCTAssertFalse(model.computers.contains(where: { $0.id == remote.id }))
+        XCTAssertEqual(model.selectedComputerID, WorkjetDefaults.localID)
+        XCTAssertEqual(model.workers[0].computerID, WorkjetDefaults.localID)
+    }
+
+    func testDurableWorkerSaveRollsBackExactConfigurationAndCanBeRetried() async throws {
+        let service = Service()
+        let model = WorkjetViewModel(configuration: WorkjetDefaults.configuration(), service: service, persistenceDelay: 60)
+        let snapshot = model.configuration
+        var edited = try XCTUnwrap(snapshot.workers.first)
+        edited.name = "Transactional Worker"
+        edited.instructions = "Persist only after the complete configuration is durable."
+        service.failNextSave = true
+
+        let failed = await model.saveWorkerDurably(edited)
+
+        guard case let .failed(message) = failed else { return XCTFail("Expected worker save failure") }
+        XCTAssertTrue(message.contains("vorherige Konfiguration wurde wiederhergestellt"))
+        XCTAssertEqual(model.configuration, snapshot)
+        XCTAssertEqual(service.saves.last?.0, snapshot, "Der wiederhergestellte Snapshot muss selbst erneut gespeichert werden.")
+
+        let retried = await model.saveWorkerDurably(edited)
+
+        XCTAssertEqual(retried, .succeeded)
+        XCTAssertEqual(model.workers.first(where: { $0.id == edited.id }), edited)
+        XCTAssertEqual(service.saves.last?.0, model.configuration)
+    }
+
+    func testDurableComputerSaveRollsBackExactConfigurationAndCanBeRetried() async throws {
+        let service = Service()
+        let model = WorkjetViewModel(configuration: PreviewData.configuration(), service: service, persistenceDelay: 60)
+        let snapshot = model.configuration
+        var edited = try XCTUnwrap(snapshot.computers.first(where: { !$0.isLocal }))
+        edited.name = "Transactional Devbox"
+        edited.host = "transactional-devbox.tailnet.test"
+        service.failNextSave = true
+
+        let failed = await model.saveComputerDurably(edited)
+
+        guard case let .failed(message) = failed else { return XCTFail("Expected computer save failure") }
+        XCTAssertTrue(message.contains("vorherige Konfiguration wurde wiederhergestellt"))
+        XCTAssertEqual(model.configuration, snapshot)
+        XCTAssertEqual(service.saves.last?.0, snapshot, "Der wiederhergestellte Snapshot muss selbst erneut gespeichert werden.")
+
+        let retried = await model.saveComputerDurably(edited)
+
+        XCTAssertEqual(retried, .succeeded)
+        XCTAssertEqual(model.computers.first(where: { $0.id == edited.id }), edited)
+        XCTAssertEqual(service.saves.last?.0, model.configuration)
+    }
+
+    func testDurableComputerDeleteRollsBackWorkersComputersAndSelectionAndCanBeRetried() async {
+        var configuration = PreviewData.configuration()
+        let remote = PreviewData.devbox
+        configuration.selectedComputerID = remote.id
+        configuration.workers[0].computerID = remote.id
+        let service = Service()
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+        let snapshot = model.configuration
+        service.failNextSave = true
+
+        let failed = await model.deleteComputerDurably(id: remote.id)
+
+        guard case let .failed(message) = failed else { return XCTFail("Expected computer deletion failure") }
+        XCTAssertTrue(message.contains("vorherige Konfiguration wurde wiederhergestellt"))
+        XCTAssertEqual(model.workers, snapshot.workers)
+        XCTAssertEqual(model.computers, snapshot.computers)
+        XCTAssertEqual(model.selectedComputerID, snapshot.selectedComputerID)
+        XCTAssertEqual(model.configuration, snapshot)
+        XCTAssertEqual(service.saves.last?.0, snapshot, "Der wiederhergestellte Snapshot muss selbst erneut gespeichert werden.")
+
+        let retried = await model.deleteComputerDurably(id: remote.id)
+
+        XCTAssertEqual(retried, .succeeded)
+        XCTAssertFalse(model.computers.contains(where: { $0.id == remote.id }))
+        XCTAssertEqual(model.selectedComputerID, WorkjetDefaults.localID)
+        XCTAssertTrue(model.workers.allSatisfy { $0.computerID != remote.id })
+        XCTAssertEqual(service.saves.last?.0, model.configuration)
+    }
+
+    func testDeletingWorkerDurablyRemovesOnlyThatWorkerAndKeepsSharedModelRulesAndRunHistory() async {
+        var configuration = WorkjetDefaults.configuration()
+        let deleted = configuration.workers[0]
+        configuration.workers[1].model = deleted.model
+        let canonicalModel = ModelPromptCatalog.canonicalName(for: deleted.model)
+        configuration.modelPrompts?[canonicalModel] = "Shared rule that must survive."
+        let historical = RunRecord(sourceRunID: "historical-run", state: .completed)
+        let service = Service()
+        service.runRecords = [historical]
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+
+        let result = await model.deleteWorker(id: deleted.id)
+
+        XCTAssertEqual(result, .deleted)
+        XCTAssertFalse(model.workers.contains(where: { $0.id == deleted.id }))
+        XCTAssertEqual(model.modelPrompts[canonicalModel], "Shared rule that must survive.")
+        XCTAssertEqual(service.runRecords, [historical], "Worker-Löschung darf historische Läufe nicht verändern.")
+        let saved = try! XCTUnwrap(service.saves.last?.0)
+        XCTAssertFalse(saved.workers.contains(where: { $0.id == deleted.id }))
+        XCTAssertEqual(saved.modelPrompts?[canonicalModel], "Shared rule that must survive.")
+        let prompt = String(decoding: ManagedPrompt.workerBody(configuration: saved), as: UTF8.self)
+        XCTAssertFalse(prompt.contains(deleted.id.uuidString.lowercased()))
+        XCTAssertFalse(prompt.contains("WORKJET WORKER INSTRUCTIONS BEGIN \(deleted.mentionTag)"))
+        XCTAssertTrue(prompt.contains(configuration.workers[1].id.uuidString.lowercased()))
+        XCTAssertEqual(prompt.components(separatedBy: "Shared rule that must survive.").count - 1, 1)
+    }
+
+    func testDeletingWorkerRollsBackVisibleAndDurableConfigurationWhenPersistenceFails() async {
+        let configuration = WorkjetDefaults.configuration()
+        let deleted = configuration.workers[0]
+        let service = Service()
+        service.failNextSave = true
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+
+        let result = await model.deleteWorker(id: deleted.id)
+
+        guard case let .failed(message) = result else { return XCTFail("Expected deletion failure") }
+        XCTAssertTrue(message.contains("nicht gelöscht"))
+        XCTAssertEqual(model.workers, configuration.workers)
+        XCTAssertEqual(model.modelPrompts, configuration.modelPrompts ?? [:])
+        XCTAssertTrue(model.statusMessages.contains(message))
+        XCTAssertEqual(service.saves.last?.0.workers, configuration.workers,
+                       "Nach einem fehlgeschlagenen Lösch-Flush muss die Wiederherstellung selbst durable gespeichert werden.")
+    }
+
+    func testDeletingActiveWorkerIsBlockedWithoutStoppingOrMutatingIt() async throws {
+        let configuration = WorkjetDefaults.configuration()
+        let worker = configuration.workers[0]
+        let service = Service()
+        service.runRecords = [RunRecord(sourceRunID: "active", state: .running, activeRun: activeRun(worker: worker, activity: "läuft", delivery: .live, pid: 411))]
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+        model.refreshRuns()
+        for _ in 0..<50 where model.activeRuns.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let result = await model.deleteWorker(id: worker.id)
+
+        guard case let .blocked(message) = result else { return XCTFail("Expected active worker deletion to be blocked") }
+        XCTAssertTrue(message.contains("Stoppe den Worker zuerst"))
+        XCTAssertTrue(model.workers.contains(where: { $0.id == worker.id }))
+        XCTAssertEqual(service.runRecords.first?.state, .running, "Löschen darf einen aktiven Run nicht automatisch stoppen.")
+        XCTAssertTrue(service.saves.isEmpty)
+    }
+
+    func testRuntimeSubtitleCountsExecutionsRatherThanClaimingDistinctWorkers() async throws {
+        var configuration = WorkjetDefaults.configuration()
+        let provider = Provider(
+            name: "Verbunden",
+            kind: .directAPI,
+            endpoint: "https://example.test",
+            authentication: .none,
+            status: .connected,
+            statusDetail: "Verbunden"
+        )
+        configuration.providers = [provider]
+        for index in configuration.workers.indices {
+            configuration.workers[index].providerRoute = .account(provider.id)
+        }
+        let worker = configuration.workers[0]
+        let service = Service()
+        service.runRecords = [
+            RunRecord(sourceRunID: "first", state: .running, activeRun: activeRun(worker: worker, activity: "läuft", delivery: .live, pid: 501)),
+            RunRecord(sourceRunID: "second", state: .running, activeRun: activeRun(worker: worker, activity: "läuft", delivery: .live, pid: 502))
+        ]
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+        model.telemetryRetentionDays += 1
+        let synchronized = await model.flushPersistence()
+        XCTAssertTrue(synchronized)
+
+        model.refreshRuns()
+        for _ in 0..<50 where model.activeRuns.count != 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(model.activeRuns.count, 2)
+        XCTAssertEqual(model.runtimeSubtitle, "2 Ausführungen aktiv")
     }
 
     func testTelemetryDefaultsAndMaskingKeepAutomaticActiveRuns() {
@@ -673,6 +1324,43 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(piGloballyMasked[0].delivery, .unavailable)
     }
 
+    func testRunRefreshAppliesConfiguredTelemetryRetention() async throws {
+        let root = try temporaryDirectory()
+        let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state"))
+        try FileManager.default.createDirectory(at: paths.runsDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: paths.runIndexDirectory, withIntermediateDirectories: true)
+        let run = paths.runsDirectory.appendingPathComponent("expired")
+        let index = paths.runIndexDirectory.appendingPathComponent("expired")
+        try FileManager.default.createDirectory(at: run, withIntermediateDirectories: true)
+        try Data((run.path + "\n").utf8).write(to: index)
+        try Data("999999\n".utf8).write(to: run.appendingPathComponent("pid"))
+        try Data("0\n".utf8).write(to: run.appendingPathComponent("exit-code"))
+        let oldDate = Date(timeIntervalSince1970: 1_000)
+        for path in [run.appendingPathComponent("pid"), run.appendingPathComponent("exit-code"), run, index] {
+            try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: path.path)
+        }
+        var configuration = WorkjetDefaults.configuration()
+        configuration.telemetryRetentionDays = 30
+        let maintenance = RunTelemetryStore(
+            paths: paths,
+            now: { Date(timeIntervalSince1970: 10_000_000) }
+        )
+        let model = WorkjetViewModel(
+            configuration: configuration,
+            service: Service(),
+            persistenceDelay: 60,
+            telemetryMaintenance: maintenance
+        )
+
+        model.refreshRuns()
+        for _ in 0..<50 where FileManager.default.fileExists(atPath: run.path) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: run.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: index.path))
+    }
+
     func testProviderConnectionTestStoresSecretModelsAndStatus() async {
         var config = WorkjetDefaults.configuration()
         let provider = Provider(name: "CLI", kind: .cliProxyAPI, endpoint: "http://127.0.0.1:8317")
@@ -690,7 +1378,8 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertTrue(model.providerAccessStored.contains(provider.id))
         XCTAssertEqual(model.providerPresentation(for: updated).tone, .connected)
         XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: model.providers).first, "gateway-model")
-        model.removeProvider(id: provider.id)
+        let deletion = await model.deleteProviderDurably(id: provider.id)
+        XCTAssertEqual(deletion, .deleted)
         XCTAssertTrue(model.providers.isEmpty)
         XCTAssertNil(service.credentials[Provider.credentialReference(for: provider.id)])
     }
@@ -707,7 +1396,8 @@ final class ProcessCommandRunnerTests: XCTestCase {
         await model.testProvider(id: noAuth.id, secret: "must-not-store")
         XCTAssertNil(service.credentials[Provider.credentialReference(for: noAuth.id)])
         model.cliProxyConfiguration.inferenceCredentialReference = "shared-key"
-        model.removeProvider(id: shared.id)
+        let deletion = await model.deleteProviderDurably(id: shared.id)
+        XCTAssertEqual(deletion, .deleted)
         XCTAssertEqual(service.credentials["shared-key"], Data("keep".utf8))
     }
 

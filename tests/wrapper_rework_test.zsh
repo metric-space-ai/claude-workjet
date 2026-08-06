@@ -6,6 +6,18 @@ ROOT=${0:A:h:h}
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/workjet-rework.XXXXXX")
 trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
 mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/bin" "$TMP_ROOT/state"
+mkdir -p "$TMP_ROOT/home/.claude/workjet"
+cat > "$TMP_ROOT/home/.claude/workjet/AGENTS.md" <<'PROMPT'
+<!-- WORKJET WORKER PREAMBLE BEGIN -->
+You are in an isolated worktree at <WORKJET_CHECKOUT>. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents.
+<!-- WORKJET WORKER PREAMBLE END -->
+<!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->
+You are a headless worker process. Execute exactly the brief given in the user prompt and print your report to stdout. You are NOT an orchestrator: never spawn agents, workers, or subprocesses beyond what the brief itself requires.
+<!-- WORKJET OPUS SYSTEM PROMPT END -->
+<!-- WORKJET HEALTH PROBE PROMPT BEGIN -->
+You are in an isolated worktree at <WORKJET_CHECKOUT>. Never cd to another checkout. Do not edit files and do not spawn subagents. Reply with the token: OK
+<!-- WORKJET HEALTH PROBE PROMPT END -->
+PROMPT
 
 cat > "$TMP_ROOT/bin/claude-minimax" <<'STUB'
 #!/bin/zsh
@@ -112,6 +124,21 @@ run_agent() {
   RUN_OUT="$dir/out"
   RUN_ERR="$dir/err"
   RUN_PROMPT="$dir/prompt"
+}
+completion_value() {
+  python3 - "$RUN_DIR/completion.json" "$1" <<'PY'
+import json
+import sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+for part in sys.argv[2].split("."):
+    value = value[part]
+if isinstance(value, bool):
+    print(str(value).lower())
+elif value is None:
+    print("null")
+else:
+    print(value)
+PY
 }
 
 print token > "$TMP_ROOT/opus-token"
@@ -226,17 +253,21 @@ PY
 run_agent preamble --brief "$TMP_ROOT/brief.md" bulk-generation
 worktree="$(<"$RUN_DIR/worktree-path")"
 if [[ $RUN_RC -eq 0 ]] && grep -Fq "You are in an isolated worktree at $worktree." "$RUN_PROMPT" && \
-   grep -Fq 'Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents.' "$RUN_PROMPT"; then
-  pass 'wrapper prefixes the worker prompt with the isolation preamble'
+   grep -Fq 'Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents.' "$RUN_PROMPT" && \
+   grep -Fq 'WORKJET COMPLETION RECEIPT V1' "$RUN_PROMPT" && \
+   grep -Fq 'non-authoritative telemetry' "$RUN_PROMPT"; then
+  pass 'wrapper prefixes task prompts with isolation and receipt contracts'
 else
-  fail 'wrapper prefixes the worker prompt with the isolation preamble'
+  fail 'wrapper prefixes task prompts with isolation and receipt contracts'
 fi
 
 CASE_MODE=tamper run_agent tamper --brief "$TMP_ROOT/brief.md" bulk-generation
-if [[ $RUN_RC -eq 4 ]] && [[ -f "$RUN_DIR/tamper" ]] && grep -Fq 'TAMPER DETECTED' "$RUN_ERR"; then
-  pass 'main checkout tampering overrides a successful worker result'
+if [[ $RUN_RC -eq 4 ]] && [[ -f "$RUN_DIR/tamper" ]] && grep -Fq 'TAMPER DETECTED' "$RUN_ERR" && \
+   [[ "$(completion_value observations.flags.tamper)" == true && \
+      "$(completion_value observations.terminal.classification)" == task_failed ]]; then
+  pass 'main checkout tampering overrides worker output and is observed in completion telemetry'
 else
-  fail 'main checkout tampering overrides a successful worker result'
+  fail 'main checkout tampering overrides worker output and is observed in completion telemetry'
 fi
 rm -f "$REPO/tampered.txt"
 
@@ -245,10 +276,12 @@ run_id="$(<"$RUN_DIR/run-id")"
 protected_ref="$(<"$RUN_DIR/protected-ref")"
 protected_subject="$(git -C "$REPO" show -s --format=%s "$protected_ref" 2>/dev/null)"
 if [[ $RUN_RC -eq 3 && "$protected_ref" == "refs/workjet/$run_id" && "$protected_subject" == "wip: $run_id" ]] && \
-   [[ -s "$RUN_DIR/timeout.diff" ]] && git -C "$REPO" show "$protected_ref:partial.txt" | grep -Fq partial; then
-  pass 'timeout commits partial work on the protected ref and writes a diff report'
+   [[ -s "$RUN_DIR/timeout.diff" ]] && git -C "$REPO" show "$protected_ref:partial.txt" | grep -Fq partial && \
+   [[ "$(completion_value observations.flags.timeout)" == true && \
+      "$(completion_value observations.protectedResult.ref)" == "$protected_ref" ]]; then
+  pass 'timeout commits partial work and records protected receipt observations'
 else
-  fail 'timeout commits partial work on the protected ref and writes a diff report'
+  fail 'timeout commits partial work and records protected receipt observations'
 fi
 
 if [[ -s "$RUN_DIR/brief.sha256" && -s "$RUN_DIR/pid" && -f "$RUN_DIR/heartbeat" && -s "$RUN_DIR/exit" ]] && \
@@ -319,7 +352,7 @@ print -u2 -r -- 'direct stderr'
 exit "${DIRECT_RC:-0}"
 DIRECT_STUB
 chmod +x "$DIRECT_BIN/claude"
-HOME="$DIRECT_HOME" PATH="$DIRECT_BIN:$PATH" WORKJET_STATE_DIR="$DIRECT_STATE" \
+HOME="$DIRECT_HOME" PATH="$DIRECT_BIN:$PATH" WORKJET_STATE_DIR="$DIRECT_STATE" WORKJET_OBSERVER_BYPASS=0 \
   DIRECT_CHILD_PID="$TMP_ROOT/direct-child-pid" DIRECT_RC=7 \
   "$ROOT/bin/claude-minimax" -p 'secret prompt must not be journaled' > "$TMP_ROOT/direct.out" 2> "$TMP_ROOT/direct.err"
 direct_rc=$?

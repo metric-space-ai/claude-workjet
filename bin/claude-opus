@@ -8,7 +8,7 @@
 #      --bare + CLAUDE_CODE_OAUTH_TOKEN.
 #   2. Otherwise: interactive subscription login (keychain) + system-prompt
 #      isolation. Subscription billing either way — never API keys.
-WORKER_PROMPT="You are a headless worker process. Execute exactly the brief given in the user prompt and print your report to stdout. You are NOT an orchestrator: never spawn agents, workers, or subprocesses beyond what the brief itself requires."
+PROMPT_FILE="$HOME/.claude/workjet/AGENTS.md"
 KEY_FILE="$HOME/.config/secrets/claude-oauth"
 export ANTHROPIC_MODEL="${OPUS_MODEL:-claude-opus-4-8}"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
@@ -24,4 +24,9 @@ if [[ -f "$KEY_FILE" ]]; then
   print -u2 "claude-opus: $KEY_FILE unbrauchbar (Rechte/Platzhalter) — nutze Keychain-Login mit System-Prompt-Isolation"
 fi
 # Keychain login lives in the DEFAULT config dir — do not override it here.
+WORKER_PROMPT="$(sed -n '/^<!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->$/,/^<!-- WORKJET OPUS SYSTEM PROMPT END -->$/p' "$PROMPT_FILE" 2>/dev/null | sed '1d;$d')"
+if [[ -z "$WORKER_PROMPT" ]]; then
+  print -u2 "claude-opus: sichtbarer Fallback-Systemprompt fehlt in $PROMPT_FILE"
+  exit 2
+fi
 exec claude --model "$ANTHROPIC_MODEL" --system-prompt "$WORKER_PROMPT" "$@"

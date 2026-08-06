@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Security
 
 public protocol CredentialStoring: Sendable {
@@ -15,6 +16,11 @@ public struct KeychainCredentialStore: CredentialStoring, Sendable {
         var query = base(reference)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
+        // Credential reads are non-interactive. A stale ACL or changed app
+        // signature must return an error instead of summoning a modal dialog.
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
@@ -24,19 +30,27 @@ public struct KeychainCredentialStore: CredentialStoring, Sendable {
 
     public func write(_ secret: Data, reference: String) throws {
         guard !reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CredentialError.emptyReference }
-        let query = base(reference)
+        var query = base(reference)
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
         let update = [kSecValueData as String: secret]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
-            var insertion = query
+            var insertion = base(reference)
             insertion[kSecValueData as String] = secret
+            insertion[kSecUseAuthenticationContext as String] = context
             let addStatus = SecItemAdd(insertion as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw CredentialError.keychain(addStatus) }
         } else if status != errSecSuccess { throw CredentialError.keychain(status) }
     }
 
     public func delete(reference: String) throws {
-        let status = SecItemDelete(base(reference) as CFDictionary)
+        var query = base(reference)
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        query[kSecUseAuthenticationContext as String] = context
+        let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw CredentialError.keychain(status) }
     }
 
@@ -51,7 +65,7 @@ public enum CredentialError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .emptyReference: return "Keychain-Referenz darf nicht leer sein."
-        case let .keychain(status): return "Keychain-Fehler \(status)."
+        case .keychain: return "Der Zugang konnte nicht aus dem Schlüsselbund gelesen werden. Öffne den Anbieter und verbinde ihn erneut."
         }
     }
 }
@@ -120,7 +134,7 @@ public enum ProviderEndpointValidator {
     public static func modelsURL(baseURL: URL) -> URL {
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
         let basePath = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let modelPath = basePath == "v1" || basePath.hasSuffix("/v1") ? "models" : "v1/models"
+        let modelPath = basePath == "v1" || basePath.hasSuffix("/v1") || basePath.hasSuffix("/v4") ? "models" : "v1/models"
         components.path = "/" + ([basePath, modelPath].filter { !$0.isEmpty }.joined(separator: "/"))
         components.query = nil
         components.fragment = nil
@@ -153,11 +167,24 @@ public struct ProviderInspector: Sendable {
         var request = URLRequest(url: ProviderEndpointValidator.modelsURL(baseURL: baseURL))
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if provider.authentication != .none,
-           let reference = provider.credentialReference,
-           let secret = try? credentials.read(reference: reference),
-           let token = String(data: secret, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !token.isEmpty {
+        var accessToken: String?
+        if provider.authentication != .none {
+            guard let reference = provider.credentialReference,
+                  !reference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return ProviderProbeResult(status: .offline, detail: "Für diesen Zugang fehlt der Schlüssel.")
+            }
+            let secret: Data?
+            do {
+                secret = try credentials.read(reference: reference)
+            } catch {
+                return ProviderProbeResult(status: .offline, detail: "Der gespeicherte Zugang ist nicht verfügbar. Verbinde den Anbieter erneut.")
+            }
+            guard let secret,
+                  let token = String(data: secret, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !token.isEmpty else {
+                return ProviderProbeResult(status: .offline, detail: "Für diesen Zugang fehlt der Schlüssel.")
+            }
+            accessToken = token
             switch provider.authentication {
             case .none: break
             case .bearerToken:
@@ -170,24 +197,124 @@ public struct ProviderInspector: Sendable {
         let response: HTTPResponse
         do { response = try await client.request(request) }
         catch { return ProviderProbeResult(status: .offline, detail: "Endpunkt ist nicht erreichbar.") }
-        guard response.data.count <= 1_048_576 else { return ProviderProbeResult(status: .degraded, detail: "Modellantwort überschreitet das Sicherheitslimit.") }
+        guard response.data.count <= 1_048_576 else { return ProviderProbeResult(status: .degraded, detail: "Die Modellliste konnte nicht geladen werden.") }
         if response.statusCode == 401 || response.statusCode == 403 {
-            return ProviderProbeResult(status: .offline, detail: "Zugang wurde vom /v1/models-Endpunkt abgelehnt.")
+            return ProviderProbeResult(status: .offline, detail: "Der Anbieter hat den Zugang abgelehnt.")
         }
         guard (200..<300).contains(response.statusCode) else {
-            return ProviderProbeResult(status: .offline, detail: "/v1/models antwortet mit HTTP \(response.statusCode).")
+            return ProviderProbeResult(status: .offline, detail: "Der Anbieter hat die Modellabfrage abgelehnt.")
         }
-        guard let models = Self.parseModels(response.data) else {
-            return ProviderProbeResult(status: .degraded, detail: "/v1/models lieferte kein kompatibles data[].id-Format.")
+        guard let models = Self.parseModels(response.data, provider: provider.modelProvider) else {
+            return ProviderProbeResult(status: .degraded, detail: "Der Anbieter hat keine lesbare Modellliste geliefert.")
         }
-        let ownership = provider.kind.isLocalGateway ? " OAuth/Abonnement wird im lokalen Gateway verwaltet." : ""
-        return ProviderProbeResult(status: .connected, detail: "Verbindung geprüft; \(models.count) Modell(e) gefunden.\(ownership)", modelIDs: models)
+        let route = provider.kind.isLocalGateway ? " · Zugang über lokalen Gateway" : ""
+        var detail = "Verbindung geprüft · \(models.count) Modelle gefunden\(route)."
+        var capacity: CapacityStatus = .unavailable(reason: "Für diesen Zugang sind keine Kapazitätsdaten verfügbar.")
+        if provider.kind == .directAPI, provider.modelProvider == .miniMax, let accessToken {
+            var quotaRequest = URLRequest(url: URL(string: "https://www.minimax.io/v1/token_plan/remains")!)
+            quotaRequest.httpMethod = "GET"
+            quotaRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            quotaRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            do {
+                let quotaResponse = try await client.request(quotaRequest)
+                if (200..<300).contains(quotaResponse.statusCode),
+                   quotaResponse.data.count <= 1_048_576,
+                   let measured = Self.parseMiniMaxCapacity(quotaResponse.data) {
+                    capacity = measured.capacity
+                    detail += " Kontingent: \(measured.summary)."
+                } else {
+                    capacity = .unavailable(reason: "Kontingent konnte nicht gelesen werden.")
+                }
+            } catch {
+                capacity = .unavailable(reason: "Kontingent ist derzeit nicht erreichbar.")
+            }
+        }
+        return ProviderProbeResult(status: .connected, detail: detail, modelIDs: models, capacity: capacity)
     }
 
-    public static func parseModels(_ data: Data) -> [String]? {
+    public struct MiniMaxCapacityMeasurement: Equatable, Sendable {
+        public var capacity: CapacityStatus
+        public var summary: String
+        public var resetAt: Date?
+    }
+
+    /// Parses only explicitly identified text/coding-plan windows. In
+    /// particular, `usage_count` is consumption despite the endpoint name;
+    /// media-only quotas and unlabeled numeric pairs are intentionally ignored.
+    public static func parseMiniMaxCapacity(_ data: Data) -> MiniMaxCapacityMeasurement? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        if let base = root["base_resp"] as? [String: Any],
+           let code = number(base["status_code"]), code != 0 { return nil }
+        guard let entries = root["model_remains"] as? [[String: Any]] else { return nil }
+
+        struct Window {
+            var used: Double
+            var limit: Double
+            var label: String
+            var resetAt: Date?
+            var fraction: Double { used / limit }
+        }
+        var windows: [Window] = []
+        for entry in entries {
+            guard let rawName = entry["model_name"] as? String else { continue }
+            let name = rawName.lowercased()
+            guard name == "general" || name.contains("minimax-m") || name.contains("coding") else { continue }
+
+            func resetDate(_ key: String) -> Date? {
+                guard let value = number(entry[key]), value > 0 else { return nil }
+                return Date(timeIntervalSince1970: value > 10_000_000_000 ? value / 1_000 : value)
+            }
+            func appendCounts(usedKey: String, limitKey: String, label: String, resetKey: String) -> Bool {
+                guard let used = number(entry[usedKey]), let limit = number(entry[limitKey]),
+                      used >= 0, limit > 0, used <= limit else { return false }
+                windows.append(Window(used: used, limit: limit, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey)))
+                return true
+            }
+            func appendRemainingPercent(key: String, label: String, resetKey: String) {
+                guard let remaining = number(entry[key]), (0...100).contains(remaining) else { return }
+                windows.append(Window(used: 100 - remaining, limit: 100, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey)))
+            }
+            if !appendCounts(usedKey: "current_interval_usage_count", limitKey: "current_interval_total_count", label: "Intervall", resetKey: "end_time") {
+                appendRemainingPercent(key: "current_interval_remaining_percent", label: "Intervall", resetKey: "end_time")
+            }
+            if !appendCounts(usedKey: "current_weekly_usage_count", limitKey: "current_weekly_total_count", label: "Woche", resetKey: "weekly_end_time") {
+                appendRemainingPercent(key: "current_weekly_remaining_percent", label: "Woche", resetKey: "weekly_end_time")
+            }
+        }
+        guard let worst = windows.max(by: { $0.fraction < $1.fraction }) else { return nil }
+        let formatter = ISO8601DateFormatter()
+        let summaries = windows
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+            .map { window in
+                let reset = window.resetAt.map { " · Reset \(formatter.string(from: $0))" } ?? ""
+                return "\(window.label) \(Int((window.fraction * 100).rounded())) % genutzt\(reset)"
+            }
+            .joined(separator: "; ")
+        let unitReset = worst.resetAt.map { " · Reset \(formatter.string(from: $0))" } ?? ""
+        return MiniMaxCapacityMeasurement(
+            capacity: .measured(used: worst.used, limit: worst.limit, unit: worst.label + unitReset, rateLimited: worst.used >= worst.limit),
+            summary: summaries,
+            resetAt: worst.resetAt
+        )
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let value = value as? NSNumber { return value.doubleValue }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    public static func parseModels(_ data: Data, provider: ModelProvider? = nil) -> [String]? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let entries = root["data"] as? [[String: Any]] else { return nil }
-        return Provider.normalizedModels(entries.compactMap { $0["id"] as? String })
+        let filtered = entries.filter { entry in
+            guard let provider else { return true }
+            guard let owner = (entry["owned_by"] as? String)?.lowercased() else {
+                return provider.usesWebLogin == false
+            }
+            return provider.modelOwnerAliases.contains(owner)
+        }
+        return Provider.normalizedModels(filtered.compactMap { $0["id"] as? String })
     }
 }
 

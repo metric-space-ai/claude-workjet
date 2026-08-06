@@ -1,0 +1,90 @@
+name: Bug report
+description: Report reproducible incorrect behavior without sharing secrets.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security vulnerabilities, stop and use SECURITY.md. Do not include credentials, private repository content, or real host details.
+
+  - type: input
+    id: version
+    attributes:
+      label: Workjet version or commit
+      description: Use a tag when one exists, otherwise the commit SHA.
+      placeholder: commit abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS version, Apple-Silicon model class, and build or install method.
+      placeholder: macOS 15.x, M2, swift run from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Menu-bar app or settings
+        - CLI or local worker
+        - Provider account or routing
+        - SSH or Tailscale computer
+        - Remote workspace or result import
+        - Telemetry or completion receipt
+        - Build, install, or release artifact
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest deterministic sequence using synthetic or non-secret data.
+      placeholder: |
+        1. Run ...
+        2. Click ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Paste only the smallest useful excerpt. Do not attach a whole Workjet state directory or Git bundle.
+      render: text
+
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Redaction checklist
+      options:
+        - label: I removed API keys, bearer tokens, OAuth tokens, cookies, passwords, private keys, and signing or notarization material.
+          required: true
+        - label: I replaced real hostnames, IP addresses, usernames, account labels, host fingerprints, repository names, and local paths.
+          required: true
+        - label: I inspected logs and attachments for private source, diffs, prompts, provider bodies, and Git bundle contents.
+          required: true
+        - label: This is not a security vulnerability. If it is, I will use SECURITY.md instead.
+          required: true

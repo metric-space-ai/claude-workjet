@@ -9,21 +9,55 @@ public struct WorkerDraft: Equatable {
     public var reasoningEffort: ReasoningEffort?
     public var computerID: UUID?
     public var providerID: UUID?
+    public var providerPool: ModelProvider?
+    public var skillOverrides: [String: Bool]
     public var executable: String
     public var arguments: String
     public var capabilities: String
+    public var harnessOptions: [String: String]
 
     public init(worker: Worker? = nil) {
+        let initialHarness = worker?.harness ?? .claudeCode
         self.name = worker?.name ?? ""
-        self.harness = worker?.harness ?? .claudeCode
+        self.harness = initialHarness
         self.model = worker?.model ?? ""
         self.instructions = worker?.instructions ?? ""
         self.reasoningEffort = worker?.reasoningEffort
         self.computerID = worker?.computerID
         self.providerID = worker?.providerID
-        self.executable = worker?.invocation.executable ?? ""
-        self.arguments = worker?.invocation.arguments.joined(separator: "\n") ?? ""
+        self.providerPool = worker?.providerPool
+        self.skillOverrides = worker?.skillOverrides ?? [:]
+        self.executable = worker?.invocation.executable ?? Self.defaultExecutable(for: initialHarness)
+        self.arguments = worker?.invocation.arguments.joined(separator: "\n") ?? Self.defaultArguments(for: initialHarness)
         self.capabilities = worker?.invocation.capabilities.joined(separator: "\n") ?? ""
+        self.harnessOptions = worker?.invocation.options ?? [:]
+    }
+
+    public var providerRoute: ProviderRoute? {
+        get {
+            if let providerPool { return .pool(providerPool) }
+            if let providerID { return .account(providerID) }
+            return nil
+        }
+        set {
+            switch newValue {
+            case let .account(id): providerID = id; providerPool = nil
+            case let .pool(provider): providerID = nil; providerPool = provider
+            case nil: providerID = nil; providerPool = nil
+            }
+        }
+    }
+
+    public func configuredEnabled(for skill: WorkerSkillDescriptor) -> Bool {
+        skill.configuredEnabled(overrides: skillOverrides)
+    }
+
+    public func effectiveEnabled(for skill: WorkerSkillDescriptor) -> Bool {
+        skill.effectiveEnabled(overrides: skillOverrides, harness: harness)
+    }
+
+    public mutating func setConfiguredEnabled(_ enabled: Bool, for skill: WorkerSkillDescriptor) {
+        WorkerSkillCatalog.setConfiguredEnabled(enabled, skill: skill, overrides: &skillOverrides)
     }
 
     public var isValid: Bool {
@@ -34,14 +68,13 @@ public struct WorkerDraft: Equatable {
     }
 
     public static func defaultExecutable(for harness: Harness) -> String {
-        switch harness {
-        case .claudeCode: return "~/.local/bin/claude-sol"
-        case .piSidecar: return "node"
-        }
+        HarnessAdapterRegistry.defaultLocalInvocation(for: harness)?.executable
+            ?? HarnessAdapterRegistry.descriptor(for: harness).defaultInvocation.executable
     }
 
     public static func defaultArguments(for harness: Harness) -> String {
-        harness == .claudeCode ? "-p\n<WORKJET_BRIEF>" : ""
+        (HarnessAdapterRegistry.defaultLocalInvocation(for: harness)
+            ?? HarnessAdapterRegistry.descriptor(for: harness).defaultInvocation).arguments.joined(separator: "\n")
     }
 
     public mutating func selectHarness(_ harness: Harness) {
@@ -52,6 +85,12 @@ public struct WorkerDraft: Equatable {
         self.harness = harness
         if executableWasDefault { executable = Self.defaultExecutable(for: harness) }
         if argumentsWereDefault { arguments = Self.defaultArguments(for: harness) }
+        let adapter = HarnessAdapterRegistry.descriptor(for: harness)
+        let allowedOptions = Set(adapter.options(for: model).map(\.id))
+        harnessOptions = harnessOptions.filter { allowedOptions.contains($0.key) }
+        if let effort = reasoningEffort, !adapter.reasoningEfforts(for: model).contains(effort) {
+            reasoningEffort = nil
+        }
     }
 
     /// Applies the draft to an existing worker or creates a new one.
@@ -69,11 +108,15 @@ public struct WorkerDraft: Equatable {
         result.instructions = instructions
         result.reasoningEffort = reasoningEffort
         result.computerID = computerID
-        result.providerID = providerID
+        result.providerRoute = providerRoute
+        result.skillOverrides = skillOverrides
+        let adapter = HarnessAdapterRegistry.descriptor(for: harness)
+        let allowedOptions = Set(adapter.options(for: result.model).map(\.id))
         result.invocation = WorkerInvocation(
             executable: executable.trimmingCharacters(in: .whitespacesAndNewlines),
             arguments: arguments.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
-            capabilities: capabilities.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            capabilities: capabilities.split(whereSeparator: \.isNewline).map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+            options: harnessOptions.filter { allowedOptions.contains($0.key) }
         )
         return result
     }
@@ -92,6 +135,7 @@ public struct ComputerDraft: Equatable {
     public var telemetryEnabled: Bool
     public var sidecarBundlePath: String
     public var knownHostsPath: String
+    public var identityFilePath: String
 
     public init(computer: Computer? = nil) {
         self.id = computer?.id ?? UUID()
@@ -106,6 +150,7 @@ public struct ComputerDraft: Equatable {
         self.telemetryEnabled = computer?.telemetryEnabled ?? false
         self.sidecarBundlePath = computer?.sidecarBundlePath ?? ""
         self.knownHostsPath = computer?.knownHostsPath ?? ""
+        self.identityFilePath = computer?.identityFilePath ?? ""
     }
 
     public var isValid: Bool {
@@ -134,6 +179,7 @@ public struct ComputerDraft: Equatable {
         result.telemetryEnabled = telemetryEnabled
         result.sidecarBundlePath = sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines)
         result.knownHostsPath = knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.identityFilePath = identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines)
         if let computer {
             let routeChanged = computer.transport != result.transport
                 || computer.host != result.host
@@ -142,6 +188,7 @@ public struct ComputerDraft: Equatable {
                 || computer.sandboxEnabled != result.sandboxEnabled
                 || computer.sidecarBundlePath != result.sidecarBundlePath
                 || computer.knownHostsPath != result.knownHostsPath
+                || computer.identityFilePath != result.identityFilePath
             if routeChanged {
                 result.deploymentStatus = .notConfigured
                 result.deploymentDetail = "Verbindungs- oder Bundle-Konfiguration wurde geändert; erneut prüfen und einrichten."

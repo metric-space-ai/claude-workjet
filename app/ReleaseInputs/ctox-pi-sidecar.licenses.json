@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "generatedFrom": [
+    "PiSidecar/package-lock.json",
+    "ctox-pi-sidecar.metafile.json"
+  ],
+  "packages": [
+    {
+      "name": "@earendil-works/pi-agent-core",
+      "version": "0.80.2",
+      "license": "MIT",
+      "repository": "git+https://github.com/earendil-works/pi.git",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-0.80.2.tgz",
+      "integrity": "sha512-BF9WPhixIFjT6Kp3Iz3H6ugkU+4AWotM8py96XE5pIK0arJbQKMWbR+dXSWWDEmR5yc/aFQODnuyowOEzMGO7Q==",
+      "bundledInputCount": 1
+    },
+    {
+      "name": "@earendil-works/pi-ai",
+      "version": "0.80.2",
+      "license": "MIT",
+      "repository": "git+https://github.com/earendil-works/pi.git",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-0.80.2.tgz",
+      "integrity": "sha512-5GNKfdrRJ4uZ5Zd9iudoXggi/BbUcKnD/xfRHtdR+7q4vWqPvfx8auFuaT+ewGBVI8K4wj87eigFQ/iCSuy9RQ==",
+      "bundledInputCount": 17
+    },
+    {
+      "name": "openai",
+      "version": "6.26.0",
+      "license": "Apache-2.0",
+      "repository": "github:openai/openai-node",
+      "resolved": "https://registry.npmjs.org/openai/-/openai-6.26.0.tgz",
+      "integrity": "sha512-zd23dbWTjiJ6sSAX6s0HrCZi41JwTA1bQVs0wLQPZ2/5o2gxOJA5wh7yOAUgwYybfhDXyhwlpeQf7Mlgx8EOCA==",
+      "bundledInputCount": 115
+    },
+    {
+      "name": "partial-json",
+      "version": "0.1.7",
+      "license": "MIT",
+      "repository": "https://github.com/promplate/partial-json-parser-js",
+      "resolved": "https://registry.npmjs.org/partial-json/-/partial-json-0.1.7.tgz",
+      "integrity": "sha512-Njv/59hHaokb/hRUjce3Hdv12wd60MtM9Z5Olmn+nehe0QDAsRtRbJPvJ0Z91TusF0SuZRIvnM+S4l6EIP8leA==",
+      "bundledInputCount": 2
+    },
+    {
+      "name": "typebox",
+      "version": "1.1.38",
+      "license": "MIT",
+      "repository": "https://github.com/sinclairzx81/typebox",
+      "resolved": "https://registry.npmjs.org/typebox/-/typebox-1.1.38.tgz",
+      "integrity": "sha512-pZ0aQPmMmXoUvSbeuWf/Hzsc+avNw/Zd6VeE8CFgkVGWyuHPJvqeJJDeJqLve+K70LvjYIoleGcoJHPT17cWoA==",
+      "bundledInputCount": 664
+    }
+  ]
+}

@@ -1,1 +1,24 @@
 .workjet/
+
+# Local build and dependency products
+.DS_Store
+app/.build/
+app/dist/
+app/PiSidecar/node_modules/
+app/design/workjet-icon-concepts/
+DerivedData/
+*.xcresult
+
+# Local browser acceptance artifacts
+.playwright-cli/
+output/
+
+# Release credentials are CI/user inputs, never repository inputs.
+*.p12
+AuthKey_*.p8
+release/private/
+app/ReleaseCredentials/
+
+# Per-user Xcode state
+xcuserdata/
+*.xcuserstate

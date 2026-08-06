@@ -2,6 +2,12 @@ import Foundation
 
 /// Coalesces UI mutations and performs all JSON/prompt I/O on one background queue.
 public final class PersistenceCoordinator: @unchecked Sendable {
+    public enum Outcome: Equatable, Sendable {
+        case nothingPending
+        case synchronized
+        case failed(String)
+    }
+
     private struct Pending {
         var configuration: WorkjetConfiguration
         var handwrittenChanged: Bool
@@ -13,13 +19,13 @@ public final class PersistenceCoordinator: @unchecked Sendable {
     private let lock = NSLock()
     private var pending: Pending?
     private var workItem: DispatchWorkItem?
-    private let reportError: @Sendable (Error) -> Void
+    private let reportOutcome: @Sendable (Outcome) -> Void
 
-    public init(service: any WorkjetService, delay: TimeInterval = 0.25, reportError: @escaping @Sendable (Error) -> Void) {
+    public init(service: any WorkjetService, delay: TimeInterval = 0.25, reportOutcome: @escaping @Sendable (Outcome) -> Void) {
         self.service = service
         self.delay = max(delay, 0)
         self.queue = DispatchQueue(label: "dev.workjet.persistence", qos: .utility)
-        self.reportError = reportError
+        self.reportOutcome = reportOutcome
     }
 
     public func schedule(_ configuration: WorkjetConfiguration, handwrittenChanged: Bool) {
@@ -33,12 +39,11 @@ public final class PersistenceCoordinator: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + delay, execute: item)
     }
 
-    public func flush() async {
+    public func flush() async -> Outcome {
         cancelScheduledWorkItem()
-        await withCheckedContinuation { continuation in
+        return await withCheckedContinuation { continuation in
             queue.async { [weak self] in
-                self?.consumeAndSave()
-                continuation.resume()
+                continuation.resume(returning: self?.consumeAndSave() ?? .nothingPending)
             }
         }
     }
@@ -58,14 +63,22 @@ public final class PersistenceCoordinator: @unchecked Sendable {
         lock.unlock()
     }
 
-    private func consumeAndSave() {
+    @discardableResult
+    private func consumeAndSave() -> Outcome {
         lock.lock()
         let value = pending
         pending = nil
         workItem = nil
         lock.unlock()
-        guard let value else { return }
-        do { try service.save(value.configuration, handwrittenRulesChanged: value.handwrittenChanged) }
-        catch { reportError(error) }
+        guard let value else { return .nothingPending }
+        let outcome: Outcome
+        do {
+            try service.save(value.configuration, handwrittenRulesChanged: value.handwrittenChanged)
+            outcome = .synchronized
+        } catch {
+            outcome = .failed(error.localizedDescription)
+        }
+        reportOutcome(outcome)
+        return outcome
     }
 }

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet turbine mark</title>
+  <desc id="desc">A front-facing turbine with eight swept blades and a central shaft.</desc>
+  <circle cx="128" cy="128" r="108" fill="none" stroke="oklch(0.84 0.025 240)" stroke-width="22"/>
+  <circle cx="128" cy="128" r="82" fill="oklch(0.23 0.025 245)" stroke="oklch(0.68 0.16 245)" stroke-width="5"/>
+  <g fill="oklch(0.9 0.02 240)">
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(45 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(90 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(135 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(180 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(225 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(270 128 128)"/>
+    <path d="M128 108C101 83 98 59 111 49C135 61 145 84 143 108Z" transform="rotate(315 128 128)"/>
+  </g>
+  <circle cx="128" cy="128" r="23" fill="oklch(0.68 0.16 245)" stroke="oklch(0.91 0.02 240)" stroke-width="7"/>
+  <circle cx="128" cy="128" r="7" fill="oklch(0.16 0.018 248)"/>
+</svg>
