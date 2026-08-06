@@ -2,22 +2,6 @@
   const root = document.documentElement;
   root.classList.add('js');
 
-  const shots = Array.from(document.querySelectorAll('.media-frame'));
-  shots.forEach((frame) => {
-    const image = frame.querySelector('.capture');
-    if (!image) return;
-
-    const markReady = () => frame.classList.add('asset-ready');
-    const markMissing = () => frame.classList.add('asset-missing');
-
-    if (image.complete) {
-      image.naturalWidth > 0 ? markReady() : markMissing();
-    } else {
-      image.addEventListener('load', markReady, { once: true });
-      image.addEventListener('error', markMissing, { once: true });
-    }
-  });
-
   const navLinks = Array.from(document.querySelectorAll('.site-nav a[href^="#"]'));
   const navSections = navLinks
     .map((link) => document.querySelector(link.getAttribute('href')))
