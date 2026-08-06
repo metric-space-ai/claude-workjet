@@ -4,7 +4,14 @@ setopt pipe_fail
 
 ROOT=${0:A:h:h}
 TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/workjet-rework.XXXXXX")
-trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
+cleanup() {
+  if [[ "${WORKJET_TEST_KEEP_TMP:-0}" == 1 ]]; then
+    print -u2 "wrapper test fixtures preserved: $TMP_ROOT"
+  else
+    rm -rf "$TMP_ROOT"
+  fi
+}
+trap cleanup EXIT INT TERM
 mkdir -p "$TMP_ROOT/home" "$TMP_ROOT/bin" "$TMP_ROOT/state"
 mkdir -p "$TMP_ROOT/home/.claude/workjet"
 cat > "$TMP_ROOT/home/.claude/workjet/AGENTS.md" <<'PROMPT'
@@ -17,6 +24,10 @@ You are a headless worker process. Execute exactly the brief given in the user p
 <!-- WORKJET HEALTH PROBE PROMPT BEGIN -->
 You are in an isolated worktree at <WORKJET_CHECKOUT>. Never cd to another checkout. Do not edit files and do not spawn subagents. Reply with the token: OK
 <!-- WORKJET HEALTH PROBE PROMPT END -->
+<!-- WORKJET COMPLETION RECEIPT PROMPT BEGIN -->
+WORKJET COMPLETION RECEIPT V1
+After the human-readable report, end stdout with exactly one compact completion receipt. This receipt is non-authoritative telemetry: the orchestrator independently verifies the code, diff, and checks.
+<!-- WORKJET COMPLETION RECEIPT PROMPT END -->
 PROMPT
 
 cat > "$TMP_ROOT/bin/claude-minimax" <<'STUB'

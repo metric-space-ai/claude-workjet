@@ -30,8 +30,7 @@
   <main id="main-content">
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <p class="eyebrow">Native macOS control plane</p>
-        <h1 id="hero-title">Keep every coding worker on a visible route.</h1>
+        <h1 id="hero-title">Route every worker.</h1>
         <p class="hero-lede">Workjet defines specialized workers across local and remote computers. The orchestrator chooses the work. Workjet keeps prompts, providers, target health, and run evidence in view.</p>
         <div class="hero-actions" aria-label="Project links">
           <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Explore the source</a>
@@ -49,7 +48,6 @@
         <figure class="app-window media-frame">
           <div class="capture-area">
             <img class="capture" src="assets/screenshots/workjet-overview.png" alt="Workjet overview showing computer selection, worker rows, health states, and current run activity">
-            <p class="capture-note">The authentic Workjet overview capture will appear here when the asset is added.</p>
           </div>
           <figcaption>One native surface for computers, workers, health, and current activity.</figcaption>
         </figure>
@@ -58,7 +56,6 @@
 
     <section class="workflow section-shell" id="workflow" aria-labelledby="workflow-title">
       <div class="section-intro">
-        <p class="eyebrow">One concrete workflow</p>
         <h2 id="workflow-title">Turn an unclear task into a bounded run.</h2>
         <p>The calling agent remains the sole orchestrator. Workjet gives it declared workers, live target facts, and a durable evidence trail without taking over task planning.</p>
       </div>
@@ -108,7 +105,6 @@
 
     <section class="proof section-shell" id="proof" aria-labelledby="proof-title">
       <div class="section-intro proof-intro">
-        <p class="eyebrow">Product proof</p>
         <h2 id="proof-title">Configuration stays close to runtime truth.</h2>
         <p>The app exposes the sources that shape worker behavior, then keeps measured state distinct from unknown or unavailable state.</p>
       </div>
@@ -116,10 +112,8 @@
       <figure class="proof-row media-frame">
         <div class="capture-area">
           <img class="capture" src="assets/screenshots/workjet-worker-skills.png" alt="Workjet worker editor showing model, harness, provider route, target computer, and centrally managed skills">
-          <p class="capture-note">The authentic worker and skills capture will appear here when the asset is added.</p>
         </div>
         <figcaption>
-          <span class="proof-index">01 / WORKERS</span>
           <h3>Define the role once.</h3>
           <p>Name the worker, provider route, model, harness, target computer, and owned instructions. Shared model rules keep one source.</p>
           <p class="proof-detail">Greppy is managed centrally and starts on only for supported coding harnesses. Workjet checks the exact target before prompt injection and keeps it off for the online-research worker.</p>
@@ -129,10 +123,8 @@
       <figure class="proof-row proof-row-reverse media-frame">
         <div class="capture-area">
           <img class="capture" src="assets/screenshots/workjet-remote-computer.png" alt="Workjet remote computer setup showing a Tailscale or SSH target identity and host verification">
-          <p class="capture-note">The authentic remote computer capture will appear here when the asset is added.</p>
         </div>
         <figcaption>
-          <span class="proof-index">02 / COMPUTERS</span>
           <h3>See the target before assigning work.</h3>
           <p>Local and remote computers are peer choices. Offline, unsupported, and unverified states remain explicit instead of becoming false readiness.</p>
         </figcaption>
@@ -141,10 +133,8 @@
       <figure class="proof-row media-frame">
         <div class="capture-area">
           <img class="capture" src="assets/screenshots/workjet-prompt-telemetry.png" alt="Workjet prompt and telemetry settings showing source-owned prompt blocks and observed run evidence">
-          <p class="capture-note">The authentic prompt and telemetry capture will appear here when the asset is added.</p>
         </div>
         <figcaption>
-          <span class="proof-index">03 / EVIDENCE</span>
           <h3>Audit policy and observation separately.</h3>
           <p>General rules, model rules, worker instructions, learnings, and technical rules keep named owners. Runtime telemetry records what was observed.</p>
         </figcaption>
@@ -153,7 +143,6 @@
 
     <section class="remote section-shell" id="remote" aria-labelledby="remote-title">
       <div class="remote-copy">
-        <p class="eyebrow">Remote execution model</p>
         <h2 id="remote-title">Move the workspace, not your repository credentials.</h2>
         <p>Remote shell workers receive an immutable Git bundle over the existing strictly host-key-verified SSH and Tailscale path. Each run gets a host-owned detached worktree.</p>
         <p>The remote computer does not clone or fetch from origin. It needs no GitHub login, origin access, repository credential, or SSH agent forwarding.</p>
@@ -181,7 +170,6 @@
 
     <section class="docs section-shell" id="docs" aria-labelledby="docs-title">
       <div class="docs-head">
-        <p class="eyebrow">Source installation</p>
         <h2 id="docs-title">Start from a clean checkout.</h2>
         <p>A notarized public release is not available yet. Source installation builds a local ad-hoc-signed app and requires the Xcode command line tools plus <code>rsvg-convert</code> from <code>librsvg</code>.</p>
       </div>
@@ -223,7 +211,6 @@ brew install librsvg
     <section class="final-cta" aria-labelledby="final-title">
       <div>
         <img src="assets/workjet-mark.svg" width="72" height="72" alt="Eight-blade Workjet turbine mark">
-        <p class="eyebrow">Project status</p>
         <h2 id="final-title">Inspect the project. Follow the release candidate.</h2>
         <p>Workjet is open source and under release verification. Use the source and docs now, or check the releases page for a future notarized artifact.</p>
         <div class="hero-actions">

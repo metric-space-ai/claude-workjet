@@ -17,7 +17,7 @@
   --max: 1240px;
   --gutter: clamp(1rem, 4vw, 4rem);
   --sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --display: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --display: "Avenir Next", Avenir, "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
@@ -115,7 +115,7 @@ a:hover {
   width: max-content;
   color: var(--ink-strong);
   font-family: var(--display);
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 720;
   letter-spacing: -0.02em;
   text-decoration: none;
@@ -131,7 +131,7 @@ a:hover {
 .header-source {
   position: relative;
   color: var(--ink-muted);
-  font-size: 0.82rem;
+  font-size: 0.75rem;
   font-weight: 650;
   letter-spacing: 0.015em;
   text-decoration: none;
@@ -188,16 +188,6 @@ main {
   z-index: 2;
 }
 
-.eyebrow {
-  margin: 0 0 1.1rem;
-  color: var(--blue-strong);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  line-height: 1.4;
-  text-transform: uppercase;
-}
-
 h1,
 h2,
 h3,
@@ -217,36 +207,39 @@ h3 {
 }
 
 h1 {
-  max-width: 12ch;
+  max-width: 9ch;
   margin-bottom: 1.5rem;
-  font-size: clamp(2.65rem, 5.4vw, 5.8rem);
+  font-size: 4.8828125rem;
 }
 
 h2 {
   max-width: 15ch;
   margin-bottom: 1.35rem;
-  font-size: clamp(2.15rem, 4.5vw, 4.6rem);
+  font-size: 3.125rem;
 }
 
 h3 {
   margin-bottom: 0.72rem;
-  font-size: clamp(1.18rem, 2vw, 1.65rem);
+  font-size: 1.5625rem;
   line-height: 1.18;
 }
 
 .hero-lede,
 .section-intro > p:last-child,
 .remote-copy > p,
-.docs-head > p:last-child,
-.final-cta > div > p:not(.eyebrow) {
+.docs-head > p:last-child {
   max-width: 68ch;
+}
+
+.final-cta > div > p {
+  max-width: 60ch;
 }
 
 .hero-lede {
   max-width: 58ch;
   margin: 0 0 1.8rem;
   color: var(--ink);
-  font-size: clamp(1.04rem, 1.4vw, 1.22rem);
+  font-size: 1.25rem;
   line-height: 1.68;
 }
 
@@ -265,7 +258,7 @@ h3 {
   padding: 0.66rem 0.95rem;
   border: 1px solid transparent;
   border-radius: 6px;
-  font-size: 0.88rem;
+  font-size: 1rem;
   font-weight: 720;
   line-height: 1.2;
   text-decoration: none;
@@ -301,7 +294,7 @@ h3 {
   margin: 1.9rem 0 0;
   padding: 0;
   color: var(--ink-muted);
-  font-size: 0.69rem;
+  font-size: 0.75rem;
   letter-spacing: 0.055em;
   list-style: none;
   text-transform: uppercase;
@@ -329,7 +322,7 @@ h3 {
   max-width: 55ch;
   margin: 1.25rem 0 0;
   color: var(--ink-muted);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   line-height: 1.55;
 }
 
@@ -385,47 +378,23 @@ h3 {
   background: var(--surface);
 }
 
-.capture-note {
-  position: absolute;
-  z-index: 0;
-  max-width: 34ch;
-  margin: 0;
-  padding: 1.25rem;
+.app-window figcaption {
+  width: 72ch;
+  max-width: 100%;
+  padding: 0.72rem 1rem 0.78rem;
   color: var(--ink-muted);
   font-size: 0.75rem;
-  line-height: 1.7;
-  text-align: center;
-}
-
-.js .capture {
-  opacity: 0;
-  transition: opacity 220ms ease;
-}
-
-.js .asset-ready .capture {
-  opacity: 1;
-}
-
-.js .asset-ready .capture-note {
-  display: none;
-}
-
-.js .asset-missing .capture {
-  display: none;
-}
-
-.app-window figcaption {
-  padding: 0.72rem 1rem 0.78rem;
-  border-top: 1px solid var(--line);
-  color: var(--ink-muted);
-  font-size: 0.72rem;
   line-height: 1.5;
+}
+
+.app-window .capture-area {
+  border-bottom: 1px solid var(--line);
 }
 
 .section-shell {
   width: min(100%, var(--max));
   margin: 0 auto;
-  padding: clamp(6rem, 12vw, 10rem) var(--gutter);
+  padding: 8rem var(--gutter);
 }
 
 .section-intro {
@@ -436,10 +405,6 @@ h3 {
   margin-bottom: clamp(3.5rem, 7vw, 6rem);
 }
 
-.section-intro .eyebrow {
-  grid-column: 1 / -1;
-}
-
 .section-intro h2,
 .section-intro > p:last-child {
   margin-top: 0;
@@ -448,10 +413,11 @@ h3 {
 
 .section-intro > p:last-child {
   color: var(--ink-muted);
-  font-size: 1.05rem;
+  font-size: 1.25rem;
 }
 
 .workflow {
+  padding: 8rem var(--gutter);
   border-top: 1px solid var(--line);
 }
 
@@ -504,7 +470,7 @@ h3 {
   border-radius: 50%;
   background: var(--canvas);
   color: var(--blue-strong);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
@@ -550,6 +516,7 @@ h3 {
 .proof {
   width: 100%;
   max-width: none;
+  padding: 8rem 4rem;
   border-top: 1px solid var(--line);
   background: var(--canvas-raised);
 }
@@ -598,15 +565,6 @@ h3 {
   max-width: 36rem;
 }
 
-.proof-index {
-  display: block;
-  margin-bottom: 1.1rem;
-  color: var(--blue-strong);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-}
-
 .proof-row figcaption p {
   max-width: 66ch;
   margin: 0;
@@ -620,7 +578,7 @@ h3 {
 .proof-detail {
   padding-top: 1.2rem;
   border-top: 1px solid var(--line);
-  font-size: 0.88rem;
+  font-size: 1rem;
 }
 
 .remote {
@@ -635,7 +593,7 @@ h3 {
   top: 7rem;
 }
 
-.remote-copy p:not(.eyebrow) {
+.remote-copy p {
   color: var(--ink-muted);
 }
 
@@ -660,13 +618,13 @@ h3 {
 
 .trust-chain > li > span {
   color: var(--blue-strong);
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   font-weight: 700;
 }
 
 .trust-chain h3 {
   margin-bottom: 0.5rem;
-  font-size: 1.2rem;
+  font-size: 1.5625rem;
 }
 
 .trust-chain p {
@@ -687,12 +645,13 @@ pre {
 
 code {
   color: var(--ink-strong);
-  font-size: 0.9em;
+  font-size: 1em;
 }
 
 .docs {
   width: 100%;
   max-width: none;
+  padding: 8rem 4rem;
   border-top: 1px solid var(--line);
   background: var(--canvas-raised);
 }
@@ -708,10 +667,6 @@ code {
   grid-template-columns: minmax(16rem, 0.85fr) minmax(20rem, 1.15fr);
   column-gap: clamp(2rem, 8vw, 8rem);
   align-items: end;
-}
-
-.docs-head .eyebrow {
-  grid-column: 1 / -1;
 }
 
 .docs-head h2,
@@ -743,7 +698,7 @@ code {
   padding: 0.62rem 0.9rem;
   border-bottom: 1px solid var(--line);
   color: var(--ink-muted);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -753,7 +708,7 @@ pre {
   overflow-x: auto;
   padding: clamp(1rem, 3vw, 1.6rem);
   color: var(--ink-strong);
-  font-size: clamp(0.72rem, 1.4vw, 0.9rem);
+  font-size: 1rem;
   line-height: 1.85;
   white-space: pre;
 }
@@ -779,13 +734,12 @@ pre {
 
 .table-wrap {
   overflow-x: auto;
-  border-top: 1px solid var(--line-strong);
 }
 
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.9rem;
+  font-size: 1rem;
 }
 
 th,
@@ -798,7 +752,7 @@ td {
 
 thead th {
   color: var(--ink-muted);
-  font-size: 0.66rem;
+  font-size: 0.75rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -815,7 +769,7 @@ tbody td {
 
 .final-cta {
   position: relative;
-  padding: clamp(6rem, 14vw, 12rem) var(--gutter);
+  padding: 8rem var(--gutter);
   border-top: 1px solid var(--line);
 }
 
@@ -828,12 +782,11 @@ tbody td {
 }
 
 .final-cta img {
-  grid-row: 1 / 5;
+  grid-row: 1 / 4;
   width: 5rem;
   height: 5rem;
 }
 
-.final-cta .eyebrow,
 .final-cta h2,
 .final-cta p,
 .final-cta .hero-actions {
@@ -844,7 +797,7 @@ tbody td {
   max-width: 14ch;
 }
 
-.final-cta p:not(.eyebrow) {
+.final-cta p {
   margin-top: 0;
   color: var(--ink-muted);
 }
@@ -855,7 +808,7 @@ tbody td {
 
 .release-link {
   padding: 0.65rem 0.2rem;
-  font-size: 0.86rem;
+  font-size: 1rem;
 }
 
 .site-footer {
@@ -871,7 +824,7 @@ tbody td {
 .site-footer p {
   margin: 0;
   color: var(--ink-muted);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   text-align: center;
 }
 
@@ -882,7 +835,7 @@ tbody td {
 
 .site-footer nav a {
   color: var(--ink-muted);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
 }
 
 .not-found-page {
@@ -903,10 +856,9 @@ tbody td {
 
 .not-found h1 {
   max-width: 11ch;
-  font-size: clamp(2.5rem, 8vw, 5.3rem);
 }
 
-.not-found > p:not(.eyebrow) {
+.not-found > p {
   max-width: 62ch;
   color: var(--ink-muted);
 }
@@ -955,6 +907,12 @@ tbody td {
     grid-row: 2;
   }
 
+  .proof,
+  .docs {
+    padding-right: 2rem;
+    padding-left: 2rem;
+  }
+
   .remote {
     grid-template-columns: 1fr;
   }
@@ -987,14 +945,23 @@ tbody td {
     grid-template-columns: 1fr;
   }
 
-  .section-intro .eyebrow,
-  .docs-head .eyebrow {
-    grid-column: 1;
+  .proof,
+  .docs {
+    padding-right: 1rem;
+    padding-left: 1rem;
   }
 
   .section-intro h2,
   .docs-head h2 {
     margin-bottom: 1.4rem;
+  }
+
+  h1 {
+    font-size: 3.125rem;
+  }
+
+  h2 {
+    font-size: 2.5rem;
   }
 
   .discovery-branches {
@@ -1023,7 +990,6 @@ tbody td {
     margin-bottom: 2rem;
   }
 
-  .final-cta .eyebrow,
   .final-cta h2,
   .final-cta p,
   .final-cta .hero-actions {
@@ -1044,10 +1010,6 @@ tbody td {
 @media (max-width: 540px) {
   .hero {
     padding-top: 3rem;
-  }
-
-  h1 {
-    font-size: clamp(2.45rem, 14vw, 4.2rem);
   }
 
   .hero-actions {

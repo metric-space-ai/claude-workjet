@@ -41,6 +41,20 @@ jobs:
       - name: Enforce project-site design contract
         run: node site/check-design.mjs
 
+      - name: Enforce Impeccable source and browser catalog
+        run: |
+          npx --yes impeccable@3.5.0 detect site/
+          python3 -m http.server 4174 --bind 127.0.0.1 --directory . >"$RUNNER_TEMP/workjet-site.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in 1 2 3 4 5; do
+            curl --fail --silent http://127.0.0.1:4174/site/ >/dev/null && break
+            test "$attempt" -lt 5
+            sleep 1
+          done
+          npx --yes impeccable@3.5.0 detect --viewport 1280x800 http://127.0.0.1:4174/site/
+          npx --yes impeccable@3.5.0 detect --viewport 390x844 http://127.0.0.1:4174/site/
+
       - name: Run Swift package tests
         run: swift test --package-path app
 

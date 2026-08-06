@@ -2,6 +2,8 @@
 
 Workjet is an open-source native macOS menu-bar app and CLI for managing specialized coding-agent workers across local and remote computers while Claude remains the orchestrator.
 
+[Project site](https://metric-space-ai.github.io/claude-workjet/) · [Documentation](docs/architecture.md) · [Security](SECURITY.md)
+
 <p align="center">
   <img src="docs/images/workjet-main.png" alt="Workjet menu showing configured workers and their current readiness" width="496">
 </p>
