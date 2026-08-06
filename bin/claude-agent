@@ -5,7 +5,9 @@
 # Usage: claude-agent [--degrade] [--no-isolate] [--include-dirty]
 #                     [--brief FILE] [--allowed-paths GLOBS] [--run-dir DIR]
 #                     <role> [claude args...]
+#        claude-agent runs show <run-id>
 #        claude-agent runs mark <run-id> integrated|abandoned
+#        claude-agent runs prune|gc [--dry-run] [--auto]
 #
 # Exit: 0 required worker delivered | 3 PRIMARY_UNAVAILABLE (orchestrator re-plans) |
 #       4 TASK_FAILED (worker ran, but the task itself failed; no fallback) |
@@ -26,13 +28,34 @@ OPUS_TOKEN_FILE=${OPUS_TOKEN_FILE:-$HOME/.config/secrets/claude-oauth}
 CLIPROXY_TOKEN_FILE=${CLIPROXY_TOKEN_FILE:-}
 CLIPROXY_RESTART_DELAY=${CLIPROXY_RESTART_DELAY:-3}
 
+load_visible_prompt_block() {
+  local begin_marker="$1" end_marker="$2" label="$3"
+  local prompt_file="$HOME/.claude/workjet/AGENTS.md" prompt
+  if [[ ! -r "$prompt_file" ]]; then
+    print -u2 "[claude-agent] visible $label unavailable: $prompt_file"
+    return 2
+  fi
+  prompt="$(sed -n "/^${begin_marker}$/,/^${end_marker}$/p" "$prompt_file" | sed '1d;$d')"
+  if [[ -z "$prompt" ]]; then
+    print -u2 "[claude-agent] visible $label is missing from Workjet technical rules"
+    return 2
+  fi
+  print -r -- "$prompt"
+}
+
+load_health_probe_prompt() {
+  local checkout="${1:-${PWD:A}}"
+  local prompt
+  prompt="$(load_visible_prompt_block '<!-- WORKJET HEALTH PROBE PROMPT BEGIN -->' '<!-- WORKJET HEALTH PROBE PROMPT END -->' 'health probe prompt')" || return 2
+  print -r -- "${prompt//<WORKJET_CHECKOUT>/$checkout}"
+}
+
 run_doctor() {
   local probe_prompt worker of ef pid watchdog rc out err health_state detail failures=0
   local attempt max_attempts delay
   local cache_tmp="$STATE_ROOT/.doctor.$$"
   mkdir -p "$STATE_ROOT"
-  probe_prompt="You are in an isolated worktree at ${PWD:A}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
-  probe_prompt+=$'\n\nReply with the token: OK'
+  probe_prompt="$(load_health_probe_prompt "${PWD:A}")" || return 2
   print "WORKER\tSTATUS\tDETAIL"
   : > "$cache_tmp"
   for worker in claude-sol claude-kimi claude-minimax; do
@@ -285,18 +308,353 @@ mark_run() {
     print -u2 "claude-agent: run directory not found for '$run_id': $run_dir"
     return 2
   }
-  rm -f "$run_dir/integrated" "$run_dir/abandoned"
+  rm -f "$run_dir/integrated" "$run_dir/abandoned" "$run_dir/pruned"
   : > "$run_dir/$state"
   print -r -- "[claude-agent] marked run $run_id $state: $run_dir"
 }
 
-if [[ "$1" == runs ]]; then
-  [[ "$2" == mark && $# -eq 4 ]] || {
-    print -u2 "use: claude-agent runs mark <run-id> integrated|abandoned"
-    exit 2
+run_dir_for_id() {
+  local id="$1" index_file="$STATE_ROOT/run-index/$id"
+  if [[ -f "$index_file" ]]; then
+    print -r -- "$(<"$index_file")"
+  else
+    print -r -- "$STATE_ROOT/runs/$id"
+  fi
+}
+
+show_run() {
+  local run_id="$1"
+  python3 - "$STATE_ROOT" "$run_id" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+
+state_root, run_id = sys.argv[1:]
+
+
+def fail(message):
+    print(f"claude-agent: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def clean(value, limit=240):
+    if not isinstance(value, str):
+        return "<none>"
+    value = "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in value)
+    value = " ".join(value.split())
+    return value[:limit] if value else "<none>"
+
+
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id) or ".." in run_id:
+    fail(f"invalid run id {run_id!r}")
+
+runs_root = os.path.realpath(os.path.join(state_root, "runs"))
+index_path = os.path.join(state_root, "run-index", run_id)
+if os.path.lexists(index_path):
+    try:
+        info = os.lstat(index_path)
+    except OSError:
+        fail("run index cannot be inspected")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > 4096:
+        fail("run index is not a trusted regular file")
+    try:
+        raw_target = open(index_path, encoding="utf-8").read()
+    except (OSError, UnicodeError):
+        fail("run index cannot be read safely")
+    if not raw_target or raw_target.count("\n") > 1 or "\x00" in raw_target:
+        fail("run index contains an invalid path")
+    target = raw_target.rstrip("\n")
+    if not os.path.isabs(target) or any(ord(ch) < 32 for ch in target):
+        fail("run index contains an invalid path")
+else:
+    target = os.path.join(runs_root, run_id)
+
+run_dir = os.path.realpath(target)
+try:
+    if os.path.commonpath([runs_root, run_dir]) != runs_root:
+        fail("run directory is outside the trusted runs root")
+except ValueError:
+    fail("run directory is outside the trusted runs root")
+if run_dir == runs_root or not os.path.isdir(run_dir) or os.path.islink(target):
+    fail("trusted run directory was not found")
+
+completion_path = os.path.join(run_dir, "completion.json")
+try:
+    info = os.lstat(completion_path)
+except OSError:
+    fail("completion.json was not found")
+if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode) or info.st_size > 262144:
+    fail("completion.json is not a trusted bounded regular file")
+try:
+    with open(completion_path, encoding="utf-8") as handle:
+        completion = json.load(handle)
+except (OSError, UnicodeError, json.JSONDecodeError):
+    fail("completion.json is invalid")
+
+if not isinstance(completion, dict) or completion.get("schemaVersion") != 1:
+    fail("completion.json has an unsupported schema")
+receipt = completion.get("receipt")
+claims = completion.get("claims")
+observations = completion.get("observations")
+if not isinstance(receipt, dict) or not isinstance(observations, dict):
+    fail("completion.json is missing receipt observations")
+if observations.get("runId") != run_id:
+    fail("completion.json run id does not match the requested run")
+health = receipt.get("status")
+if health not in {"valid", "missing", "invalid"}:
+    fail("completion.json has an invalid receipt status")
+terminal = observations.get("terminal")
+flags = observations.get("flags")
+path_violation = observations.get("pathViolation")
+if not isinstance(terminal, dict) or not isinstance(flags, dict) or not isinstance(path_violation, dict):
+    fail("completion.json has invalid dispatcher observations")
+
+print(f"RUN {clean(run_id, 128)}")
+print(f"role: {clean(observations.get('role'), 64)}")
+print(f"workers: required={clean(observations.get('requiredWorker'), 64)} actual={clean(observations.get('actualWorker'), 64)}")
+print(f"terminal: exit={terminal.get('exitCode', '<invalid>')} classification={clean(terminal.get('classification'), 64)}")
+print(f"receipt: {health}")
+if health == "valid" and isinstance(claims, dict):
+    print(f"claim: status={clean(claims.get('status'), 32)} summary={clean(claims.get('summary'), 320)}")
+    print(
+        "claim-counts: changedFiles={} verification={} concerns={} producedPaths={}".format(
+            len(claims.get("changedFiles", [])) if isinstance(claims.get("changedFiles"), list) else "?",
+            len(claims.get("verification", [])) if isinstance(claims.get("verification"), list) else "?",
+            len(claims.get("concerns", [])) if isinstance(claims.get("concerns"), list) else "?",
+            len(claims.get("producedPaths", [])) if isinstance(claims.get("producedPaths"), list) else "?",
+        )
+    )
+print(
+    "observed: timeout={} tamper={} pathViolation={}".format(
+        str(bool(flags.get("timeout"))).lower(),
+        str(bool(flags.get("tamper"))).lower(),
+        clean(path_violation.get("state"), 32),
+    )
+)
+protected = observations.get("protectedResult")
+if isinstance(protected, dict):
+    print(f"protected: ref={clean(protected.get('ref'), 200)} sha={clean(protected.get('sha'), 80)}")
+worktree = observations.get("worktree")
+if isinstance(worktree, dict):
+    print(f"worktree: {clean(worktree.get('path'), 400)}")
+diffstat = observations.get("diffstat")
+if isinstance(diffstat, str) and diffstat:
+    lines = [clean(line, 240) for line in diffstat.splitlines()[:8]]
+    print("diffstat:")
+    for line in lines:
+        print(f"  {line}")
+
+artifacts = []
+for name in ("completion.json", "stdout", "stderr", "diffstat", "protected-ref", "timeout.diffstat", "path-violations.txt"):
+    path = os.path.join(run_dir, name)
+    try:
+        item = os.lstat(path)
+    except OSError:
+        continue
+    if stat.S_ISREG(item.st_mode) and not stat.S_ISLNK(item.st_mode):
+        artifacts.append(name)
+print(f"artifacts: {', '.join(artifacts)}")
+print(f"run-directory: {clean(run_dir, 600)}")
+PY
+}
+
+prune_worktrees() {
+  local dry_run="${1:-0}" scope="${2:-$STATE_ROOT/worktrees}" old_only="${3:-0}" allow_unmarked="${4:-0}"
+  local worktrees_root root_abs scope_abs candidate candidate_abs id run_dir recorded_path recorded_abs
+  local marker state pid_file pid common_dir common_abs worktree_status expected_ref
+  local was_unmarked
+  local scanned=0 pruned=0 retained=0
+  local -a find_depth find_age
+
+  worktrees_root="$STATE_ROOT/worktrees"
+  [[ -d "$worktrees_root" ]] || {
+    print "[claude-agent] worktree prune summary: scanned=0 pruned=0 retained=0"
+    return 0
   }
-  mark_run "$3" "$4"
-  exit $?
+  root_abs="${worktrees_root:A}"
+  [[ -d "$scope" ]] || {
+    print "[claude-agent] worktree prune summary: scanned=0 pruned=0 retained=0"
+    return 0
+  }
+  scope_abs="${scope:A}"
+  if [[ "$scope_abs" == "$root_abs" ]]; then
+    find_depth=(-mindepth 2 -maxdepth 2)
+  elif [[ "$scope_abs" == "$root_abs/"* ]]; then
+    find_depth=(-mindepth 1 -maxdepth 1)
+  else
+    print -u2 "claude-agent: refusing worktree prune outside state root: $scope_abs"
+    return 2
+  fi
+  (( old_only )) && find_age=(-mtime +0)
+
+  while IFS= read -r -d '' candidate; do
+    (( ++scanned ))
+    candidate_abs="${candidate:A}"
+    id="${candidate_abs:t}"
+    run_dir="$(run_dir_for_id "$id")"
+    marker=""
+    [[ -f "$run_dir/integrated" ]] && marker=integrated
+    [[ -f "$run_dir/abandoned" ]] && marker=abandoned
+    was_unmarked=0
+
+    if [[ "$candidate_abs" != "$root_abs/"* ]]; then
+      print "[claude-agent] retained $id: path outside worktree state root ($candidate_abs)"
+      (( ++retained ))
+      continue
+    fi
+    [[ -f "$run_dir/pruned" ]] && marker=pruned
+    if [[ -z "$marker" ]] && ! (( old_only && allow_unmarked )); then
+      print "[claude-agent] retained $id: run is unmarked (automatic pruning requires the 24h safety window)"
+      (( ++retained ))
+      continue
+    fi
+    if [[ -z "$marker" ]]; then
+      marker=unmarked
+      was_unmarked=1
+    fi
+    state=""
+    if [[ -f "$run_dir/run-state.json" ]]; then
+      state="$(sed -n 's/.*"state":"\([^"]*\)".*/\1/p' "$run_dir/run-state.json" | head -n 1)"
+      if [[ "$state" != completed && "$state" != failed ]]; then
+        print "[claude-agent] retained $id: run is not terminal (state=${state:-invalid})"
+        (( ++retained ))
+        continue
+      fi
+    elif [[ ! -f "$run_dir/exit" ]]; then
+      print "[claude-agent] retained $id: run is not terminal (state=unknown)"
+      (( ++retained ))
+      continue
+    fi
+    if [[ ! -s "$run_dir/worktree-path" ]]; then
+      print "[claude-agent] retained $id: missing worktree path metadata"
+      (( ++retained ))
+      continue
+    fi
+    recorded_path="$(<"$run_dir/worktree-path")"
+    recorded_abs="${recorded_path:A}"
+    if [[ "$recorded_abs" != "$candidate_abs" || "$recorded_abs" != "$root_abs/"* ]]; then
+      print "[claude-agent] retained $id: worktree path metadata is outside or does not match ($recorded_path)"
+      (( ++retained ))
+      continue
+    fi
+
+    for pid_file in "$run_dir/pid" "$run_dir/journal-pid"; do
+      [[ -e "$pid_file" ]] || continue
+      pid="$(<"$pid_file")"
+      if [[ "$pid" != <-> ]]; then
+        print "[claude-agent] retained $id: invalid process metadata in $pid_file"
+        marker=""
+        break
+      fi
+      if kill -0 "$pid" 2>/dev/null || ps -p "$pid" -o pid= 2>/dev/null | grep -q '[0-9]'; then
+        print "[claude-agent] retained $id: process $pid from ${pid_file:t} is still alive"
+        marker=""
+        break
+      fi
+    done
+    if [[ -z "$marker" ]]; then
+      (( ++retained ))
+      continue
+    fi
+
+    expected_ref="refs/workjet/$id"
+    if [[ ! -s "$run_dir/protected-ref" || "$(<"$run_dir/protected-ref")" != "$expected_ref" ]]; then
+      print "[claude-agent] retained $id: missing or mismatched protected ref metadata ($expected_ref)"
+      (( ++retained ))
+      continue
+    fi
+    if ! git -C "$candidate_abs" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      print "[claude-agent] retained $id: path is not a registered Git worktree"
+      (( ++retained ))
+      continue
+    fi
+    if ! git -C "$candidate_abs" rev-parse --verify -q "$expected_ref^{commit}" >/dev/null; then
+      print "[claude-agent] retained $id: protected ref is missing or not a commit ($expected_ref)"
+      (( ++retained ))
+      continue
+    fi
+    worktree_status="$(git -C "$candidate_abs" status --porcelain --untracked-files=all --ignored=matching 2>/dev/null)" || {
+      print "[claude-agent] retained $id: Git status could not be read"
+      (( ++retained ))
+      continue
+    }
+    if [[ -n "$worktree_status" ]]; then
+      print "[claude-agent] retained $id: worktree is dirty"
+      (( ++retained ))
+      continue
+    fi
+    common_dir="$(git -C "$candidate_abs" rev-parse --git-common-dir 2>/dev/null)" || {
+      print "[claude-agent] retained $id: Git common directory could not be resolved"
+      (( ++retained ))
+      continue
+    }
+    [[ "$common_dir" == /* ]] || common_dir="$candidate_abs/$common_dir"
+    common_abs="${common_dir:A}"
+
+    if (( dry_run )); then
+      if (( was_unmarked )); then
+        print "[claude-agent] would prune unmarked terminal worktree: $candidate_abs"
+      else
+        print "[claude-agent] would prune $marker worktree: $candidate_abs"
+      fi
+      continue
+    fi
+    if (( old_only )); then
+      print "[claude-agent] removing $marker worktree older than 24h: $candidate_abs"
+    else
+      print "[claude-agent] pruning $marker worktree: $candidate_abs"
+    fi
+    if git --git-dir="$common_abs" worktree remove -- "$candidate_abs" >/dev/null 2>&1; then
+      if (( was_unmarked )); then
+        : > "$run_dir/pruned"
+        print "[claude-agent] preserved journal and protected ref; marked run $id pruned"
+      fi
+      (( ++pruned ))
+    else
+      print "[claude-agent] retained $id: git worktree remove refused the path"
+      (( ++retained ))
+    fi
+  done < <(find "$scope_abs" "${find_depth[@]}" -type d "${find_age[@]}" -print0 2>/dev/null)
+
+  print "[claude-agent] worktree prune summary: scanned=$scanned pruned=$pruned retained=$retained"
+}
+
+if [[ "$1" == runs ]]; then
+  case "$2" in
+    show)
+      [[ $# -eq 3 ]] || { print -u2 "use: claude-agent runs show <run-id>"; exit 2; }
+      show_run "$3"
+      exit $?
+      ;;
+    mark)
+      [[ $# -eq 4 ]] || { print -u2 "use: claude-agent runs mark <run-id> integrated|abandoned"; exit 2; }
+      mark_run "$3" "$4"
+      exit $?
+      ;;
+    prune|gc)
+      prune_dry_run=0
+      prune_auto=0
+      shift 2
+      while (( $# )); do
+        case "$1" in
+          --dry-run) prune_dry_run=1 ;;
+          --auto) prune_auto=1 ;;
+          *) print -u2 "use: claude-agent runs prune|gc [--dry-run] [--auto]"; exit 2 ;;
+        esac
+        shift
+      done
+      prune_worktrees "$prune_dry_run" "$STATE_ROOT/worktrees" "$prune_auto" "$prune_auto"
+      exit $?
+      ;;
+    *)
+      print -u2 "use: claude-agent runs show <run-id>"
+      print -u2 "     claude-agent runs mark <run-id> integrated|abandoned"
+      print -u2 "     claude-agent runs prune|gc [--dry-run] [--auto]"
+      exit 2
+      ;;
+  esac
 fi
 
 allow_degrade=0
@@ -510,8 +868,11 @@ else
 fi
 
 RUN_WORKER=""
+RUN_TASK_WORKER=""
+FINAL_TASK_STDOUT=""
 RUN_WORKTREE=""
 RUN_GIT_BEFORE=""
+RUN_SCOPE_BEFORE=""
 RUN_ID=""
 REPO_ID=""
 WORKTREE_PATH=""
@@ -549,6 +910,71 @@ sha256_file() {
   fi
 }
 
+write_run_state() {
+  local state="$1" now sequence tmp metadata="" value
+  [[ -n "$RUN_DIR" ]] || return 0
+  now="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  sequence="$(date -u '+%s')"
+  if [[ -s "$RUN_DIR/effective-model" ]]; then
+    value="$(<"$RUN_DIR/effective-model")"
+    metadata+=",\"model\":\"$value\""
+  fi
+  if [[ -s "$RUN_DIR/effective-reasoning" ]]; then
+    value="$(<"$RUN_DIR/effective-reasoning")"
+    metadata+=",\"reasoning\":\"$value\""
+  fi
+  if [[ -s "$RUN_DIR/effective-speed" ]]; then
+    value="$(<"$RUN_DIR/effective-speed")"
+    metadata+=",\"speed\":\"$value\""
+  fi
+  tmp="$RUN_DIR/.run-state.json.$$"
+  print -r -- "{\"schemaVersion\":1,\"sequence\":$sequence,\"state\":\"$state\",\"heartbeatAt\":\"$now\"$metadata}" > "$tmp" && \
+    mv "$tmp" "$RUN_DIR/run-state.json"
+}
+
+record_effective_metadata() {
+  local worker="$1" model="" reasoning="${WORKJET_EFFECTIVE_REASONING:-}" speed="${WORKJET_EFFECTIVE_SPEED:-}" thinking i
+  shift
+  case "$worker" in
+    claude-sol)
+      model="${SOL_MODEL:-gpt-5.6-sol}"
+      thinking="${SOL_THINKING:-32000}"
+      [[ -z "$reasoning" && "$thinking" == <-> ]] && (( thinking >= 10000 )) && reasoning=high
+      ;;
+    claude-kimi) model="${KIMI_MODEL:-k3[1m]}" ;;
+    claude-minimax) model="${MINIMAX_MODEL:-MiniMax-M3}" ;;
+    claude-opus) model="${OPUS_MODEL:-claude-opus-4-8}" ;;
+  esac
+  local -a args=("$@")
+  for (( i=1; i <= ${#args}; i++ )); do
+    case "${args[$i]}" in
+      --model)
+        (( i < ${#args} )) && model="${args[$(( i + 1 ))]}"
+        ;;
+      --model=*) model="${args[$i]#--model=}" ;;
+      --effort)
+        (( i < ${#args} )) && reasoning="${args[$(( i + 1 ))]}"
+        ;;
+      --effort=*) reasoning="${args[$i]#--effort=}" ;;
+      --speed)
+        (( i < ${#args} )) && speed="${args[$(( i + 1 ))]}"
+        ;;
+      --speed=*) speed="${args[$i]#--speed=}" ;;
+      --fast) speed=fast ;;
+    esac
+  done
+  if (( ${#model} == 0 || ${#model} > 256 )) || ! print -rn -- "$model" | LC_ALL=C grep -Eq '^[][A-Za-z0-9._:/@+-]+$'; then
+    model=""
+  fi
+  case "$reasoning" in low|medium|high|xhigh|max|ultra|ultracode|ultrathink) ;; *) reasoning="" ;; esac
+  case "$speed" in fast|normal) ;; *) speed="" ;; esac
+  rm -f "$RUN_DIR/effective-model" "$RUN_DIR/effective-reasoning" "$RUN_DIR/effective-speed"
+  [[ -n "$model" ]] && print -r -- "$model" > "$RUN_DIR/effective-model"
+  [[ -n "$reasoning" ]] && print -r -- "$reasoning" > "$RUN_DIR/effective-reasoning"
+  [[ -n "$speed" ]] && print -r -- "$speed" > "$RUN_DIR/effective-speed"
+  write_run_state running
+}
+
 init_run_dir() {
   local stamp raw_id index_tmp
   stamp="$(date +%Y%m%dT%H%M%S)-$$"
@@ -578,6 +1004,7 @@ init_run_dir() {
   : > "$RUN_DIR/worker"
   : > "$RUN_DIR/worktree-path"
   print -r -- "$RUN_ID" > "$RUN_DIR/run-id"
+  write_run_state running
   if [[ -n "$repo_root" ]]; then
     RUN_GIT_BEFORE="$(git -C "$repo_root" rev-parse HEAD 2>/dev/null)"
     print -r -- "$RUN_GIT_BEFORE" > "$RUN_DIR/git-head-before"
@@ -597,6 +1024,10 @@ record_attempt() {
   print -r -- "$attempt_rc" > "$attempt_dir/rc"
   print -rn -- "$out" > "$attempt_dir/stdout"
   print -rn -- "$err" > "$attempt_dir/stderr"
+  if [[ "$kind" == task ]]; then
+    RUN_TASK_WORKER="$worker"
+    FINAL_TASK_STDOUT="$attempt_dir/stdout"
+  fi
   print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
   print -rn -- "$out" > "$RUN_DIR/stdout"
   print -rn -- "$err" > "$RUN_DIR/stderr"
@@ -615,12 +1046,17 @@ path_is_allowed() {
 
 audit_allowed_paths() {
   [[ -n "$allowed_paths" && -n "$repo_root" ]] || return 0
-  local git_target="$repo_root" changed names_file violation_file
+  if [[ -z "$RUN_TASK_WORKER" ]]; then
+    rm -f "$RUN_DIR/path-violations.txt" "$RUN_DIR/path-violations.txt.tmp"
+    return 0
+  fi
+  local git_target="$repo_root" diff_base="$RUN_GIT_BEFORE" changed names_file violation_file
   local -A seen
   [[ -n "$RUN_WORKTREE" && -d "$RUN_WORKTREE" ]] && git_target="$RUN_WORKTREE"
+  [[ -n "$RUN_SCOPE_BEFORE" ]] && diff_base="$RUN_SCOPE_BEFORE"
   names_file="$(mktemp "${TMPDIR:-/tmp}/workjet-paths.XXXXXX")" || return 0
   violation_file="$RUN_DIR/path-violations.txt"
-  git -C "$git_target" diff --name-only -z "$RUN_GIT_BEFORE" -- > "$names_file" 2>/dev/null || true
+  git -C "$git_target" diff --name-only -z "$diff_base" -- > "$names_file" 2>/dev/null || true
   git -C "$git_target" ls-files --others --exclude-standard -z >> "$names_file" 2>/dev/null || true
   : > "${violation_file}.tmp"
   while IFS= read -r -d '' changed; do
@@ -647,6 +1083,7 @@ start_journal() {
     while true; do
       sleep "$HEARTBEAT_INTERVAL"
       touch "$RUN_DIR/heartbeat"
+      write_run_state running
       now="$(date +%s)"
       if (( now - last_diff >= DIFFSTAT_INTERVAL )); then
         (( ++seq ))
@@ -677,9 +1114,242 @@ stop_journal() {
   fi
 }
 
+write_completion_receipt() {
+  local final_rc="$1" finished_at="$2"
+  python3 - "$RUN_DIR" "$RUN_ID" "$role" "$required_worker" "$RUN_TASK_WORKER" \
+    "$final_rc" "$finished_at" "$TASK_TIMED_OUT" "$TAMPER_DETECTED" "$allowed_paths" \
+    "$FINAL_TASK_STDOUT" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+
+(
+    run_dir,
+    run_id,
+    role,
+    required_worker,
+    actual_worker,
+    final_rc_raw,
+    finished_at,
+    timeout_raw,
+    tamper_raw,
+    allowed_paths,
+    task_stdout,
+) = sys.argv[1:]
+
+MAX_TAIL = 65536
+MAX_RECEIPT = 32768
+OPEN = b"```workjet-completion-receipt-v1\n"
+CLOSE = b"\n```"
+
+
+def bounded_text(value, maximum, allow_empty=True):
+    if not isinstance(value, str) or len(value) > maximum:
+        raise ValueError("string-bound")
+    if not allow_empty and not value:
+        raise ValueError("empty-string")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError("control-character")
+    return value
+
+
+def bounded_list(value, maximum, item_maximum):
+    if not isinstance(value, list) or len(value) > maximum:
+        raise ValueError("list-bound")
+    return [bounded_text(item, item_maximum) for item in value]
+
+
+def parse_claims(path):
+    if not path:
+        return "missing", "no-task-attempt", None
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return "invalid", "untrusted-task-stdout", None
+        with open(path, "rb") as handle:
+            if info.st_size > MAX_TAIL:
+                handle.seek(-MAX_TAIL, os.SEEK_END)
+            tail = handle.read(MAX_TAIL)
+    except OSError:
+        return "invalid", "unreadable-task-stdout", None
+
+    if OPEN not in tail:
+        return "missing", "receipt-block-absent", None
+    start = tail.rfind(OPEN)
+    if start > 0 and tail[start - 1 : start] != b"\n":
+        return "invalid", "receipt-opener-not-on-line", None
+    block = tail[start:].rstrip(b" \t\r\n")
+    if not block.endswith(CLOSE):
+        return "invalid", "receipt-not-final-or-unclosed", None
+    payload = block[len(OPEN) : -len(CLOSE)]
+    if not payload or len(payload) > MAX_RECEIPT or b"\n" in payload or b"\r" in payload:
+        return "invalid", "receipt-size-or-shape", None
+    try:
+        raw = json.loads(payload.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return "invalid", "receipt-json", None
+
+    expected = {
+        "schemaVersion",
+        "status",
+        "summary",
+        "changedFiles",
+        "verification",
+        "concerns",
+        "producedPaths",
+    }
+    try:
+        if not isinstance(raw, dict) or set(raw) != expected or raw.get("schemaVersion") != 1:
+            raise ValueError("schema")
+        status = bounded_text(raw["status"], 32, allow_empty=False)
+        if status not in {"completed", "partial", "failed", "blocked"}:
+            raise ValueError("status")
+        summary = bounded_text(raw["summary"], 2000)
+        changed_files = bounded_list(raw["changedFiles"], 100, 1024)
+        concerns = bounded_list(raw["concerns"], 50, 2048)
+        produced_paths = bounded_list(raw["producedPaths"], 100, 1024)
+        verification_raw = raw["verification"]
+        if not isinstance(verification_raw, list) or len(verification_raw) > 50:
+            raise ValueError("verification-bound")
+        verification = []
+        for item in verification_raw:
+            if not isinstance(item, dict) or set(item) != {"command", "result"}:
+                raise ValueError("verification-schema")
+            verification.append(
+                {
+                    "command": bounded_text(item["command"], 2048),
+                    "result": bounded_text(item["result"], 4096),
+                }
+            )
+    except (KeyError, ValueError, TypeError):
+        return "invalid", "receipt-contract", None
+
+    return (
+        "valid",
+        "validated",
+        {
+            "schemaVersion": 1,
+            "status": status,
+            "summary": summary,
+            "changedFiles": changed_files,
+            "verification": verification,
+            "concerns": concerns,
+            "producedPaths": produced_paths,
+        },
+    )
+
+
+def read_text(name, maximum=65536):
+    path = os.path.join(run_dir, name)
+    try:
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            return None, False
+        with open(path, "rb") as handle:
+            raw = handle.read(maximum + 1)
+    except OSError:
+        return None, False
+    truncated = len(raw) > maximum
+    raw = raw[:maximum]
+    try:
+        return raw.decode("utf-8", "replace").rstrip("\n"), truncated
+    except Exception:
+        return None, truncated
+
+
+final_rc = int(final_rc_raw)
+classification = {
+    0: "delivered",
+    3: "primary_unavailable",
+    4: "task_failed",
+    10: "degraded",
+}.get(final_rc, "other")
+receipt_status, receipt_detail, claims = parse_claims(task_stdout)
+started_at, _ = read_text("started-at", 64)
+worktree_path, _ = read_text("worktree-path", 4096)
+git_before, _ = read_text("git-head-before", 128)
+git_after, _ = read_text("git-head-after", 128)
+protected_ref, _ = read_text("protected-ref", 512)
+protected_sha, _ = read_text("protected-sha", 128)
+diffstat, diffstat_truncated = read_text("diffstat", 65536)
+
+violations_path = os.path.join(run_dir, "path-violations.txt")
+violation_count = 0
+if not allowed_paths:
+    violation_state = "not_requested"
+else:
+    try:
+        info = os.lstat(violations_path)
+        if stat.S_ISREG(info.st_mode) and not stat.S_ISLNK(info.st_mode) and info.st_size:
+            with open(violations_path, "rb") as handle:
+                violation_count = min(10000, sum(1 for _ in handle))
+            violation_state = "violated"
+        else:
+            violation_state = "clean"
+    except OSError:
+        violation_state = "clean"
+
+worktree = None
+if worktree_path or git_before or git_after:
+    worktree = {
+        "path": worktree_path or None,
+        "gitHeadBefore": git_before or None,
+        "gitHeadAfter": git_after or None,
+    }
+protected = None
+if protected_ref or protected_sha:
+    protected = {"ref": protected_ref or None, "sha": protected_sha or None}
+
+completion = {
+    "schemaVersion": 1,
+    "receipt": {"status": receipt_status, "detail": receipt_detail},
+    "claims": claims,
+    "observations": {
+        "runId": run_id,
+        "role": role,
+        "requiredWorker": required_worker,
+        "actualWorker": actual_worker or None,
+        "terminal": {"exitCode": final_rc, "classification": classification},
+        "timestamps": {"startedAt": started_at, "finishedAt": finished_at},
+        "flags": {"timeout": timeout_raw == "1", "tamper": tamper_raw == "1"},
+        "worktree": worktree,
+        "protectedResult": protected,
+        "pathViolation": {"state": violation_state, "count": violation_count},
+        "diffstat": diffstat or "",
+        "diffstatTruncated": diffstat_truncated,
+    },
+}
+
+fd, temporary = tempfile.mkstemp(prefix=".completion.json.", dir=run_dir)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(completion, handle, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, os.path.join(run_dir, "completion.json"))
+    try:
+        directory_fd = os.open(run_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        pass
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
+}
+
 finalize_run() {
-  local final_rc="$1" git_target git_after diffstat
+  local final_rc="$1" git_target git_after diffstat finished_at
   stop_journal
+  finished_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   print -r -- "$final_rc" > "$RUN_DIR/rc"
   print -r -- "$RUN_WORKER" > "$RUN_DIR/worker"
   print -r -- "$RUN_WORKTREE" > "$RUN_DIR/worktree-path"
@@ -695,10 +1365,18 @@ finalize_run() {
   print -r -- "$final_rc" > "$RUN_DIR/exit-code"
   {
     print -r -- "rc=$final_rc"
-    print -r -- "finished_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    print -r -- "finished_at=$finished_at"
     (( TAMPER_DETECTED )) && print -r -- "tamper=true"
     (( TASK_TIMED_OUT )) && print -r -- "timeout=true"
   } > "$RUN_DIR/exit"
+  if (( final_rc == 0 )); then
+    write_run_state completed
+  else
+    write_run_state failed
+  fi
+  if ! write_completion_receipt "$final_rc" "$finished_at"; then
+    print -u2 "[claude-agent] warning: could not persist completion receipt telemetry"
+  fi
   print -u2 "[claude-agent] run directory: $RUN_DIR"
 }
 
@@ -763,37 +1441,11 @@ check_main_tamper() {
   return 1
 }
 
-run_dir_for_id() {
-  local id="$1" index_file="$STATE_ROOT/run-index/$id"
-  if [[ -f "$index_file" ]]; then
-    print -r -- "$(<"$index_file")"
-  else
-    print -r -- "$STATE_ROOT/runs/$id"
-  fi
-}
-
 cleanup_stale_worktrees() {
   [[ -n "$repo_root" ]] || return 0
-  local root="$STATE_ROOT/worktrees/$REPO_ID" stale id old_run_dir marker
+  local root="$STATE_ROOT/worktrees/$REPO_ID"
   [[ -d "$root" ]] || return 0
-  while IFS= read -r -d '' stale; do
-    id="${stale:t}"
-    old_run_dir="$(run_dir_for_id "$id")"
-    marker=""
-    [[ -f "$old_run_dir/integrated" ]] && marker=integrated
-    [[ -f "$old_run_dir/abandoned" ]] && marker=abandoned
-    if [[ -n "$marker" ]]; then
-      print -u2 "[claude-agent] removing $marker worktree older than 24h: $stale"
-      if ! git -C "$repo_root" worktree remove --force "$stale" >/dev/null 2>&1; then
-        rm -rf -- "$stale"
-      fi
-    else
-      print -u2 "[claude-agent] retained unmarked worktree older than 24h: $stale"
-      print -u2 "[claude-agent] inspect/integrate it, then run: claude-agent runs mark $id integrated"
-      print -u2 "[claude-agent] or discard it explicitly with: claude-agent runs mark $id abandoned"
-    fi
-  done < <(find "$root" -mindepth 1 -maxdepth 1 -type d -mtime +0 -print0 2>/dev/null)
-  git -C "$repo_root" worktree prune >/dev/null 2>&1 || true
+  prune_worktrees 0 "$root" 1 1 >&2
 }
 
 cleanup_stale_worktrees
@@ -852,8 +1504,30 @@ prepare_worktree() {
       return 4
     }
   fi
+  capture_scope_baseline "$WORKTREE_PATH" || {
+    print_task_failed "path audit baseline" "could not snapshot the worker's initial worktree"
+    return 4
+  }
   (( ++WORKTREE_USE_COUNT ))
   return 0
+}
+
+capture_scope_baseline() {
+  local worktree="$1" index_file git_dir tree
+  index_file="$(mktemp "${TMPDIR:-/tmp}/workjet-scope-index.XXXXXX")" || return 4
+  rm -f "$index_file"
+  git_dir="$(git -C "$worktree" rev-parse --git-dir)" || { rm -f "$index_file"; return 4; }
+  [[ "$git_dir" == /* ]] || git_dir="$worktree/$git_dir"
+  if [[ -f "$git_dir/index" ]]; then
+    cp "$git_dir/index" "$index_file" || { rm -f "$index_file"; return 4; }
+  else
+    GIT_INDEX_FILE="$index_file" git -C "$worktree" read-tree HEAD || { rm -f "$index_file"; return 4; }
+  fi
+  GIT_INDEX_FILE="$index_file" git -C "$worktree" add -A -- . || { rm -f "$index_file"; return 4; }
+  tree="$(GIT_INDEX_FILE="$index_file" git -C "$worktree" write-tree)" || { rm -f "$index_file"; return 4; }
+  rm -f "$index_file"
+  RUN_SCOPE_BEFORE="$tree"
+  print -r -- "$RUN_SCOPE_BEFORE" > "$RUN_DIR/scope-tree-before"
 }
 
 protect_successful_worktree() {
@@ -903,13 +1577,29 @@ report_worktree() {
   print -u2 -r -- "${diffstat:-<no diff>}"
 }
 
+completion_receipt_prompt() {
+  load_visible_prompt_block '<!-- WORKJET COMPLETION RECEIPT PROMPT BEGIN -->' '<!-- WORKJET COMPLETION RECEIPT PROMPT END -->' 'completion receipt prompt'
+}
+
 inject_preamble() {
-  local isolated_path="$1" i prompt
+  local isolated_path="$1" i prompt receipt_prompt
   shift
   INVOKE_ARGS=("$@")
+  local prompt_file="$HOME/.claude/workjet/AGENTS.md"
+  if [[ ! -r "$prompt_file" ]]; then
+    print -u2 "[claude-agent] visible worker preamble unavailable: $prompt_file"
+    return 2
+  fi
+  prompt="$(sed -n '/^<!-- WORKJET WORKER PREAMBLE BEGIN -->$/,/^<!-- WORKJET WORKER PREAMBLE END -->$/p' "$prompt_file" | sed '1d;$d')"
+  if [[ -z "$prompt" ]]; then
+    print -u2 "[claude-agent] visible worker preamble is missing from Workjet technical rules"
+    return 2
+  fi
+  prompt="${prompt//<WORKJET_CHECKOUT>/$isolated_path}"
+  receipt_prompt="$(completion_receipt_prompt)" || return 2
+  prompt+=$'\n\n'"$receipt_prompt"
   for (( i=1; i <= ${#INVOKE_ARGS}; i++ )); do
     if [[ "${INVOKE_ARGS[$i]}" == -p ]] && (( i < ${#INVOKE_ARGS} )); then
-      prompt="You are in an isolated worktree at ${isolated_path}. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents."
       prompt+=$'\n\n'"${INVOKE_ARGS[$(( i + 1 ))]}"
       INVOKE_ARGS[$(( i + 1 ))]="$prompt"
       print -rn -- "$prompt" > "$RUN_DIR/prompt.txt"
@@ -1012,7 +1702,8 @@ invoke_worker() {
   local w="$1" timeout="$2" of="$3" ef="$4"
   shift 4
   ensure_proxy "$w"
-  run_timed "$timeout" "$of" "$ef" "$AGENT_BIN_DIR/$w" "$@"
+  record_effective_metadata "$w" "$@"
+  run_timed "$timeout" "$of" "$ef" /usr/bin/env WORKJET_OBSERVER_BYPASS=1 "$AGENT_BIN_DIR/$w" "$@"
 }
 
 probe_cache_file() {
@@ -1042,7 +1733,7 @@ mark_probe_good() {
 }
 
 probe_available() {
-  local w="$1" of ef rc out err attempt=0 max_attempts
+  local w="$1" of ef rc out err probe_out_excerpt probe_failure attempt=0 max_attempts
   local last_kind=provider last_err="" delay
   max_attempts=$(( PROBE_RETRIES + 1 ))
   (( max_attempts > 0 )) || max_attempts=1
@@ -1058,12 +1749,19 @@ probe_available() {
   while (( attempt < max_attempts )); do
     (( ++attempt ))
     of=$(mktemp); ef=$(mktemp)
-    inject_preamble "${WORKER_CWD:-${PWD:A}}" -p "Reply with the token: OK"
+    INVOKE_ARGS=(-p "$(load_health_probe_prompt "${WORKER_CWD:-${PWD:A}}")") || return 1
     invoke_worker "$w" "$PROBE_TIMEOUT" "$of" "$ef" "${INVOKE_ARGS[@]}"; rc=$?
     out="$(<"$of")"; err="$(<"$ef")"
     record_attempt "$w" "$out" "$err" "$rc" probe
     rm -f "$of" "$ef"
     check_main_tamper || return 4
+
+    probe_failure="$err"
+    if (( rc != 0 && rc != 124 )); then
+      # Only failed probes may classify bounded stdout as provider/auth failure.
+      probe_out_excerpt="${out[1,8192]}"
+      has_output "$probe_out_excerpt" && probe_failure+=$'\n'"$probe_out_excerpt"
+    fi
 
     if (( rc == 0 )) && has_output "$out"; then
       mark_probe_good "$w"
@@ -1072,9 +1770,9 @@ probe_available() {
       last_kind=timeout
       last_err="$err"
       print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: timeout (${PROBE_TIMEOUT}s)"
-    elif is_auth_unavailable "$err" "$rc"; then
+    elif is_auth_unavailable "$probe_failure" "$rc"; then
       last_kind=auth
-      last_err="$err"
+      last_err="$probe_failure"
       print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: auth_unavailable"
       if restart_proxy_for_fresh_token "$w"; then
         # A fresh token must always get one post-restart probe, even when auth
@@ -1085,9 +1783,9 @@ probe_available() {
       last_kind=provider
       last_err="empty probe output"
       print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: empty output"
-    elif is_unavailable "$err" "$rc"; then
+    elif is_unavailable "$probe_failure" "$rc"; then
       last_kind=provider
-      last_err="$err"
+      last_err="$probe_failure"
       print -u2 "[claude-agent] $w probe attempt $attempt/$max_attempts: provider_unavailable"
     else
       last_kind=task
@@ -1133,8 +1831,19 @@ deliver() {
     prepare_worktree || { rm -f "$of" "$ef"; return 4; }
     wt="$WORKTREE_PATH"; wt_base="$WORKTREE_BASE"
     cd "$WORKER_CWD" || { rm -f "$of" "$ef"; print_task_failed "$w" "cannot enter worktree $WORKER_CWD"; return 4; }
+  elif [[ -n "$repo_root" ]]; then
+    capture_scope_baseline "$repo_root" || {
+      rm -f "$of" "$ef"
+      print_task_failed "path audit baseline" "could not snapshot the in-place worker's initial checkout"
+      return 4
+    }
   fi
-  inject_preamble "${WORKER_CWD:-${PWD:A}}" "$@"
+  inject_preamble "${WORKER_CWD:-${PWD:A}}" "$@" || {
+    rm -f "$of" "$ef"
+    cd "$oldpwd"
+    print_task_failed "$w" "visible worker preamble is unavailable"
+    return 4
+  }
   invoke_worker "$w" "$TASK_TIMEOUT" "$of" "$ef" "${INVOKE_ARGS[@]}"; rc=$?
   cd "$oldpwd"
   REPLY="$(<"$of")"; err="$(<"$ef")"
@@ -1145,6 +1854,8 @@ deliver() {
     return 4
   fi
   if (( rc == 124 )); then
+    TASK_TIMED_OUT=1
+    : > "$RUN_DIR/timeout"
     print -u2 "[claude-agent] $w task exceeded ${TASK_TIMEOUT}s cap"
     if [[ -n "$wt" ]]; then
       salvage_timeout "$wt" "$wt_base" || {

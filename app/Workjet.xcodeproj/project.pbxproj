@@ -1,0 +1,168 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B00000000000000000000001 /* CLIProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000001 /* CLIProxy.swift */; };
+		B00000000000000000000002 /* CLIProxyAccounts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002 /* CLIProxyAccounts.swift */; };
+		B00000000000000000000003 /* CommandRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000003 /* CommandRunner.swift */; };
+		B00000000000000000000004 /* Defaults.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000004 /* Defaults.swift */; };
+		B00000000000000000000005 /* Drafts.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000005 /* Drafts.swift */; };
+		B00000000000000000000006 /* HarnessAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000006 /* HarnessAdapters.swift */; };
+		B00000000000000000000018 /* WorkspaceSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000018 /* WorkspaceSnapshot.swift */; };
+		B00000000000000000000019 /* WorkerSkills.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000019 /* WorkerSkills.swift */; };
+		B00000000000000000000017 /* HarnessLifecycle.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000017 /* HarnessLifecycle.swift */; };
+		B00000000000000000000007 /* LearningStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000007 /* LearningStore.swift */; };
+		B00000000000000000000008 /* LegacyPromptMigration.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000008 /* LegacyPromptMigration.swift */; };
+		B00000000000000000000009 /* Logic.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000009 /* Logic.swift */; };
+		B0000000000000000000000A /* ManagedPrompt.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000A /* ManagedPrompt.swift */; };
+		B0000000000000000000000B /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000B /* Models.swift */; };
+		B0000000000000000000000C /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000C /* Persistence.swift */; };
+		B0000000000000000000000D /* PersistenceCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000D /* PersistenceCoordinator.swift */; };
+		B0000000000000000000000E /* PreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000E /* PreviewData.swift */; };
+		B0000000000000000000000F /* RemoteConnectionSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000000F /* RemoteConnectionSupervisor.swift */; };
+		B00000000000000000000010 /* RemoteHostProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000010 /* RemoteHostProtocol.swift */; };
+		B00000000000000000000011 /* RemotePiBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000011 /* RemotePiBootstrap.swift */; };
+		B00000000000000000000012 /* RemoteRunLedger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000012 /* RemoteRunLedger.swift */; };
+		B00000000000000000000013 /* Service.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000013 /* Service.swift */; };
+		B00000000000000000000014 /* TailscaleDevices.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000014 /* TailscaleDevices.swift */; };
+		B00000000000000000000015 /* Telemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000015 /* Telemetry.swift */; };
+		B00000000000000000000016 /* ViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000016 /* ViewModel.swift */; };
+		B00000000000000000000101 /* ActiveAreaView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000101 /* ActiveAreaView.swift */; };
+		B00000000000000000000102 /* ComputerEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000102 /* ComputerEditorView.swift */; };
+		B00000000000000000000103 /* MainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000103 /* MainView.swift */; };
+		B00000000000000000000104 /* ProviderAccountsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000104 /* ProviderAccountsView.swift */; };
+		B00000000000000000000105 /* ProviderLogo.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000105 /* ProviderLogo.swift */; };
+		B00000000000000000000106 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000106 /* RootView.swift */; };
+		B00000000000000000000107 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000107 /* SettingsView.swift */; };
+		B00000000000000000000108 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000108 /* Theme.swift */; };
+		B00000000000000000000109 /* WorkerEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000109 /* WorkerEditorView.swift */; };
+		B0000000000000000000010A /* WorkerListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000010A /* WorkerListView.swift */; };
+		B0000000000000000000010B /* WorkjetApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000010B /* WorkjetApp.swift */; };
+		B0000000000000000000010C /* WorkjetMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000010C /* WorkjetMark.swift */; };
+		B0000000000000000000010D /* ResourceBundleAccessor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000010D /* ResourceBundleAccessor.swift */; };
+		B0000000000000000000010E /* Resources in Resources */ = {isa = PBXBuildFile; fileRef = C0000000000000000000010E /* Resources */; };
+		B00000000000000000000201 /* WorkjetClickUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000201 /* WorkjetClickUITests.swift */; };
+		B00000000000000000000301 /* libWorkjetCore.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000301 /* libWorkjetCore.a */; };
+		B00000000000000000000302 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000302 /* Security.framework */; };
+		B00000000000000000000303 /* LocalAuthentication.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000303 /* LocalAuthentication.framework */; };
+		B00000000000000000000304 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C00000000000000000000304 /* XCTest.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		D00000000000000000000001 = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = A00000000000000000000002; remoteInfo = WorkjetCore; };
+		D00000000000000000000002 = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = A00000000000000000000003; remoteInfo = Workjet; };
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		C00000000000000000000001 /* CLIProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/CLIProxy.swift; sourceTree = "<group>"; };
+		C00000000000000000000002 /* CLIProxyAccounts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/CLIProxyAccounts.swift; sourceTree = "<group>"; };
+		C00000000000000000000003 /* CommandRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/CommandRunner.swift; sourceTree = "<group>"; };
+		C00000000000000000000004 /* Defaults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Defaults.swift; sourceTree = "<group>"; };
+		C00000000000000000000005 /* Drafts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Drafts.swift; sourceTree = "<group>"; };
+		C00000000000000000000006 /* HarnessAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/HarnessAdapters.swift; sourceTree = "<group>"; };
+		C00000000000000000000018 /* WorkspaceSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/WorkspaceSnapshot.swift; sourceTree = "<group>"; };
+		C00000000000000000000019 /* WorkerSkills.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/WorkerSkills.swift; sourceTree = "<group>"; };
+		C00000000000000000000017 /* HarnessLifecycle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/HarnessLifecycle.swift; sourceTree = "<group>"; };
+		C00000000000000000000007 /* LearningStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/LearningStore.swift; sourceTree = "<group>"; };
+		C00000000000000000000008 /* LegacyPromptMigration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/LegacyPromptMigration.swift; sourceTree = "<group>"; };
+		C00000000000000000000009 /* Logic.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Logic.swift; sourceTree = "<group>"; };
+		C0000000000000000000000A /* ManagedPrompt.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/ManagedPrompt.swift; sourceTree = "<group>"; };
+		C0000000000000000000000B /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Models.swift; sourceTree = "<group>"; };
+		C0000000000000000000000C /* Persistence.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Persistence.swift; sourceTree = "<group>"; };
+		C0000000000000000000000D /* PersistenceCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/PersistenceCoordinator.swift; sourceTree = "<group>"; };
+		C0000000000000000000000E /* PreviewData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/PreviewData.swift; sourceTree = "<group>"; };
+		C0000000000000000000000F /* RemoteConnectionSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/RemoteConnectionSupervisor.swift; sourceTree = "<group>"; };
+		C00000000000000000000010 /* RemoteHostProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/RemoteHostProtocol.swift; sourceTree = "<group>"; };
+		C00000000000000000000011 /* RemotePiBootstrap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/RemotePiBootstrap.swift; sourceTree = "<group>"; };
+		C00000000000000000000012 /* RemoteRunLedger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/RemoteRunLedger.swift; sourceTree = "<group>"; };
+		C00000000000000000000013 /* Service.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Service.swift; sourceTree = "<group>"; };
+		C00000000000000000000014 /* TailscaleDevices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/TailscaleDevices.swift; sourceTree = "<group>"; };
+		C00000000000000000000015 /* Telemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/Telemetry.swift; sourceTree = "<group>"; };
+		C00000000000000000000016 /* ViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetCore/ViewModel.swift; sourceTree = "<group>"; };
+		C00000000000000000000101 /* ActiveAreaView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/ActiveAreaView.swift; sourceTree = "<group>"; };
+		C00000000000000000000102 /* ComputerEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/ComputerEditorView.swift; sourceTree = "<group>"; };
+		C00000000000000000000103 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/MainView.swift; sourceTree = "<group>"; };
+		C00000000000000000000104 /* ProviderAccountsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/ProviderAccountsView.swift; sourceTree = "<group>"; };
+		C00000000000000000000105 /* ProviderLogo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/ProviderLogo.swift; sourceTree = "<group>"; };
+		C00000000000000000000106 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/RootView.swift; sourceTree = "<group>"; };
+		C00000000000000000000107 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/SettingsView.swift; sourceTree = "<group>"; };
+		C00000000000000000000108 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/Theme.swift; sourceTree = "<group>"; };
+		C00000000000000000000109 /* WorkerEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/WorkerEditorView.swift; sourceTree = "<group>"; };
+		C0000000000000000000010A /* WorkerListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/WorkerListView.swift; sourceTree = "<group>"; };
+		C0000000000000000000010B /* WorkjetApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/WorkjetApp.swift; sourceTree = "<group>"; };
+		C0000000000000000000010C /* WorkjetMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/WorkjetApp/WorkjetMark.swift; sourceTree = "<group>"; };
+		C0000000000000000000010D /* ResourceBundleAccessor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workjet.xcodeproj/Generated/ResourceBundleAccessor.swift; sourceTree = "<group>"; };
+		C0000000000000000000010E /* Resources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources/WorkjetApp/Resources; sourceTree = "<group>"; };
+		C00000000000000000000201 /* WorkjetClickUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UITests/WorkjetClickUITests.swift; sourceTree = "<group>"; };
+		C00000000000000000000301 /* libWorkjetCore.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libWorkjetCore.a; sourceTree = BUILT_PRODUCTS_DIR; };
+		C00000000000000000000302 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		C00000000000000000000303 /* LocalAuthentication.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = LocalAuthentication.framework; path = System/Library/Frameworks/LocalAuthentication.framework; sourceTree = SDKROOT; };
+		C00000000000000000000304 /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = System/Library/Frameworks/XCTest.framework; sourceTree = SDKROOT; };
+		C00000000000000000000305 /* Workjet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Workjet.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C00000000000000000000306 /* WorkjetUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WorkjetUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E00000000000000000000001 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000302, B00000000000000000000303, ); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000002 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000301, ); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000003 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000304, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000010 = {isa = PBXGroup; children = (A00000000000000000000011, A00000000000000000000012, A00000000000000000000013, A00000000000000000000014, A00000000000000000000015, ); sourceTree = "<group>"; };
+		A00000000000000000000011 = {isa = PBXGroup; name = WorkjetCore; children = (C00000000000000000000001, C00000000000000000000002, C00000000000000000000003, C00000000000000000000004, C00000000000000000000005, C00000000000000000000006, C00000000000000000000017, C00000000000000000000007, C00000000000000000000008, C00000000000000000000009, C0000000000000000000000A, C0000000000000000000000B, C0000000000000000000000C, C0000000000000000000000D, C0000000000000000000000E, C0000000000000000000000F, C00000000000000000000010, C00000000000000000000011, C00000000000000000000012, C00000000000000000000013, C00000000000000000000014, C00000000000000000000015, C00000000000000000000016, C00000000000000000000018, C00000000000000000000019, ); sourceTree = "<group>"; };
+		A00000000000000000000012 = {isa = PBXGroup; name = WorkjetApp; children = (C00000000000000000000101, C00000000000000000000102, C00000000000000000000103, C00000000000000000000104, C00000000000000000000105, C00000000000000000000106, C00000000000000000000107, C00000000000000000000108, C00000000000000000000109, C0000000000000000000010A, C0000000000000000000010B, C0000000000000000000010C, C0000000000000000000010D, C0000000000000000000010E, ); sourceTree = "<group>"; };
+		A00000000000000000000013 = {isa = PBXGroup; name = UITests; children = (C00000000000000000000201, ); sourceTree = "<group>"; };
+		A00000000000000000000014 = {isa = PBXGroup; name = Frameworks; children = (C00000000000000000000302, C00000000000000000000303, C00000000000000000000304, ); sourceTree = "<group>"; };
+		A00000000000000000000015 = {isa = PBXGroup; name = Products; children = (C00000000000000000000301, C00000000000000000000305, C00000000000000000000306, ); sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000002 /* WorkjetCore */ = {isa = PBXNativeTarget; buildConfigurationList = F00000000000000000000011; buildPhases = (E00000000000000000000101, E00000000000000000000001, ); buildRules = (); dependencies = (); name = WorkjetCore; productName = WorkjetCore; productReference = C00000000000000000000301; productType = "com.apple.product-type.library.static"; };
+		A00000000000000000000003 /* Workjet */ = {isa = PBXNativeTarget; buildConfigurationList = F00000000000000000000012; buildPhases = (E00000000000000000000102, E00000000000000000000002, E00000000000000000000202, ); buildRules = (); dependencies = (D00000000000000000000101, ); name = Workjet; productName = Workjet; productReference = C00000000000000000000305; productType = "com.apple.product-type.application"; };
+		A00000000000000000000004 /* WorkjetUITests */ = {isa = PBXNativeTarget; buildConfigurationList = F00000000000000000000013; buildPhases = (E00000000000000000000103, E00000000000000000000003, ); buildRules = (); dependencies = (D00000000000000000000102, ); name = WorkjetUITests; productName = WorkjetUITests; productReference = C00000000000000000000306; productType = "com.apple.product-type.bundle.ui-testing"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000001 /* Project object */ = {isa = PBXProject; attributes = {BuildIndependentTargetsInParallel = 1; LastSwiftUpdateCheck = 2660; LastUpgradeCheck = 2660; TargetAttributes = {A00000000000000000000003 = {CreatedOnToolsVersion = 26.6; }; A00000000000000000000004 = {CreatedOnToolsVersion = 26.6; TestTargetID = A00000000000000000000003; }; }; }; buildConfigurationList = F00000000000000000000010; compatibilityVersion = "Xcode 16.0"; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = A00000000000000000000010; productRefGroup = A00000000000000000000015; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000002, A00000000000000000000003, A00000000000000000000004, ); };
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E00000000000000000000202 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B0000000000000000000010E, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E00000000000000000000101 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000001, B00000000000000000000002, B00000000000000000000003, B00000000000000000000004, B00000000000000000000005, B00000000000000000000006, B00000000000000000000017, B00000000000000000000007, B00000000000000000000008, B00000000000000000000009, B0000000000000000000000A, B0000000000000000000000B, B0000000000000000000000C, B0000000000000000000000D, B0000000000000000000000E, B0000000000000000000000F, B00000000000000000000010, B00000000000000000000011, B00000000000000000000012, B00000000000000000000013, B00000000000000000000014, B00000000000000000000015, B00000000000000000000016, B00000000000000000000018, B00000000000000000000019, ); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000102 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000101, B00000000000000000000102, B00000000000000000000103, B00000000000000000000104, B00000000000000000000105, B00000000000000000000106, B00000000000000000000107, B00000000000000000000108, B00000000000000000000109, B0000000000000000000010A, B0000000000000000000010B, B0000000000000000000010C, B0000000000000000000010D, ); runOnlyForDeploymentPostprocessing = 0; };
+		E00000000000000000000103 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B00000000000000000000201, ); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D00000000000000000000101 = {isa = PBXTargetDependency; target = A00000000000000000000002 /* WorkjetCore */; targetProxy = D00000000000000000000001; };
+		D00000000000000000000102 = {isa = PBXTargetDependency; target = A00000000000000000000003 /* Workjet */; targetProxy = D00000000000000000000002; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		F00000000000000000000101 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_VERSION = 5.0; }; name = Debug; };
+		F00000000000000000000102 = {isa = XCBuildConfiguration; buildSettings = {CLANG_ENABLE_MODULES = YES; MACOSX_DEPLOYMENT_TARGET = 14.0; SDKROOT = macosx; SWIFT_COMPILATION_MODE = wholemodule; SWIFT_OPTIMIZATION_LEVEL = "-O"; SWIFT_VERSION = 5.0; }; name = Release; };
+		F00000000000000000000111 = {isa = XCBuildConfiguration; buildSettings = {DEFINES_MODULE = YES; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Debug; };
+		F00000000000000000000112 = {isa = XCBuildConfiguration; buildSettings = {DEFINES_MODULE = YES; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Release; };
+		F00000000000000000000121 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; ENABLE_HARDENED_RUNTIME = YES; EXECUTABLE_NAME = WorkjetApp; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; INFOPLIST_PREPROCESS = YES; INFOPLIST_PREPROCESSOR_DEFINITIONS = "menubar=menubar.uitest"; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = dev.workjet.menubar.uitest; PRODUCT_NAME = Workjet; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG"; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Debug; };
+		F00000000000000000000122 = {isa = XCBuildConfiguration; buildSettings = {ARCHS = arm64; CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Manual; COMBINE_HIDPI_IMAGES = YES; CURRENT_PROJECT_VERSION = 1; ENABLE_HARDENED_RUNTIME = YES; EXECUTABLE_NAME = WorkjetApp; GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Info.plist; MARKETING_VERSION = 0.1.0; PRODUCT_BUNDLE_IDENTIFIER = dev.workjet.menubar; PRODUCT_NAME = Workjet; SWIFT_EMIT_LOC_STRINGS = YES; }; name = Release; };
+		F00000000000000000000131 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.workjet.app.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = NO; TEST_TARGET_NAME = Workjet; }; name = Debug; };
+		F00000000000000000000132 = {isa = XCBuildConfiguration; buildSettings = {CODE_SIGN_IDENTITY = "-"; CODE_SIGN_STYLE = Automatic; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = com.workjet.app.uitests; PRODUCT_NAME = "$(TARGET_NAME)"; SWIFT_EMIT_LOC_STRINGS = NO; TEST_TARGET_NAME = Workjet; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		F00000000000000000000010 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000101, F00000000000000000000102, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F00000000000000000000011 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000111, F00000000000000000000112, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F00000000000000000000012 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000121, F00000000000000000000122, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		F00000000000000000000013 = {isa = XCConfigurationList; buildConfigurations = (F00000000000000000000131, F00000000000000000000132, ); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A00000000000000000000001 /* Project object */;
+}

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Workjet is an open-source native macOS control plane for specialized coding-agent workers on local and remote computers.">
+  <meta name="theme-color" content="oklch(0.17 0.012 250)">
+  <title>Workjet | Native control for coding-agent workers</title>
+  <link rel="icon" href="assets/workjet-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Workjet home">
+      <img src="assets/workjet-mark.svg" width="30" height="30" alt="">
+      <span>Workjet</span>
+    </a>
+    <nav class="site-nav" aria-label="Primary navigation">
+      <a href="#workflow">Workflow</a>
+      <a href="#proof">App</a>
+      <a href="#remote">Remote</a>
+      <a href="#docs">Docs</a>
+    </nav>
+    <a class="header-source" href="https://github.com/metric-space-ai/claude-workjet">View source</a>
+  </header>
+
+  <main id="main-content">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Native macOS control plane</p>
+        <h1 id="hero-title">Keep every coding worker on a visible route.</h1>
+        <p class="hero-lede">Workjet defines specialized workers across local and remote computers. The orchestrator chooses the work. Workjet keeps prompts, providers, target health, and run evidence in view.</p>
+        <div class="hero-actions" aria-label="Project links">
+          <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Explore the source</a>
+          <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Read the docs</a>
+        </div>
+        <ul class="boundary-line" aria-label="Supported base platform">
+          <li>macOS 14+</li>
+          <li>Apple Silicon</li>
+          <li>Open source</li>
+        </ul>
+        <p class="release-state"><span aria-hidden="true"></span>Release candidate in verification. No public download is claimed yet.</p>
+      </div>
+
+      <div class="hero-scene">
+        <figure class="app-window media-frame">
+          <div class="capture-area">
+            <img class="capture" src="assets/screenshots/workjet-overview.png" alt="Workjet overview showing computer selection, worker rows, health states, and current run activity">
+            <p class="capture-note">The authentic Workjet overview capture will appear here when the asset is added.</p>
+          </div>
+          <figcaption>One native surface for computers, workers, health, and current activity.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="workflow section-shell" id="workflow" aria-labelledby="workflow-title">
+      <div class="section-intro">
+        <p class="eyebrow">One concrete workflow</p>
+        <h2 id="workflow-title">Turn an unclear task into a bounded run.</h2>
+        <p>The calling agent remains the sole orchestrator. Workjet gives it declared workers, live target facts, and a durable evidence trail without taking over task planning.</p>
+      </div>
+
+      <ol class="flow" aria-label="Example orchestration path">
+        <li class="flow-step flow-start">
+          <span class="flow-number">01</span>
+          <div>
+            <h3>Name the unknowns</h3>
+            <p>The orchestrator reads the request, states the product boundary, and splits discovery by question rather than by file.</p>
+          </div>
+        </li>
+        <li class="flow-step flow-split">
+          <span class="flow-number">02</span>
+          <div>
+            <h3>Run A / B / C discovery in parallel</h3>
+            <div class="discovery-branches">
+              <p><b>A</b> Code and dependency facts</p>
+              <p><b>B</b> Product and UX constraints</p>
+              <p><b>C</b> Failure modes and checks</p>
+            </div>
+          </div>
+        </li>
+        <li class="flow-step">
+          <span class="flow-number">03</span>
+          <div>
+            <h3>Consolidate one production brief</h3>
+            <p>The brief fixes scope, allowed paths, exact checks, and a stop condition before a final worker starts.</p>
+          </div>
+        </li>
+        <li class="flow-step flow-route">
+          <span class="flow-number">04</span>
+          <div>
+            <h3>Route by declared role</h3>
+            <p>Sol takes hard implementation work. Kimi takes greenfield frontend work. The worker runs fire-and-forget, with no mid-run steering.</p>
+          </div>
+        </li>
+        <li class="flow-step flow-review">
+          <span class="flow-number">05</span>
+          <div>
+            <h3>Verify apart from the worker claim</h3>
+            <p>The orchestrator inspects code and diffs, enforces the path boundary, and reruns checks. A completion receipt is evidence to examine, not proof.</p>
+          </div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="proof section-shell" id="proof" aria-labelledby="proof-title">
+      <div class="section-intro proof-intro">
+        <p class="eyebrow">Product proof</p>
+        <h2 id="proof-title">Configuration stays close to runtime truth.</h2>
+        <p>The app exposes the sources that shape worker behavior, then keeps measured state distinct from unknown or unavailable state.</p>
+      </div>
+
+      <figure class="proof-row media-frame">
+        <div class="capture-area">
+          <img class="capture" src="assets/screenshots/workjet-worker-skills.png" alt="Workjet worker editor showing model, harness, provider route, target computer, and centrally managed skills">
+          <p class="capture-note">The authentic worker and skills capture will appear here when the asset is added.</p>
+        </div>
+        <figcaption>
+          <span class="proof-index">01 / WORKERS</span>
+          <h3>Define the role once.</h3>
+          <p>Name the worker, provider route, model, harness, target computer, and owned instructions. Shared model rules keep one source.</p>
+          <p class="proof-detail">Greppy is managed centrally and starts on only for supported coding harnesses. Workjet checks the exact target before prompt injection and keeps it off for the online-research worker.</p>
+        </figcaption>
+      </figure>
+
+      <figure class="proof-row proof-row-reverse media-frame">
+        <div class="capture-area">
+          <img class="capture" src="assets/screenshots/workjet-remote-computer.png" alt="Workjet remote computer setup showing a Tailscale or SSH target identity and host verification">
+          <p class="capture-note">The authentic remote computer capture will appear here when the asset is added.</p>
+        </div>
+        <figcaption>
+          <span class="proof-index">02 / COMPUTERS</span>
+          <h3>See the target before assigning work.</h3>
+          <p>Local and remote computers are peer choices. Offline, unsupported, and unverified states remain explicit instead of becoming false readiness.</p>
+        </figcaption>
+      </figure>
+
+      <figure class="proof-row media-frame">
+        <div class="capture-area">
+          <img class="capture" src="assets/screenshots/workjet-prompt-telemetry.png" alt="Workjet prompt and telemetry settings showing source-owned prompt blocks and observed run evidence">
+          <p class="capture-note">The authentic prompt and telemetry capture will appear here when the asset is added.</p>
+        </div>
+        <figcaption>
+          <span class="proof-index">03 / EVIDENCE</span>
+          <h3>Audit policy and observation separately.</h3>
+          <p>General rules, model rules, worker instructions, learnings, and technical rules keep named owners. Runtime telemetry records what was observed.</p>
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="remote section-shell" id="remote" aria-labelledby="remote-title">
+      <div class="remote-copy">
+        <p class="eyebrow">Remote execution model</p>
+        <h2 id="remote-title">Move the workspace, not your repository credentials.</h2>
+        <p>Remote shell workers receive an immutable Git bundle over the existing strictly host-key-verified SSH and Tailscale path. Each run gets a host-owned detached worktree.</p>
+        <p>The remote computer does not clone or fetch from origin. It needs no GitHub login, origin access, repository credential, or SSH agent forwarding.</p>
+      </div>
+
+      <ol class="trust-chain">
+        <li>
+          <span>01</span>
+          <div><h3>Confirm the host</h3><p>Unknown or changed SSH host keys block setup. Trust is explicit.</p></div>
+        </li>
+        <li>
+          <span>02</span>
+          <div><h3>Send a fixed snapshot</h3><p>Tracked edits, deletions, and allowed untracked files travel as a capped raw Git bundle.</p></div>
+        </li>
+        <li>
+          <span>03</span>
+          <div><h3>Run in host-owned space</h3><p>The host creates one detached worktree and performs no network Git operation.</p></div>
+        </li>
+        <li class="review-step">
+          <span>04</span>
+          <div><h3>Import only after review</h3><p>A result import writes only <code>refs/workjet/&lt;run-id&gt;</code>. It does not check out, merge, rebase, stage, move HEAD, or touch the real worktree.</p></div>
+        </li>
+      </ol>
+    </section>
+
+    <section class="docs section-shell" id="docs" aria-labelledby="docs-title">
+      <div class="docs-head">
+        <p class="eyebrow">Source installation</p>
+        <h2 id="docs-title">Start from a clean checkout.</h2>
+        <p>A notarized public release is not available yet. Source installation builds a local ad-hoc-signed app and requires the Xcode command line tools plus <code>rsvg-convert</code> from <code>librsvg</code>.</p>
+      </div>
+
+      <div class="install-layout">
+        <div class="command-block" aria-label="Source installation commands">
+          <div class="command-title">Terminal</div>
+          <pre><code>git clone https://github.com/metric-space-ai/claude-workjet /tmp/claude-workjet
+cd /tmp/claude-workjet
+brew install librsvg
+./install.sh</code></pre>
+        </div>
+        <div class="install-notes">
+          <h3>What the installer owns</h3>
+          <p>It installs the app and CLI, manages one marked include in the global Claude prompt, and preserves unrelated global content. Project-local prompt files are not changed.</p>
+          <a class="text-link" href="https://github.com/metric-space-ai/claude-workjet/blob/main/app/README.md">Read the full installation guide</a>
+        </div>
+      </div>
+
+      <div class="support-boundary">
+        <h3>Supported boundary</h3>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th scope="col">Area</th><th scope="col">Supported</th><th scope="col">Not claimed</th></tr>
+            </thead>
+            <tbody>
+              <tr><th scope="row">Control host</th><td>macOS 14+ on Apple Silicon</td><td>Hosted service or web control plane</td></tr>
+              <tr><th scope="row">Orchestration</th><td>The calling agent chooses declared workers</td><td>Workjet planning or choosing tasks</td></tr>
+              <tr><th scope="row">Targets</th><td>Local Mac and configured Linux hosts over SSH or Tailscale</td><td>Credential sharing with remote hosts</td></tr>
+              <tr><th scope="row">Run model</th><td>Fire-and-forget workers with observed completion data</td><td>Live steering or worker claims as proof</td></tr>
+              <tr><th scope="row">Distribution</th><td>Source checkout today</td><td>Public notarized download today</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="final-cta" aria-labelledby="final-title">
+      <div>
+        <img src="assets/workjet-mark.svg" width="72" height="72" alt="Eight-blade Workjet turbine mark">
+        <p class="eyebrow">Project status</p>
+        <h2 id="final-title">Inspect the project. Follow the release candidate.</h2>
+        <p>Workjet is open source and under release verification. Use the source and docs now, or check the releases page for a future notarized artifact.</p>
+        <div class="hero-actions">
+          <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Open GitHub source</a>
+          <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Open documentation</a>
+          <a class="release-link" href="https://github.com/metric-space-ai/claude-workjet/releases">Release candidate status</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="brand" href="#top" aria-label="Back to top">
+      <img src="assets/workjet-mark.svg" width="26" height="26" alt="">
+      <span>Workjet</span>
+    </a>
+    <p>Native macOS control for local and remote coding workers.</p>
+    <nav aria-label="Project links">
+      <a href="https://github.com/metric-space-ai/claude-workjet">Source</a>
+      <a href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Docs</a>
+      <a href="https://github.com/metric-space-ai/claude-workjet/releases">Releases</a>
+    </nav>
+  </footer>
+</body>
+</html>

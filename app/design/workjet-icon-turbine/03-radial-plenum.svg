@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet Radial Plenum mark</title>
+  <desc id="desc">A wide intake feeds a smooth radial pressure vessel with a bright core and one blunt side jet.</desc>
+  <defs>
+    <linearGradient id="ring" x1="27" y1="50" x2="161" y2="193" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#24D4C8"/>
+      <stop offset=".55" stop-color="#168CFF"/>
+      <stop offset="1" stop-color="#3E49D8"/>
+    </linearGradient>
+    <linearGradient id="jet" x1="159" y1="128" x2="231" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#684FE8"/>
+      <stop offset="1" stop-color="#FF4F6D"/>
+    </linearGradient>
+  </defs>
+  <g id="mark">
+    <path fill="url(#ring)" d="M25 61h38c18 0 34 9 47 25l-20 23C80 99 70 94 58 94H25V61Zm0 134h38c18 0 34-9 47-25l-20-23c-10 10-20 15-32 15H25v33Z"/>
+    <path fill="#3154E8" fill-rule="evenodd" d="M137 54c42 0 76 33 76 74s-34 74-76 74-76-33-76-74 34-74 76-74Zm0 40c-19 0-35 15-35 34s16 34 35 34 35-15 35-34-16-34-35-34Z"/>
+    <path fill="url(#jet)" d="M179 106h18c9 0 16 6 17 15h17v14h-17c-1 9-8 15-17 15h-18l12-22-12-22Z"/>
+    <circle id="core-detail" cx="137" cy="128" r="16" fill="#FFFFFF" opacity=".92"/>
+  </g>
+</svg>

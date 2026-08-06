@@ -64,4 +64,6 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 # project CLAUDE.md, hooks, and plugins: pass task context in the brief (or
 # --add-dir) when needed. Set CLAUDE_WORKER_FULL=1 for a full interactive session.
 BARE=(--bare); [[ -n "$CLAUDE_WORKER_FULL" ]] && BARE=()
-exec claude "${BARE[@]}" "$@"
+OBSERVER="${WORKJET_OBSERVER_EXECUTABLE:-${0:A:h}/workjet-observe}"
+[[ -x "$OBSERVER" ]] || { print -u2 "${0:t}: missing observer: $OBSERVER"; exit 127; }
+exec "$OBSERVER" "${0:t}" claude "${BARE[@]}" "$@"

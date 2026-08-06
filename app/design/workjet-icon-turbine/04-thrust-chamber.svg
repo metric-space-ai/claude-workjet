@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet Thrust Chamber mark</title>
+  <desc id="desc">A wide two-lipped inlet pinches into a protected chamber and resolves as two blunt afterburner pulses.</desc>
+  <defs>
+    <linearGradient id="shell" x1="27" y1="49" x2="165" y2="192" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22C8F0"/>
+      <stop offset=".62" stop-color="#168CFF"/>
+      <stop offset="1" stop-color="#3549D6"/>
+    </linearGradient>
+    <linearGradient id="pulse" x1="161" y1="128" x2="230" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#774FEA"/>
+      <stop offset="1" stop-color="#FF663F"/>
+    </linearGradient>
+  </defs>
+  <g id="mark">
+    <path fill="url(#shell)" d="M27 54h54c25 0 48 12 62 32l11 16-27 18-12-16c-8-11-20-18-34-18H27V54Z"/>
+    <path fill="url(#shell)" d="M27 202h54c25 0 48-12 62-32l11-16-27-18-12 16c-8 11-20 18-34 18H27v32Z"/>
+    <path fill="#3154E8" fill-rule="evenodd" d="M124 91h42l20 37-20 37h-42l17-37-17-37Zm22 24-6 13 6 13h22l7-13-7-13h-22Z"/>
+    <path fill="url(#pulse)" d="M169 105h22c12 0 21 10 21 23s-9 23-21 23h-22l17-23-17-23Z"/>
+    <path id="core-detail" fill="#FFFFFF" d="M146 115h22l7 13-7 13h-22l-6-13 6-13Z" opacity=".9"/>
+    <rect x="205" y="116" width="24" height="24" rx="8" fill="#FF6E48"/>
+    <rect x="233" y="121" width="10" height="14" rx="4" fill="#FFB13B"/>
+  </g>
+</svg>

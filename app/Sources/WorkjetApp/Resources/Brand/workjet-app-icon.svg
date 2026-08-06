@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet turbofan</title>
+  <desc id="desc">A front-facing turbine with casing, eight swept compressor blades, central shaft and focused exhaust.</desc>
+  <defs>
+    <radialGradient id="bg" cx="38%" cy="34%" r="78%">
+      <stop offset="0" stop-color="#173d5d"/>
+      <stop offset="1" stop-color="#07131f"/>
+    </radialGradient>
+    <linearGradient id="hot" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#46b8ff"/>
+      <stop offset="1" stop-color="#ff8a35"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="54" fill="url(#bg)"/>
+  <path d="M175 96h31l25 12-25 7h-31zM178 122h43l20 7-20 7h-43zM175 143h31l25 7-25 12h-31z" fill="url(#hot)" opacity=".95"/>
+  <circle cx="111" cy="128" r="83" fill="#0a1e2d" stroke="#d9f1ff" stroke-width="10"/>
+  <circle cx="111" cy="128" r="65" fill="#102f47" stroke="#5fc2ff" stroke-width="4"/>
+  <g fill="#edf8ff">
+    <path d="M111 119C90 90 92 67 104 60c10 14 16 34 15 57z"/>
+    <path d="M117 120c6-35 24-50 38-46-2 17-12 35-30 50z"/>
+    <path d="M120 126c29-21 52-19 59-7-14 10-34 16-57 15z"/>
+    <path d="M119 133c35 6 50 24 46 38-17-2-35-12-50-30z"/>
+    <path d="M112 136c21 29 19 52 7 59-10-14-16-34-15-57z"/>
+    <path d="M105 135c-6 35-24 50-38 46 2-17 12-35 30-50z"/>
+    <path d="M102 128c-29 21-52 19-59 7 14-10 34-16 57-15z"/>
+    <path d="M103 122c-35-6-50-24-46-38 17 2 35 12 50 30z"/>
+  </g>
+  <circle cx="111" cy="128" r="18" fill="#58c5ff" stroke="#edf8ff" stroke-width="6"/>
+  <circle cx="111" cy="128" r="5" fill="#07131f"/>
+</svg>

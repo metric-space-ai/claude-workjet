@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 50
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          cache-dependency-path: app/PiSidecar/package-lock.json
+
+      - name: Install release build dependency
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: brew install librsvg
+
+      - name: Check shell syntax
+        run: zsh -n app/build-app.sh install.sh bin/claude-agent bin/claude-fleet
+
+      - name: Enforce project-site design contract
+        run: node site/check-design.mjs
+
+      - name: Run Swift package tests
+        run: swift test --package-path app
+
+      - name: Build Xcode tests
+        run: >-
+          xcodebuild
+          -project app/Workjet.xcodeproj
+          -scheme Workjet
+          -destination 'platform=macOS,arch=arm64'
+          -derivedDataPath "$RUNNER_TEMP/workjet-derived-data"
+          build-for-testing
+          CODE_SIGNING_ALLOWED=NO
+
+      - name: Run dispatcher contracts
+        run: zsh tests/dispatcher_test.zsh
+
+      - name: Run wrapper contracts
+        run: zsh tests/wrapper_rework_test.zsh
+
+      - name: Run worktree retention contracts
+        run: zsh tests/worktree_gc_test.zsh
+
+      - name: Verify reproducible Pi sidecar
+        run: |
+          npm ci --prefix app/PiSidecar
+          npm run check --prefix app/PiSidecar
+          npm run build --prefix app/PiSidecar
+          npm run verify:bundle --prefix app/PiSidecar
+          npm run smoke --prefix app/PiSidecar
+          npm run verify:reproducible --prefix app/PiSidecar
+
+      - name: Build ad-hoc release-shaped app
+        run: ./app/build-app.sh
+
+      - name: Inspect release-shaped archive
+        run: |
+          archive="app/dist/Workjet-0.1.0-macos-arm64.zip"
+          test -s "$archive"
+          unzip -t "$archive"
+          codesign --verify --deep --strict --verbose=4 app/dist/Workjet.app
+          test "$(lipo -archs app/dist/Workjet.app/Contents/MacOS/WorkjetApp)" = arm64
+          test "$(lipo -archs app/dist/Workjet.app/Contents/MacOS/workjet)" = arm64
+
+      - name: Check repository hygiene
+        run: |
+          git diff --check
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Clean temporary build state
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/workjet-derived-data"
+          rm -rf app/.build app/dist

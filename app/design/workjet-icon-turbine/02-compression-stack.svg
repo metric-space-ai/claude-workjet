@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Workjet Compression Stack mark</title>
+  <desc id="desc">A broad inlet funnel narrows through two compression gates into one blunt afterburner jet.</desc>
+  <defs>
+    <linearGradient id="stages" x1="26" y1="128" x2="166" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#19C4E8"/>
+      <stop offset=".58" stop-color="#168CFF"/>
+      <stop offset="1" stop-color="#3154E8"/>
+    </linearGradient>
+    <linearGradient id="burn" x1="155" y1="128" x2="230" y2="128" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6558F5"/>
+      <stop offset="1" stop-color="#FF7139"/>
+    </linearGradient>
+  </defs>
+  <g id="mark">
+    <path fill="url(#stages)" d="M26 44h39l58 60-23 19-50-43H26V44Zm0 168h39l58-60-23-19-50 43H26v36Z"/>
+    <path fill="#168CFF" d="M91 76h24l30 38-18 14-36-52Zm0 104h24l30-38-18-14-36 52Z"/>
+    <path fill="#3154E8" fill-rule="evenodd" d="M127 91h42l21 37-21 37h-42l17-37-17-37Zm21 25-6 12 6 12h20l7-12-7-12h-20Z"/>
+    <path fill="url(#burn)" d="M171 107h25c9 0 16 6 17 14h17v14h-17c-1 8-8 14-17 14h-25l19-21-19-21Z"/>
+    <path id="core-detail" fill="#FFFFFF" d="M148 116h20l7 12-7 12h-20l-6-12 6-12Z" opacity=".9"/>
+  </g>
+</svg>
