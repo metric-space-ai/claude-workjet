@@ -86,6 +86,43 @@ final class WorkjetActivationTests: XCTestCase {
         XCTAssertEqual(try SecureFile.readRegularOwnedFile(at: fixture.paths.globalClaudeFile), malformedOwnerGlobal)
     }
 
+    func testConfigurationMigrationRegeneratesTheManagedPrompt() throws {
+        let fixture = try Fixture()
+        var legacy = fixture.configuration
+        legacy.technicalRules = "OWNER TECHNICAL RULE"
+        legacy.transparentWorkerPromptsMigrated = true
+        try JSONConfigurationStore(fileURL: fixture.paths.configurationFile).save(legacy)
+        try fixture.store.installOrRepair(configuration: legacy)
+
+        let bootstrap = WorkjetBootstrap.live(paths: fixture.paths)
+
+        XCTAssertTrue(bootstrap.messages.isEmpty)
+        XCTAssertNotEqual(bootstrap.configuration, legacy)
+        let persisted = try XCTUnwrap(JSONConfigurationStore(fileURL: fixture.paths.configurationFile).load())
+        XCTAssertEqual(persisted, bootstrap.configuration)
+        let prompt = try SecureFile.readRegularOwnedFile(at: fixture.paths.promptFile)
+        XCTAssertEqual(try ManagedPrompt.parse(prompt).body, ManagedPrompt.workerBody(configuration: bootstrap.configuration))
+        XCTAssertTrue(String(decoding: prompt, as: UTF8.self).contains(LegacyPromptMigration.cliExecutionContractBeginMarker))
+    }
+
+    func testFailedPromptRegenerationRestoresThePreMigrationConfiguration() throws {
+        let fixture = try Fixture()
+        var legacy = fixture.configuration
+        legacy.technicalRules = "OWNER TECHNICAL RULE"
+        legacy.transparentWorkerPromptsMigrated = true
+        let store = JSONConfigurationStore(fileURL: fixture.paths.configurationFile)
+        try store.save(legacy)
+        let legacyBytes = try SecureFile.readRegularOwnedFile(at: fixture.paths.configurationFile)
+        let malformedOwnerGlobal = Data("OWNER CONTENT\n\(WorkjetActivationStore.includeBegin)\nunterminated\n".utf8)
+        try AtomicFile.write(malformedOwnerGlobal, to: fixture.paths.globalClaudeFile)
+
+        let bootstrap = WorkjetBootstrap.live(paths: fixture.paths)
+
+        XCTAssertFalse(bootstrap.messages.isEmpty)
+        XCTAssertEqual(try SecureFile.readRegularOwnedFile(at: fixture.paths.configurationFile), legacyBytes)
+        XCTAssertEqual(try SecureFile.readRegularOwnedFile(at: fixture.paths.globalClaudeFile), malformedOwnerGlobal)
+    }
+
     func testOrdinaryReopenPreservesConfigurationActivationAndLearningsBytesAndMTimes() throws {
         let fixture = try Fixture()
         try AtomicFile.write(Data("- REOPEN LEARNING SENTINEL\n".utf8), to: fixture.paths.learningsFile)

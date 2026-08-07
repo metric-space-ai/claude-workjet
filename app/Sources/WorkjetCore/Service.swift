@@ -1146,10 +1146,12 @@ public struct WorkjetBootstrap {
         var configuration: WorkjetConfiguration
         var isFirstLaunch = false
         var configurationWasMigrated = false
+        var configurationSnapshotBeforeLoad: ConfigurationStoreSnapshot?
         do {
+            configurationSnapshotBeforeLoad = try configStore.snapshot()
             if let loaded = try configStore.load() {
                 configuration = normalized(loaded)
-                configurationWasMigrated = configuration != loaded
+                configurationWasMigrated = configurationSnapshotBeforeLoad != (try configStore.snapshot())
             } else {
                 configuration = WorkjetDefaults.configuration()
                 isFirstLaunch = true
@@ -1181,7 +1183,14 @@ public struct WorkjetBootstrap {
             || handwrittenChanged
         if block == nil, bootstrapMustPersist {
             do { try service.save(configuration, handwrittenRulesChanged: handwrittenChanged) }
-            catch { messages.append(error.localizedDescription) }
+            catch {
+                var reportedError = error
+                if configurationWasMigrated, let configurationSnapshotBeforeLoad {
+                    do { try configStore.restore(configurationSnapshotBeforeLoad) }
+                    catch { reportedError = LocalStateError.migrationFailed }
+                }
+                messages.append(reportedError.localizedDescription)
+            }
         }
         return WorkjetBootstrap(configuration: configuration, service: service, messages: messages)
     }
