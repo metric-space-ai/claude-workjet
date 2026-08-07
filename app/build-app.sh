@@ -142,6 +142,7 @@ iconutil -c icns "$iconset" -o "$contents/Resources/WorkjetAppIcon.icns"
 [[ -s "$contents/Resources/WorkjetAppIcon.icns" ]] || fail "Workjet app icon was not generated."
 
 cp "$sidecar_source" "$contents/Resources/ctox-pi-sidecar.mjs"
+cp "$script_dir/LaunchAgents/dev.workjet.menubar.plist" "$contents/Resources/dev.workjet.menubar.plist"
 cp "$repo_root/LICENSE" "$contents/Resources/LICENSE.txt"
 cp "$script_dir/THIRD_PARTY_NOTICES.md" "$contents/Resources/THIRD_PARTY_NOTICES.md"
 

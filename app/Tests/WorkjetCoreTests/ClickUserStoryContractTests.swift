@@ -118,6 +118,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(build.contains("THIRD_PARTY_NOTICES.md"))
         XCTAssertTrue(build.contains("WORKJET_HOME=\"$prompt_home\" \"$contents/MacOS/workjet\" workers list --json"))
         XCTAssertTrue(build.contains("default-workjet-agents.md"))
+        XCTAssertTrue(build.contains("LaunchAgents/dev.workjet.menubar.plist"))
 
         XCTAssertFalse(providerLogo.contains("bundles.append(Bundle.module)"))
         XCTAssertTrue(providerLogo.contains("Workjet_WorkjetApp.bundle"))
@@ -140,6 +141,10 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertFalse(install.contains("cp -- \"$HERE/AGENTS.md\" \"$prompt_stage_root/New.AGENTS.md\""))
         XCTAssertFalse(install.contains("open \"$APP_DEST\""))
         XCTAssertFalse(install.contains("swift build"))
+        XCTAssertTrue(install.contains("dev.workjet.menubar.launch-at-login"))
+        XCTAssertTrue(install.contains("plutil -remove ProgramArguments.0"))
+        XCTAssertTrue(install.contains("plutil -insert ProgramArguments.0 -string"))
+        XCTAssertTrue(install.contains("Previous.plist"))
 
         XCTAssertTrue(releaseWorkflow.contains("AppleDouble metadata is forbidden"))
         XCTAssertTrue(releaseWorkflow.contains("-name '._*' -o -name '__MACOSX'"))

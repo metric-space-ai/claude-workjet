@@ -18,8 +18,11 @@ fi
 DEFAULT_PROMPT="$SOURCE_APP/Contents/Resources/default-workjet-agents.md"
 WRAPPER_SOURCE="$SOURCE_APP/Contents/Resources/WorkjetWrappers"
 HASH_MANIFEST="$SOURCE_APP/Contents/Resources/SHA256SUMS"
+LOGIN_AGENT_TEMPLATE="$SOURCE_APP/Contents/Resources/dev.workjet.menubar.plist"
 APPLICATIONS_DIR=${WORKJET_APPLICATIONS_DIR:-/Applications}
 APP_DEST="$APPLICATIONS_DIR/Workjet.app"
+LAUNCH_AGENTS_DIR=${WORKJET_LAUNCH_AGENTS_DIR:-"$HOME/Library/LaunchAgents"}
+LOGIN_AGENT="$LAUNCH_AGENTS_DIR/dev.workjet.menubar.plist"
 BIN="$HOME/.local/bin"
 BIN_PARENT=$(dirname -- "$BIN")
 CLAUDE_DIR="$HOME/.claude"
@@ -34,6 +37,7 @@ app_stage_root=
 bin_stage_root=
 claude_stage_root=
 prompt_stage_root=
+launch_stage_root=
 transaction_started=0
 committed=0
 built_locally=0
@@ -69,6 +73,11 @@ rollback() {
     mkdir -p -- "$(dirname -- "$LEGACY_SKILL")"
     mv -- "$prompt_stage_root/Previous.SKILL.md" "$LEGACY_SKILL" || true
   fi
+
+  rm -f -- "$LOGIN_AGENT"
+  if [ -e "$launch_stage_root/Previous.plist" ]; then
+    mv -- "$launch_stage_root/Previous.plist" "$LOGIN_AGENT" || true
+  fi
 }
 
 cleanup() {
@@ -79,6 +88,7 @@ cleanup() {
   [ -z "$bin_stage_root" ] || rm -rf -- "$bin_stage_root"
   [ -z "$claude_stage_root" ] || rm -rf -- "$claude_stage_root"
   [ -z "$prompt_stage_root" ] || rm -rf -- "$prompt_stage_root"
+  [ -z "$launch_stage_root" ] || rm -rf -- "$launch_stage_root"
   exit "$status"
 }
 trap cleanup EXIT HUP INT TERM
@@ -90,6 +100,7 @@ elif [ ! -x "$SOURCE_APP/Contents/MacOS/WorkjetApp" ] || \
      [ ! -x "$SOURCE_APP/Contents/MacOS/workjet" ] || \
      [ ! -f "$DEFAULT_PROMPT" ] || [ -L "$DEFAULT_PROMPT" ] || \
      [ ! -f "$HASH_MANIFEST" ] || [ -L "$HASH_MANIFEST" ] || \
+     [ ! -f "$LOGIN_AGENT_TEMPLATE" ] || [ -L "$LOGIN_AGENT_TEMPLATE" ] || \
      [ ! -d "$WRAPPER_SOURCE" ] || [ -L "$WRAPPER_SOURCE" ]; then
   needs_local_build=1
 fi
@@ -105,6 +116,9 @@ fi
 [ -x "$SOURCE_APP/Contents/MacOS/workjet" ] || fail "embedded workjet CLI is missing"
 [ -f "$HASH_MANIFEST" ] && [ ! -L "$HASH_MANIFEST" ] || fail "release hash manifest is missing"
 [ -d "$WRAPPER_SOURCE" ] && [ ! -L "$WRAPPER_SOURCE" ] || fail "bundled wrappers are missing"
+[ -f "$LOGIN_AGENT_TEMPLATE" ] && [ ! -L "$LOGIN_AGENT_TEMPLATE" ] || fail "login-agent template is missing"
+/usr/libexec/PlistBuddy -c 'Print :Label' "$LOGIN_AGENT_TEMPLATE" | \
+  grep -qx 'dev.workjet.menubar.launch-at-login' || fail "login-agent template has an unexpected label"
 
 # Reject path traversal, absolute paths, malformed hashes and duplicate entries
 # before asking shasum to read anything named by the signed manifest.
@@ -158,11 +172,12 @@ fi
 
 [ -f "$DEFAULT_PROMPT" ] && [ ! -L "$DEFAULT_PROMPT" ] || fail "bundle default Workjet prompt is missing"
 
-mkdir -p -- "$APPLICATIONS_DIR" "$BIN" "$CLAUDE_DIR" "$WORKJET_PROMPT_DIR"
+mkdir -p -- "$APPLICATIONS_DIR" "$BIN" "$CLAUDE_DIR" "$WORKJET_PROMPT_DIR" "$LAUNCH_AGENTS_DIR"
 app_stage_root=$(mktemp -d "$APPLICATIONS_DIR/.workjet-install.XXXXXX")
 bin_stage_root=$(mktemp -d "$BIN_PARENT/.workjet-install.XXXXXX")
 claude_stage_root=$(mktemp -d "$CLAUDE_DIR/.workjet-install.XXXXXX")
 prompt_stage_root=$(mktemp -d "$WORKJET_PROMPT_DIR/.workjet-install.XXXXXX")
+launch_stage_root=$(mktemp -d "$LAUNCH_AGENTS_DIR/.workjet-install.XXXXXX")
 mkdir -p -- "$bin_stage_root/new" "$bin_stage_root/previous"
 
 ditto "$SOURCE_APP" "$app_stage_root/Workjet.app"
@@ -209,6 +224,12 @@ else
 fi
 chmod 600 "$prompt_stage_root/New.AGENTS.md"
 
+cp -- "$LOGIN_AGENT_TEMPLATE" "$launch_stage_root/New.plist"
+plutil -remove ProgramArguments.0 "$launch_stage_root/New.plist"
+plutil -insert ProgramArguments.0 -string "$APP_DEST/Contents/MacOS/WorkjetApp" "$launch_stage_root/New.plist"
+plutil -lint "$launch_stage_root/New.plist" >/dev/null
+chmod 600 "$launch_stage_root/New.plist"
+
 # Only after every source has been staged and verified do we move existing
 # files aside. All moves stay on their destination filesystem, so rollback is
 # available until the whole transaction is committed.
@@ -220,17 +241,20 @@ done
 if [ -e "$GLOBAL_CLAUDE" ]; then mv -- "$GLOBAL_CLAUDE" "$claude_stage_root/Previous.CLAUDE.md"; fi
 if [ -e "$WORKJET_PROMPT" ]; then mv -- "$WORKJET_PROMPT" "$prompt_stage_root/Previous.AGENTS.md"; fi
 if [ -e "$LEGACY_SKILL" ]; then mv -- "$LEGACY_SKILL" "$prompt_stage_root/Previous.SKILL.md"; fi
+if [ -e "$LOGIN_AGENT" ]; then mv -- "$LOGIN_AGENT" "$launch_stage_root/Previous.plist"; fi
 
 mv -- "$app_stage_root/Workjet.app" "$APP_DEST"
 for name in $WRAPPERS workjet; do mv -- "$bin_stage_root/new/$name" "$BIN/$name"; done
 mv -- "$claude_stage_root/New.CLAUDE.md" "$GLOBAL_CLAUDE"
 mv -- "$prompt_stage_root/New.AGENTS.md" "$WORKJET_PROMPT"
+mv -- "$launch_stage_root/New.plist" "$LOGIN_AGENT"
 codesign --verify --strict --verbose=4 "$APP_DEST"
 
 committed=1
 transaction_started=0
-rm -rf -- "$app_stage_root/Previous.app" "$bin_stage_root/previous" "$claude_stage_root/Previous.CLAUDE.md" "$prompt_stage_root/Previous.AGENTS.md" "$prompt_stage_root/Previous.SKILL.md"
+rm -rf -- "$app_stage_root/Previous.app" "$bin_stage_root/previous" "$claude_stage_root/Previous.CLAUDE.md" "$prompt_stage_root/Previous.AGENTS.md" "$prompt_stage_root/Previous.SKILL.md" "$launch_stage_root/Previous.plist"
 echo "installed $APP_DEST"
 echo "installed Workjet CLI and wrappers in $BIN"
 echo "installed global Workjet include in $GLOBAL_CLAUDE"
 echo "installed managed Workjet prompt in $WORKJET_PROMPT"
+echo "installed Workjet login agent in $LOGIN_AGENT"
