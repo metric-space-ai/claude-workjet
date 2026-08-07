@@ -40,8 +40,8 @@ const bannedSourcePatterns = [
   [/text-align\s*:\s*justify/i, "justified body text"],
   [/font-style\s*:\s*italic/i, "italic display styling"],
   [/[\u2013\u2014]/, "en or em dashes in page copy"],
-  [/animation(?:-name)?\s*:/i, "decorative animation"],
   [/transition\s*:[^;]*(?:width|height|top|right|bottom|left|margin|padding|grid|flex)/i, "layout-property transitions"],
+  [/(?:system-sequence|stage-track|worker-routes|sequence-controls|route-columns|execution-rail|return-rail|data-play-toggle|data-replay)/i, "rejected workflow-dashboard hero"],
 ];
 
 for (const { name, text } of source) {
@@ -51,6 +51,20 @@ for (const { name, text } of source) {
 }
 
 const css = readFileSync(join(siteRoot, "styles.css"), "utf8");
+const allowedAnimations = new Set(["intake-flow", "turbine-spin", "thrust-flow"]);
+for (const match of css.matchAll(/animation\s*:\s*([a-z0-9-]+)/gi)) {
+  if (!allowedAnimations.has(match[1])) {
+    fail(`styles.css: unapproved animation (${match[1]})`);
+  }
+}
+for (const match of css.matchAll(/@keyframes\s+([a-z0-9-]+)\s*\{([\s\S]*?)\n\}/gi)) {
+  if (!allowedAnimations.has(match[1])) {
+    fail(`styles.css: unapproved keyframes (${match[1]})`);
+  }
+  if (/(?:width|height|top|right|bottom|left|margin|padding|grid|flex)\s*:/i.test(match[2])) {
+    fail(`styles.css: layout property animated in ${match[1]}`);
+  }
+}
 for (const match of css.matchAll(/border-radius\s*:\s*([0-9.]+)px/gi)) {
   if (Number(match[1]) > 8) fail(`styles.css: border radius exceeds 8px (${match[0]})`);
 }
@@ -102,9 +116,12 @@ for (const htmlName of ["index.html", "404.html"]) {
 }
 
 const index = readFileSync(join(siteRoot, "index.html"), "utf8");
-const heroText = index.match(/<h1[^>]*>([^<]+)<\/h1>/i)?.[1]?.trim() || "";
-if (heroText.split(/\s+/).filter(Boolean).length > 5) {
-  fail("index.html: hero headline is a full sentence set as display type");
+const heroText = (index.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "")
+  .replace(/<[^>]+>/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+if (heroText !== "Workjet - get shit done with Claude Code") {
+  fail("index.html: hero must use the approved Workjet slogan");
 }
 const screenshots = [
   "workjet-overview.png",

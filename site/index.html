@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Workjet lets Claude run configured coding workers across models, harnesses, accounts, and computers, then returns evidence for independent review.">
+  <meta name="description" content="Workjet lets Claude Code orchestrate configured coding workers across models, harnesses, accounts, and computers.">
   <meta name="theme-color" content="oklch(0.17 0.012 250)">
-  <title>Workjet | Coding workers for Claude</title>
+  <title>Workjet | Get shit done with Claude Code</title>
   <link rel="icon" href="assets/workjet-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
@@ -30,8 +30,8 @@
   <main id="main-content">
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <h1 id="hero-title">Workjet inside Claude Code.</h1>
-        <p class="hero-lede">The installer adds a visible Workjet contract to fresh Claude Code and Claude Desktop sessions. Claude still plans and selects. Workjet starts the configured harness, model route, skills, and computer, then returns run evidence for Claude to verify.</p>
+        <h1 id="hero-title"><span class="hero-wordmark">Workjet</span><span class="hero-slogan">- get shit done with Claude Code</span></h1>
+        <p class="hero-lede">Claude Code plans the work. Workjet gives it the right harness, model, skills, and computer for the job.</p>
         <div class="hero-actions" aria-label="Project links">
           <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Explore the source</a>
           <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Read the docs</a>
@@ -39,121 +39,65 @@
         <p class="release-state"><span aria-hidden="true"></span>Source release candidate under verification. No notarized public download is available yet.</p>
       </div>
 
-      <section class="system-sequence" aria-labelledby="sequence-title" data-sequence>
-        <header class="sequence-header">
-          <div>
-            <h2 id="sequence-title">One session, one selected route</h2>
-            <p>Illustrative routes. Model access depends on your configured accounts.</p>
-          </div>
-          <p class="sequence-status" aria-live="polite" data-sequence-status>Review ready</p>
-        </header>
+      <figure class="hero-art" aria-labelledby="turbine-title turbine-description">
+        <svg viewBox="0 0 1180 520" role="img" xmlns="http://www.w3.org/2000/svg">
+          <title id="turbine-title">Claude Code orchestrates workers through Workjet</title>
+          <desc id="turbine-description">A task enters a rotating Workjet turbine. Claude Code sits in the control pod above it, while named specialist agents leave as focused thrust.</desc>
 
-        <ol class="stage-track" aria-label="Workjet system sequence">
-          <li data-stage-marker="0"><span>1</span><b>Contract</b></li>
-          <li data-stage-marker="1"><span>2</span><b>Claude</b></li>
-          <li data-stage-marker="2"><span>3</span><b>Select</b></li>
-          <li data-stage-marker="3"><span>4</span><b>Route</b></li>
-          <li data-stage-marker="4"><span>5</span><b>Review</b></li>
-        </ol>
+          <g class="task-intake">
+            <path class="task-sheet" d="M18 202h118l28 28v100H18z M136 202v28h28"/>
+            <text x="39" y="255">TASK</text>
+            <path class="task-line" d="M39 278h82M39 297h58"/>
+          </g>
 
-        <div class="sequence-controls" aria-label="Sequence controls">
-          <button type="button" data-play-toggle aria-label="Pause system sequence">Pause</button>
-          <button type="button" data-replay aria-label="Replay system sequence from the contract stage">Replay</button>
-        </div>
+          <g class="intake-stream" aria-hidden="true">
+            <path d="M178 230h132"/>
+            <path d="M166 266h144"/>
+            <path d="M178 302h132"/>
+          </g>
 
-        <div class="sequence-body">
-          <div class="session-rail">
-            <article class="system-node contract-node" data-appear-stage="0">
-              <span class="node-index">01</span>
-              <div>
-                <h3>Global Workjet contract</h3>
-                <p>A marked global include lists worker roles and invocation rules.</p>
-              </div>
-            </article>
+          <g class="turbine-shell">
+            <path class="engine-case" d="M331 127c39-49 100-77 164-77 82 0 155 46 191 113l93 31v132l-93 31c-36 67-109 113-191 113-64 0-125-28-164-77l-54-21V148z"/>
+            <path class="case-cut" d="M320 169l63 22v138l-63 22M657 173l75 25v124l-75 25"/>
+            <circle class="rotor-rim" cx="493" cy="260" r="151"/>
+            <circle class="rotor-track" cx="493" cy="260" r="122"/>
+            <g class="turbine-rotor" aria-hidden="true">
+              <path id="blade" d="M493 151c18 0 32 25 25 49-4 15-13 29-25 43-12-14-21-28-25-43-7-24 7-49 25-49z"/>
+              <use href="#blade" transform="rotate(45 493 260)"/>
+              <use href="#blade" transform="rotate(90 493 260)"/>
+              <use href="#blade" transform="rotate(135 493 260)"/>
+              <use href="#blade" transform="rotate(180 493 260)"/>
+              <use href="#blade" transform="rotate(225 493 260)"/>
+              <use href="#blade" transform="rotate(270 493 260)"/>
+              <use href="#blade" transform="rotate(315 493 260)"/>
+            </g>
+            <circle class="rotor-core" cx="493" cy="260" r="39"/>
+            <circle class="rotor-pin" cx="493" cy="260" r="10"/>
+            <text class="workjet-label" x="493" y="447" text-anchor="middle">WORKJET</text>
+          </g>
 
-            <svg class="sequence-line" viewBox="0 0 96 24" role="img" aria-label="Contract connects to Claude Code" data-line-stage="0">
-              <path class="line-track" pathLength="100" d="M2 12 H88"></path>
-              <path class="line-progress" pathLength="100" d="M2 12 H88"></path>
-              <path class="line-arrow" d="M82 6 L90 12 L82 18"></path>
-            </svg>
+          <g class="orchestrator-pod">
+            <path class="pod-mount" d="M456 112V91h76v21"/>
+            <path class="pod-body" d="M408 34h172l24 27-24 30H408l-19-30z"/>
+            <circle class="pod-signal" cx="421" cy="61" r="6"/>
+            <text x="448" y="68">CLAUDE CODE</text>
+            <path class="control-link" d="M494 91v31"/>
+          </g>
 
-            <article class="system-node claude-node" data-appear-stage="1">
-              <span class="node-index">02</span>
-              <div>
-                <h3>Claude Code</h3>
-                <p><strong>Reads the contract and remains the orchestrator.</strong> Plans, selects, integrates, and verifies.</p>
-              </div>
-            </article>
-          </div>
+          <g class="nozzle" aria-hidden="true">
+            <path d="M747 192h47l43 34v68l-43 34h-47"/>
+            <path d="M772 214h27l18 17v58l-18 17h-27"/>
+          </g>
 
-          <section class="worker-routes" aria-labelledby="routes-title" data-appear-stage="2">
-            <div class="routes-heading">
-              <h3 id="routes-title">Declared worker choices</h3>
-              <span>Claude selects Sol · Completion</span>
-            </div>
-            <div class="route-columns" aria-hidden="true">
-              <span>Role</span><span>Harness</span><span>Model</span><span>Computer</span>
-            </div>
-            <ul aria-label="Illustrative configured worker routes">
-              <li class="route-row route-selected" aria-current="true">
-                <strong data-field="Role">Completion</strong>
-                <span data-field="Harness">Claude Code</span>
-                <span data-field="Model">GPT-5.6 Sol</span>
-                <span data-field="Computer">local Mac</span>
-                <span class="route-state">Selected by Claude</span>
-              </li>
-              <li class="route-row">
-                <strong data-field="Role">Review</strong>
-                <span data-field="Harness">Codex CLI</span>
-                <span data-field="Model">Kimi K3</span>
-                <span data-field="Computer">remote Linux</span>
-              </li>
-              <li class="route-row">
-                <strong data-field="Role">Bulk</strong>
-                <span data-field="Harness">OpenCode</span>
-                <span data-field="Model">MiniMax-M3</span>
-                <span data-field="Computer">remote Linux</span>
-              </li>
-              <li class="route-row research-route">
-                <strong data-field="Role">Research</strong>
-                <span data-field="Harness">Claude Code</span>
-                <span data-field="Model">GPT-5.6 Terra</span>
-                <span data-field="Computer">web access, no Greppy</span>
-              </li>
-            </ul>
-          </section>
-
-          <div class="execution-rail" data-appear-stage="3">
-            <span class="execution-mark">Workjet</span>
-            <div>
-              <h3>Resolves and starts the selected route</h3>
-              <p>Completion role, Claude Code harness, GPT-5.6 Sol model, local Mac. Workjet does not plan or select the task.</p>
-            </div>
-          </div>
-
-          <div class="return-rail" data-appear-stage="4">
-            <div class="evidence-output">
-              <h3>Run evidence</h3>
-              <p><strong>Telemetry</strong> records observed run state.</p>
-              <p><strong>Completion receipt</strong> summarizes claimed paths and checks.</p>
-            </div>
-
-            <div class="return-connector">
-              <span>returns to Claude</span>
-              <svg class="sequence-line return-line" viewBox="0 0 96 24" aria-hidden="true" data-line-stage="4">
-                <path class="line-track" pathLength="100" d="M94 12 H8"></path>
-                <path class="line-progress" pathLength="100" d="M94 12 H8"></path>
-                <path class="line-arrow" d="M14 6 L6 12 L14 18"></path>
-              </svg>
-            </div>
-
-            <div class="review-output">
-              <h3>Independent review</h3>
-              <p>Claude inspects the diff, enforces the path boundary, and reruns tests. The receipt points to claimed work; it does not prove correctness.</p>
-            </div>
-          </div>
-        </div>
-      </section>
+          <g class="agent-thrust">
+            <g class="agent-lane lane-sol"><path d="M823 226C920 184 1000 159 1144 151"/><text x="1065" y="137">SOL</text></g>
+            <g class="agent-lane lane-kimi"><path d="M829 247C934 227 1035 218 1154 219"/><text x="1072" y="205">KIMI</text></g>
+            <g class="agent-lane lane-grok"><path d="M829 270C934 276 1035 282 1154 281"/><text x="1069" y="309">GROK</text></g>
+            <g class="agent-lane lane-terra"><path d="M823 292C920 334 1000 359 1144 367"/><text x="1042" y="395">TERRA</text></g>
+            <g class="agent-lane lane-bulk"><path d="M816 259C919 259 1010 259 1120 259"/><text x="1046" y="249">MINIMAX</text></g>
+          </g>
+        </svg>
+      </figure>
     </section>
 
     <section class="mechanism section-shell" id="mechanism" aria-labelledby="mechanism-title">

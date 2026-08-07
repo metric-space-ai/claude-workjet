@@ -12,7 +12,7 @@ Workjet is an open-source native macOS menu-bar app and CLI for managing special
 
 ## Why Workjet exists
 
-**Get shit done with subagents, efficiently and simply.**
+**Workjet - get shit done with Claude Code**
 
 Claude can already decompose work and decide when to delegate. After that decision, the task still needs a specific worker, harness, model route, provider account, computer, repository snapshot, and tool policy. Workjet keeps those choices in one visible worker catalog and exposes one stable CLI contract. Claude can hand off a complete brief, remain the sole orchestrator, and inspect durable run evidence when the worker finishes.
 

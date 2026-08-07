@@ -12,12 +12,13 @@ Workjet should feel mechanical, concentrated, and legible. The interface earns t
 - Use the graphite, blue, and orange OKLCH tokens in `site/styles.css`. Do not introduce pure black, pure white, gradients, translucent glass, blur, glow, or ornamental shadows.
 - Build hierarchy with type size, spacing, alignment, and rules. Do not use a repeated card grid as the default composition.
 - Keep corners restrained. The approved rectangular radii are 5px, 6px, and 8px. Circles are reserved for actual status marks and ordered workflow markers.
-- Motion must explain the contract-to-orchestrator-to-selection-to-execution-to-review sequence in the hero. Use the Web Animations API or CSS transitions only for transform, opacity, and SVG stroke properties. The sequence may autoplay once, must stop in the final review state, and must provide Pause or Play plus Replay controls. Reduced motion shows the complete final state immediately with no autoplay. Do not animate layout properties, loop ornamental motion, or hide the complete architecture when JavaScript is unavailable.
+- The hero is an editorial SVG turbine, not a workflow dashboard. It shows one task entering from the left, Claude Code mounted above the Workjet turbine as orchestrator, and named workers leaving as focused thrust on the right. The turbine may rotate continuously and the intake and thrust strokes may move continuously because those motions are the product metaphor. Use CSS only and animate transform, opacity, or SVG stroke properties. Reduced motion shows the complete static illustration. Never add stage tabs, route tables, status panels, Play or Replay controls, process cards, or a replacement architecture diagram.
 - Do not place tracked uppercase kicker or eyebrow labels above headings. Do not add editorial mini-indices to proof sections. Ordered workflow numbers are allowed because they communicate execution sequence.
 
 ## Content system
 
 - Lead with the concrete product boundary: native macOS control for declared local and remote coding workers.
+- The hero slogan is exactly “Workjet - get shit done with Claude Code”. Do not replace it with a marketing claim.
 - Use specific nouns and verifiable statements. Do not use hype, vague AI claims, invented metrics, customer logos, testimonials, or unsupported provider affiliations.
 - Keep body text to readable line lengths. Use one page-level heading and descriptive section headings.
 - Name unknown, unavailable, and unverified states directly. A completion receipt is evidence for review, not proof of correctness.
