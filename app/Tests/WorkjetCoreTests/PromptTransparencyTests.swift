@@ -114,22 +114,25 @@ final class PromptTransparencyTests: XCTestCase {
         XCTAssertTrue(reopened.promptPreview.contains("PERSISTED-PROGRESS-BOARD-SENTINEL"))
     }
 
-    func testDeletedTechnicalBlocksStayDeletedAcrossNormalizationAndRelaunchDecode() throws {
+    func testDeletedManagedTechnicalBlocksAreRestoredWithoutChangingOwnerText() throws {
         var configuration = WorkjetDefaults.configuration()
         configuration.technicalRules = "USER-KEPT-ONLY"
         configuration.transparentWorkerPromptsMigrated = true
 
         let first = WorkjetBootstrap.normalized(configuration)
-        XCTAssertEqual(first.technicalRules, "USER-KEPT-ONLY")
-        XCTAssertFalse(first.technicalRules!.contains("WORKJET WORKER PREAMBLE"))
+        XCTAssertTrue(first.technicalRules?.hasPrefix("USER-KEPT-ONLY\n\n") == true)
+        XCTAssertTrue(first.technicalRules?.contains("WORKJET CLI EXECUTION CONTRACT BEGIN") == true)
+        XCTAssertTrue(first.technicalRules?.contains("WORKJET WORKER PREAMBLE BEGIN") == true)
 
         let relaunched = try JSONDecoder().decode(WorkjetConfiguration.self, from: JSONEncoder().encode(first))
         let second = WorkjetBootstrap.normalized(relaunched)
-        XCTAssertEqual(second.technicalRules, "USER-KEPT-ONLY")
+        XCTAssertEqual(second.technicalRules, first.technicalRules)
 
         var deletedAll = second
         deletedAll.technicalRules = ""
-        XCTAssertEqual(WorkjetBootstrap.normalized(deletedAll).technicalRules, "")
+        let restored = try XCTUnwrap(WorkjetBootstrap.normalized(deletedAll).technicalRules)
+        XCTAssertTrue(restored.hasPrefix("<!-- WORKJET CLI EXECUTION CONTRACT BEGIN -->"))
+        XCTAssertFalse(restored.contains("USER-KEPT-ONLY"))
     }
 
     func testGeneratedWorkerFactsAreByteIdenticalToVisibleWorkerConfigurationSource() {

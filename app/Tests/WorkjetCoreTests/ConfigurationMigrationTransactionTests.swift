@@ -18,6 +18,10 @@ final class ConfigurationMigrationTransactionTests: XCTestCase {
 
         XCTAssertEqual(migrated, WorkjetBootstrap.normalized(legacy))
         XCTAssertEqual(migrated.skillActivation, .global, "Legacy /workjet-only configurations must migrate to global activation.")
+        XCTAssertFalse(migrated.workers.contains(where: { $0.name == "Standard Coding Task" }))
+        XCTAssertTrue(migrated.technicalRules?.contains("OWNER TRANSACTION TEXT") == true)
+        XCTAssertTrue(migrated.technicalRules?.contains(LegacyPromptMigration.cliExecutionContractBeginMarker) == true)
+        XCTAssertFalse(migrated.technicalRules?.contains("stale streaming contract") == true)
         XCTAssertEqual(try JSONDecoder().decode(WorkjetConfiguration.self, from: Data(contentsOf: file)), migrated)
 
         let backups = try migrationBackups(beside: file)
@@ -103,10 +107,25 @@ final class ConfigurationMigrationTransactionTests: XCTestCase {
         configuration.skillLoaderInstructions = nil
         configuration.modelPrompts = nil
         configuration.adHocLearnings = nil
-        configuration.technicalRules = nil
+        configuration.technicalRules = """
+        OWNER TRANSACTION TEXT
+        \(LegacyPromptMigration.cliExecutionContractBeginMarker)
+        stale streaming contract
+        \(LegacyPromptMigration.cliExecutionContractEndMarker)
+        """
         configuration.transparentWorkerPromptsMigrated = nil
         configuration.skillActivation = .skillOnly
         configuration.injectWorkerDeclarations = false
+        configuration.workers.append(Worker(
+            name: "Standard Coding Task",
+            harness: .claudeCode,
+            model: "grok-4.5",
+            instructions: "for standard high volume coding tasks",
+            reasoningEffort: .high,
+            computerID: WorkjetDefaults.localID,
+            providerPool: .xAI,
+            invocation: WorkerInvocation(executable: "~/.local/bin/claude-sol")
+        ))
         return configuration
     }
 

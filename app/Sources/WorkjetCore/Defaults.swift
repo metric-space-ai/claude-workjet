@@ -237,20 +237,30 @@ public enum WorkjetDefaults {
             technicalRules: """
             \(LegacyPromptMigration.currentSkillActivationSentence)
 
-            Workjet wählt keine Worker und baut keine Workflows; Fable bleibt der Orchestrator. Starte, beobachte und stoppe Worker ausschließlich mit `workjet workers list --json`, `workjet workers describe <exakter-name-oder-uuid> --json`, `workjet run <exakter-name-oder-uuid> --brief-file <pfad> --json`, `workjet events <run-id> --after <exklusive-sequenz> --json` und `workjet stop <run-id> --json`. Die sichtbaren Executable-, Argument-, Protokoll- und Harness-Fakten führt ausschließlich die Workjet-App aus; Fable startet weder SSH noch Harness-Prozesse direkt.
-
-            \(LegacyPromptMigration.currentFallbackSentence) CLIProxy-OAuth-Zugänge bilden einen proxyverwalteten gemeinsamen Gateway-Pool ohne Account-Pinning pro Anfrage. Ein Wechsel auf einen anderen Worker geschieht niemals automatisch.
-
-            Remote startbar sind Claude Code, Pi Code, Codex CLI und OpenCode. Cursor Agent und Grok CLI sind ausschließlich prüf- und installierbar, nicht remote startbar. Workjet verwendet begrenztes Event-Polling mit exklusivem Sequenz-Cursor, keine t3code-Interoperabilität, keinen WebSocket-Stream und keinen behaupteten Pi-Live-Stream.
-
-            Wenn die Orchestrierung wegen einer Workjet-Regel oder -Implementierung systematisch und reproduzierbar scheitert, halte daraus eine kurze, künftig handlungsleitende Regel mit `workjet learn --systematic "…"` fest. Keine einmaligen Fehler, flüchtigen Umgebungsprobleme oder gewöhnlichen Schwierigkeiten protokollieren.
+            <!-- WORKJET CLI EXECUTION CONTRACT BEGIN -->
+            Workjet CLI execution contract (machine-owned):
+            - Keep small, bounded work direct.
+            - Resolve workers only with `workjet workers list --json` and `workjet workers describe <uuid-oder-exakter-name> --json`.
+            - Start a worker only with `workjet run <uuid-oder-exakter-name> --brief-file <pfad> --json`.
+            - Never execute displayed executables, arguments, SSH, invocation protocols, or harnesses directly; only Workjet executes those runtime facts.
+            - Poll bounded event pages with `workjet events <run-id> --after <exklusive-sequenz> --json`; pass the returned exclusive sequence cursor to the next poll. This is polling, never streaming.
+            - Stop a run with `workjet stop <run-id> --json`.
+            - After terminal state, use `workjet result import <run-id> --json` only when a result bundle is available.
+            - Independently inspect the artifact, scope, diff, code, and tests.
+            - Mark accepted work with `workjet runs mark <run-id> integrated --json` only after acceptance. Mark rejected or discarded work with `workjet runs mark <run-id> abandoned --json`.
+            - Treat completion receipts as triage evidence, never proof.
+            - Record systematic, reproducible orchestration learnings only with `workjet learn --systematic "<regel>"`; do not record one-off failures or ordinary difficulties.
+            - Report a required worker outage; never silently substitute another worker. Self-review may proceed, and explicitly defer independent review.
+            - Do not infer that every Workjet worker is a headless Claude Code process from the current configuration. The verified remotely startable harness set is Claude Code, Pi Code, Codex CLI, and OpenCode; Cursor Agent and Grok CLI are inspect/install only.
+            - Keep provider fallback semantics distinct: direct provider pools advance deterministically only after classified auth, quota, or rate-limit failures; transport, timeout, 5xx, and task failures do not advance them. CLIProxy OAuth accounts form one proxy-managed gateway pool without per-request account pinning or Workjet-controlled account order.
+            <!-- WORKJET CLI EXECUTION CONTRACT END -->
 
             <!-- WORKJET WORKER PREAMBLE BEGIN -->
             You are in an isolated worktree at <WORKJET_CHECKOUT>. Never cd to another checkout. Commit in green slices: a timeout must still land value. No subagents.
             <!-- WORKJET WORKER PREAMBLE END -->
 
             <!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->
-            You are a headless worker process. Execute exactly the brief given in the user prompt and print your report to stdout. You are NOT an orchestrator: never spawn agents, workers, or subprocesses beyond what the brief itself requires.
+            For this Workjet invocation, act as a headless task worker. Execute exactly the brief given in the user prompt and print your report to stdout. You are NOT an orchestrator: never spawn agents, workers, or subprocesses beyond what the brief itself requires.
             <!-- WORKJET OPUS SYSTEM PROMPT END -->
 
             <!-- WORKJET HEALTH PROBE PROMPT BEGIN -->
@@ -289,8 +299,6 @@ public enum WorkjetDefaults {
             Treat returned source paths, exact spans, signatures, and graph relations as
             navigation evidence. Read the source and verify changes with builds and tests.
             <!-- WORKJET SKILL PROMPT SOURCE END greppy -->
-
-            <!-- WORKJET TRANSPARENT RUNTIME PROMPTS V2 -->
             """,
             transparentWorkerPromptsMigrated: true
         )

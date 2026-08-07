@@ -23,10 +23,13 @@ final class PromptRuntimeTruthTests: XCTestCase {
         let prompt = String(decoding: ManagedPrompt.workerBody(configuration: WorkjetDefaults.configuration()), as: UTF8.self)
         let advertised = [
             "`workjet workers list --json`",
-            "`workjet workers describe <exakter-name-oder-uuid> --json`",
-            "`workjet run <exakter-name-oder-uuid> --brief-file <pfad> --json`",
+            "`workjet workers describe <uuid-oder-exakter-name> --json`",
+            "`workjet run <uuid-oder-exakter-name> --brief-file <pfad> --json`",
             "`workjet events <run-id> --after <exklusive-sequenz> --json`",
-            "`workjet stop <run-id> --json`"
+            "`workjet stop <run-id> --json`",
+            "`workjet result import <run-id> --json`",
+            "`workjet runs mark <run-id> integrated --json`",
+            "`workjet runs mark <run-id> abandoned --json`"
         ]
         for command in advertised { XCTAssertTrue(prompt.contains(command), "Fehlender CLI-Vertrag: \(command)") }
 
@@ -35,7 +38,13 @@ final class PromptRuntimeTruthTests: XCTestCase {
         XCTAssertEqual(try WorkjetCLIParser.parse(["run", "Reviewer", "--brief-file", "/tmp/brief.md", "--json"]), .run(identifier: "Reviewer", brief: .file("/tmp/brief.md"), json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["events", "run-1", "--after", "7", "--json"]), .events(runID: "run-1", after: 7, json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["stop", "run-1", "--json"]), .stop(runID: "run-1", json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["result", "import", "run-1", "--json"]), .resultImport(runID: "run-1", json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["runs", "mark", "run-1", "integrated", "--json"]), .runsMark(runID: "run-1", disposition: .integrated, json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["runs", "mark", "run-1", "abandoned", "--json"]), .runsMark(runID: "run-1", disposition: .abandoned, json: true))
 
+        XCTAssertTrue(prompt.contains("This is polling, never streaming."))
+        XCTAssertTrue(prompt.contains("exclusive sequence cursor"))
+        XCTAssertTrue(prompt.contains("Self-review may proceed, and explicitly defer independent review."))
         XCTAssertTrue(prompt.contains("App-Fakt; nicht direkt ausführen"))
         XCTAssertFalse(prompt.contains("Fable erzeugt den aktuellen `CtoxTurnRequest`"))
         XCTAssertFalse(prompt.contains("/usr/bin/ssh"))
@@ -57,10 +66,9 @@ final class PromptRuntimeTruthTests: XCTestCase {
         }
 
         let prompt = String(decoding: ManagedPrompt.workerBody(configuration: WorkjetDefaults.configuration()), as: UTF8.self)
-        XCTAssertTrue(prompt.contains("Remote startbar sind Claude Code, Pi Code, Codex CLI und OpenCode."))
-        XCTAssertTrue(prompt.contains("Cursor Agent und Grok CLI sind ausschließlich prüf- und installierbar, nicht remote startbar."))
-        XCTAssertTrue(prompt.contains("keine t3code-Interoperabilität"))
-        XCTAssertTrue(prompt.contains("keinen WebSocket-Stream"))
+        XCTAssertTrue(prompt.contains("verified remotely startable harness set is Claude Code, Pi Code, Codex CLI, and OpenCode"))
+        XCTAssertTrue(prompt.contains("Cursor Agent and Grok CLI are inspect/install only"))
+        XCTAssertTrue(prompt.contains("Do not infer that every Workjet worker is a headless Claude Code process"))
     }
 
     func testProviderPoolTextMatchesDirectFallbackAndSharedGatewayRuntime() throws {
@@ -197,8 +205,8 @@ final class PromptRuntimeTruthTests: XCTestCase {
 
     func testDefaultTechnicalRulesContainNoDirectInvocationOrAutomaticWorkerDegradation() {
         let rules = WorkjetDefaults.configuration().technicalRules ?? ""
-        XCTAssertTrue(rules.contains("workjet run <exakter-name-oder-uuid> --brief-file <pfad> --json"))
-        XCTAssertTrue(rules.contains("Ein Wechsel auf einen anderen Worker geschieht niemals automatisch."))
+        XCTAssertTrue(rules.contains("workjet run <uuid-oder-exakter-name> --brief-file <pfad> --json"))
+        XCTAssertTrue(rules.contains("never silently substitute another worker"))
         XCTAssertFalse(rules.contains("~/.local/bin/claude-"))
         XCTAssertFalse(rules.contains("/usr/bin/ssh"))
         XCTAssertFalse(rules.contains("Fable erzeugt"))

@@ -2,6 +2,12 @@ import Darwin
 import XCTest
 @testable import WorkjetCore
 
+private func markedTestBlock(begin: String, end: String, in source: String) -> String? {
+    guard let beginRange = source.range(of: begin),
+          let endRange = source.range(of: end, range: beginRange.upperBound..<source.endIndex) else { return nil }
+    return String(source[beginRange.lowerBound..<endRange.upperBound])
+}
+
 final class DefaultsAndLogicTests: XCTestCase {
     func testDefaultsShipTheProvenEightWorkerOrchestrationSetup() throws {
         let config = WorkjetDefaults.configuration()
@@ -300,9 +306,108 @@ final class DefaultsAndLogicTests: XCTestCase {
         var configuration = WorkjetDefaults.configuration()
         configuration.skillRules = general
         configuration.technicalRules = oldTechnical
+        configuration.transparentWorkerPromptsMigrated = nil
         let normalized = WorkjetBootstrap.normalized(configuration)
         XCTAssertEqual(normalized.skillRules, "\(ownerBefore)\n\n\(ownerAfter)")
-        XCTAssertEqual(normalized.technicalRules, migrated)
+        XCTAssertTrue(normalized.technicalRules?.contains(migrated) == true)
+        XCTAssertTrue(normalized.technicalRules?.contains(LegacyPromptMigration.cliExecutionContractBeginMarker) == true)
+    }
+
+    func testManagedTechnicalBlocksSynchronizeWithoutTouchingOwnerTextAndAreIdempotent() throws {
+        let defaults = try XCTUnwrap(WorkjetDefaults.configuration().technicalRules)
+        let receiptBegin = "<!-- WORKJET COMPLETION RECEIPT PROMPT BEGIN -->"
+        let receiptEnd = "<!-- WORKJET COMPLETION RECEIPT PROMPT END -->"
+        let greppyBegin = WorkerSkillCatalog.promptSourceBeginMarker(for: WorkerSkillCatalog.greppyID)
+        let greppyEnd = WorkerSkillCatalog.promptSourceEndMarker(for: WorkerSkillCatalog.greppyID)
+        let stale = """
+        OWNER BEFORE
+        \(greppyBegin)
+        stale greppy command: greppy who-calls
+        \(greppyEnd)
+        OWNER BETWEEN ONE
+        \(receiptBegin)
+        stale receipt
+        \(receiptEnd)
+        OWNER BETWEEN TWO
+        \(LegacyPromptMigration.cliExecutionContractBeginMarker)
+        stale CLI contract that says events stream forever
+        \(LegacyPromptMigration.cliExecutionContractEndMarker)
+        <!-- WORKJET TRANSPARENT RUNTIME PROMPTS V2 -->
+        OWNER AFTER
+        """
+        var configuration = WorkjetDefaults.configuration()
+        configuration.technicalRules = stale
+
+        let normalized = WorkjetBootstrap.normalized(configuration)
+        let technical = try XCTUnwrap(normalized.technicalRules)
+        for ownerText in ["OWNER BEFORE", "OWNER BETWEEN ONE", "OWNER BETWEEN TWO", "OWNER AFTER"] {
+            XCTAssertTrue(technical.contains(ownerText), "Owner text changed: \(ownerText)")
+        }
+        XCTAssertFalse(technical.contains("greppy who-calls"))
+        XCTAssertFalse(technical.contains("stale receipt"))
+        XCTAssertFalse(technical.contains("events stream forever"))
+        XCTAssertFalse(technical.contains("WORKJET TRANSPARENT RUNTIME PROMPTS V2"))
+        for (begin, end) in [
+            (greppyBegin, greppyEnd),
+            (receiptBegin, receiptEnd),
+            (LegacyPromptMigration.cliExecutionContractBeginMarker, LegacyPromptMigration.cliExecutionContractEndMarker)
+        ] {
+            XCTAssertEqual(markedTestBlock(begin: begin, end: end, in: technical), markedTestBlock(begin: begin, end: end, in: defaults))
+            XCTAssertEqual(technical.components(separatedBy: begin).count - 1, 1)
+        }
+        for begin in [
+            "<!-- WORKJET WORKER PREAMBLE BEGIN -->",
+            "<!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->",
+            "<!-- WORKJET HEALTH PROBE PROMPT BEGIN -->"
+        ] {
+            XCTAssertEqual(technical.components(separatedBy: begin).count - 1, 1)
+        }
+        XCTAssertEqual(WorkjetBootstrap.normalized(normalized), normalized)
+    }
+
+    func testFreshAndMigratedConfigurationsRenderTheSameManagedCLIContract() throws {
+        let defaults = try XCTUnwrap(WorkjetDefaults.configuration().technicalRules)
+        var legacy = WorkjetDefaults.configuration()
+        legacy.technicalRules = "OWNER\n"
+        legacy.transparentWorkerPromptsMigrated = nil
+        let migrated = try XCTUnwrap(WorkjetBootstrap.normalized(legacy).technicalRules)
+        let begin = LegacyPromptMigration.cliExecutionContractBeginMarker
+        let end = LegacyPromptMigration.cliExecutionContractEndMarker
+        XCTAssertEqual(markedTestBlock(begin: begin, end: end, in: migrated), markedTestBlock(begin: begin, end: end, in: defaults))
+    }
+
+    func testOnlyExactLegacyStandardCodingTaskIsRemoved() {
+        let exact = Worker(
+            name: "Standard Coding Task",
+            harness: .claudeCode,
+            model: "grok-4.5",
+            instructions: "for standard high volume coding tasks",
+            reasoningEffort: .high,
+            computerID: WorkjetDefaults.localID,
+            providerPool: .xAI,
+            invocation: WorkerInvocation(executable: "~/.local/bin/claude-sol")
+        )
+        var customized: [Worker] = []
+        var model = exact; model.id = UUID(); model.model = "grok-4.5-custom"; customized.append(model)
+        var harness = exact; harness.id = UUID(); harness.harness = .codexCLI; customized.append(harness)
+        var executable = exact; executable.id = UUID(); executable.invocation.executable = "/custom/claude-sol"; customized.append(executable)
+        var arguments = exact; arguments.id = UUID(); arguments.invocation.arguments = ["--custom"]; customized.append(arguments)
+        var capabilities = exact; capabilities.id = UUID(); capabilities.invocation.capabilities = ["custom"]; customized.append(capabilities)
+        var options = exact; options.id = UUID(); options.invocation.options = ["fastMode": "true"]; customized.append(options)
+        var instructions = exact; instructions.id = UUID(); instructions.instructions = "custom instructions"; customized.append(instructions)
+        var reasoning = exact; reasoning.id = UUID(); reasoning.reasoningEffort = .xhigh; customized.append(reasoning)
+        var provider = exact; provider.id = UUID(); provider.providerPool = .openAI; customized.append(provider)
+        var skills = exact; skills.id = UUID(); skills.skillOverrides = [WorkerSkillCatalog.greppyID: false]; customized.append(skills)
+
+        var configuration = WorkjetDefaults.configuration()
+        let retainedDefaultIDs = Set(configuration.workers.map(\.id))
+        configuration.workers += [exact] + customized
+        let normalized = WorkjetBootstrap.normalized(configuration)
+        let normalizedIDs = Set(normalized.workers.map(\.id))
+        XCTAssertFalse(normalizedIDs.contains(exact.id))
+        XCTAssertTrue(retainedDefaultIDs.isSubset(of: normalizedIDs))
+        XCTAssertTrue(customized.allSatisfy { normalizedIDs.contains($0.id) })
+        XCTAssertEqual(WorkjetBootstrap.normalized(normalized), normalized)
     }
 
     func testLegacyCLIProxyMigrationIsOneTime() {

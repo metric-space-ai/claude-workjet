@@ -1206,41 +1206,16 @@ public struct WorkjetBootstrap {
         if value.skillLoaderInstructions == nil {
             value.skillLoaderInstructions = WorkjetDefaults.skillLoaderInstructions
         }
-        if value.technicalRules == nil {
-            value.technicalRules = WorkjetDefaults.configuration().technicalRules
-        } else if let technicalRules = value.technicalRules {
-            value.technicalRules = LegacyPromptMigration.correctingKnownTechnicalDefaults(in: technicalRules)
-        }
-        if value.transparentWorkerPromptsMigrated != true {
-            let defaults = WorkjetDefaults.configuration().technicalRules ?? ""
-            let visibleWorkerPrompts = defaults.components(separatedBy: "<!-- WORKJET WORKER PREAMBLE BEGIN -->").dropFirst().first.map {
-                "<!-- WORKJET WORKER PREAMBLE BEGIN -->" + $0
-            } ?? ""
-            if !visibleWorkerPrompts.isEmpty,
-               value.technicalRules?.contains("<!-- WORKJET WORKER PREAMBLE BEGIN -->") != true {
-                let existing = value.technicalRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                value.technicalRules = [existing, visibleWorkerPrompts].filter { !$0.isEmpty }.joined(separator: "\n\n")
-            }
-            value.transparentWorkerPromptsMigrated = true
-        }
-        let transparentRuntimeMarker = "<!-- WORKJET TRANSPARENT RUNTIME PROMPTS V2 -->"
-        if value.technicalRules?.contains("<!-- WORKJET WORKER PREAMBLE BEGIN -->") == true,
-           value.technicalRules?.contains(transparentRuntimeMarker) != true {
-            let defaults = WorkjetDefaults.configuration().technicalRules ?? ""
-            let sourceMarkers = [
-                ("<!-- WORKJET COMPLETION RECEIPT PROMPT BEGIN -->", "<!-- WORKJET COMPLETION RECEIPT PROMPT END -->"),
-                (WorkerSkillCatalog.promptSourceBeginMarker(for: WorkerSkillCatalog.greppyID), WorkerSkillCatalog.promptSourceEndMarker(for: WorkerSkillCatalog.greppyID))
-            ]
-            var additions: [String] = []
-            for (begin, end) in sourceMarkers where value.technicalRules?.contains(begin) != true {
-                if let block = markedBlock(begin: begin, end: end, in: defaults) {
-                    additions.append(block)
-                }
-            }
-            additions.append(transparentRuntimeMarker)
-            let existing = value.technicalRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            value.technicalRules = ([existing] + additions).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        }
+        let defaultTechnicalRules = WorkjetDefaults.configuration().technicalRules ?? ""
+        let editableTechnicalRules = value.technicalRules.map {
+            LegacyPromptMigration.correctingKnownTechnicalDefaults(in: $0)
+        } ?? defaultTechnicalRules
+        value.technicalRules = LegacyPromptMigration.synchronizingManagedTechnicalBlocks(
+            in: editableTechnicalRules,
+            defaults: defaultTechnicalRules
+        )
+        value.transparentWorkerPromptsMigrated = true
+        value.workers = LegacyPromptMigration.removingKnownLegacyStandardCodingTask(from: value.workers)
         // Workjet is a global Claude prompt extension. The persisted enum is
         // retained for version-1 decoding, but opt-in /workjet configurations
         // are migrated to the globally installed include.
@@ -1290,12 +1265,6 @@ public struct WorkjetBootstrap {
         migrateLegacySharedOAuthStatus(&value)
         migrateOAuthAccountRoutesToPools(&value)
         return value
-    }
-
-    private static func markedBlock(begin: String, end: String, in source: String) -> String? {
-        guard let beginRange = source.range(of: begin),
-              let endRange = source.range(of: end, range: beginRange.upperBound..<source.endIndex) else { return nil }
-        return String(source[beginRange.lowerBound..<endRange.upperBound])
     }
 
     private static func migrateLegacySharedOAuthStatus(_ configuration: inout WorkjetConfiguration) {
