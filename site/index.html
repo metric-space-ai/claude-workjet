@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Workjet exposes declared coding workers to Claude, executes the selected local or remote route, and returns bounded evidence for independent review.">
+  <meta name="description" content="Workjet lets Claude run configured coding workers across models, harnesses, accounts, and computers, then returns evidence for independent review.">
   <meta name="theme-color" content="oklch(0.17 0.012 250)">
-  <title>Workjet | Declared workers for Claude</title>
+  <title>Workjet | Coding workers for Claude</title>
   <link rel="icon" href="assets/workjet-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="site.js" defer></script>
@@ -31,19 +31,19 @@
     <section class="hero" id="top" aria-labelledby="hero-title">
       <div class="hero-copy">
         <h1 id="hero-title">Workjet inside Claude Code.</h1>
-        <p class="hero-lede">Workjet enters every fresh Claude session as a visible global contract. Claude plans and selects. Workjet resolves the declared harness, model, provider route, skills, and computer, then returns evidence for Claude to inspect.</p>
+        <p class="hero-lede">The installer adds a visible Workjet contract to fresh Claude Code and Claude Desktop sessions. Claude still plans and selects. Workjet starts the configured harness, model route, skills, and computer, then returns run evidence for Claude to verify.</p>
         <div class="hero-actions" aria-label="Project links">
           <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Explore the source</a>
           <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Read the docs</a>
         </div>
-        <p class="release-state"><span aria-hidden="true"></span>Source release candidate under verification. No public notarized download is claimed.</p>
+        <p class="release-state"><span aria-hidden="true"></span>Source release candidate under verification. No notarized public download is available yet.</p>
       </div>
 
       <section class="system-sequence" aria-labelledby="sequence-title" data-sequence>
         <header class="sequence-header">
           <div>
             <h2 id="sequence-title">One session, one selected route</h2>
-            <p>Configured examples, not provider endorsements or default availability.</p>
+            <p>Illustrative routes. Model access depends on your configured accounts.</p>
           </div>
           <p class="sequence-status" aria-live="polite" data-sequence-status>Review ready</p>
         </header>
@@ -67,7 +67,7 @@
               <span class="node-index">01</span>
               <div>
                 <h3>Global Workjet contract</h3>
-                <p>User-visible include declares worker roles and invocation rules.</p>
+                <p>A marked global include lists worker roles and invocation rules.</p>
               </div>
             </article>
 
@@ -81,7 +81,7 @@
               <span class="node-index">02</span>
               <div>
                 <h3>Claude Code</h3>
-                <p><strong>Orchestrator after reading the contract.</strong> Plans, selects, integrates, and verifies.</p>
+                <p><strong>Reads the contract and remains the orchestrator.</strong> Plans, selects, integrates, and verifies.</p>
               </div>
             </article>
           </div>
@@ -89,7 +89,7 @@
           <section class="worker-routes" aria-labelledby="routes-title" data-appear-stage="2">
             <div class="routes-heading">
               <h3 id="routes-title">Declared worker choices</h3>
-              <span>Claude selects Completion</span>
+              <span>Claude selects Sol · Completion</span>
             </div>
             <div class="route-columns" aria-hidden="true">
               <span>Role</span><span>Harness</span><span>Model</span><span>Computer</span>
@@ -133,7 +133,7 @@
 
           <div class="return-rail" data-appear-stage="4">
             <div class="evidence-output">
-              <h3>Bounded return</h3>
+              <h3>Run evidence</h3>
               <p><strong>Telemetry</strong> records observed run state.</p>
               <p><strong>Completion receipt</strong> summarizes claimed paths and checks.</p>
             </div>
@@ -149,7 +149,7 @@
 
             <div class="review-output">
               <h3>Independent review</h3>
-              <p>Claude inspects the diff, enforces the path boundary, and reruns tests. The receipt is evidence, not correctness.</p>
+              <p>Claude inspects the diff, enforces the path boundary, and reruns tests. The receipt points to claimed work; it does not prove correctness.</p>
             </div>
           </div>
         </div>
@@ -158,32 +158,32 @@
 
     <section class="mechanism section-shell" id="mechanism" aria-labelledby="mechanism-title">
       <div class="section-intro">
-        <h2 id="mechanism-title">Why Workjet exists.</h2>
-        <p>Claude already knows how to delegate. Workjet makes the handoff repeatable when workers span models, harnesses, accounts, skills, and computers. The coordination stays simple: send a complete brief, continue working, then verify the returned artifact.</p>
+        <h2 id="mechanism-title">Get shit done with subagents.</h2>
+        <p>Workjet exists to keep delegation efficient and simple when workers span models, harnesses, accounts, skills, and computers: send a complete brief, continue working, then verify the returned artifact.</p>
       </div>
 
       <ol class="mechanism-list">
         <li>
           <span>01</span>
-          <div><h3>Install the contract</h3><p>Workjet maintains one marked include in the global Claude prompt. Fresh Claude Code and Claude Desktop sessions can read the declared worker roles.</p></div>
+          <div><h3>Expose the worker catalog</h3><p>Workjet maintains one marked include in the global Claude prompt. Fresh Claude Code and Claude Desktop sessions can read the configured worker roles.</p></div>
         </li>
         <li>
           <span>02</span>
-          <div><h3>Let Claude select</h3><p>Claude plans the work and chooses one declared worker. Workjet does not invent a workflow or become a second orchestrator.</p></div>
+          <div><h3>Let Claude select</h3><p>Claude plans the work and chooses one configured worker. Workjet does not invent a workflow or become a second orchestrator.</p></div>
         </li>
         <li>
           <span>03</span>
-          <div><h3>Resolve and execute</h3><p>Workjet binds the chosen role to its configured harness, model, and local or remote computer, then starts a fire-and-forget run.</p></div>
+          <div><h3>Start one worker</h3><p>Workjet binds the chosen role to its configured harness, model, and local or remote computer, then starts a fire-and-forget run.</p></div>
         </li>
         <li class="review-stage">
           <span>04</span>
-          <div><h3>Review independently</h3><p>Telemetry and a non-authoritative completion receipt return to Claude. Claude still inspects changes and reruns the required checks.</p></div>
+          <div><h3>Verify the returned work</h3><p>Telemetry and a non-authoritative completion receipt return to Claude. Claude still inspects changes and reruns the required checks.</p></div>
         </li>
       </ol>
 
       <section class="default-playbook" aria-labelledby="playbook-title">
         <div class="playbook-intro">
-          <h3 id="playbook-title">A useful default, not eight blank profiles.</h3>
+          <h3 id="playbook-title">Eight workers define a useful default.</h3>
           <p>A clean installation includes an editable orchestration prompt and named workers for the paths below. Existing user configurations remain untouched.</p>
         </div>
 
@@ -217,7 +217,7 @@
 
     <section class="proof section-shell" id="proof" aria-labelledby="proof-title">
       <div class="section-intro proof-intro">
-        <h2 id="proof-title">The app exposes configuration and observed state.</h2>
+        <h2 id="proof-title">The app shows configuration and observed state.</h2>
         <p>Authentic Workjet captures show computers, worker definitions, prompt ownership, health, and run evidence. Unknown and unavailable states stay explicit.</p>
       </div>
 
@@ -226,8 +226,8 @@
           <img class="capture" src="assets/screenshots/workjet-overview.png" alt="Workjet overview showing computer selection, worker rows, health states, and current run activity">
         </div>
         <figcaption>
-          <h3>Workers and computers share one control surface.</h3>
-          <p>The overview keeps declared routes, target health, and current activity together without claiming that observation is verification.</p>
+          <h3>See workers, targets, and activity together.</h3>
+          <p>The overview keeps configured routes, target health, and current activity together without confusing observation with verification.</p>
         </figcaption>
       </figure>
 
@@ -246,8 +246,8 @@
           <img class="capture" src="assets/screenshots/workjet-remote-computer.png" alt="Workjet remote computer setup showing a Tailscale or SSH target identity and host verification">
         </div>
         <figcaption>
-          <h3>Remote readiness is a measured state.</h3>
-          <p>Configured local and remote computers are peer targets. Offline, unsupported, and unverified conditions remain visible before assignment.</p>
+          <h3>Remote readiness stays explicit.</h3>
+          <p>Workjet can route a worker to the local Mac or a configured remote computer. Offline, unsupported, and unverified conditions remain visible before assignment.</p>
         </figcaption>
       </figure>
 
@@ -256,7 +256,7 @@
           <img class="capture" src="assets/screenshots/workjet-prompt-telemetry.png" alt="Workjet prompt and telemetry settings showing source-owned prompt blocks and observed run evidence">
         </div>
         <figcaption>
-          <h3>Policy and observation keep separate owners.</h3>
+          <h3>Prompts and telemetry remain separate.</h3>
           <p>General rules, model rules, worker instructions, learnings, and technical rules remain distinct from runtime telemetry.</p>
         </figcaption>
       </figure>
@@ -271,8 +271,8 @@
       <ol class="trust-chain">
         <li><span>01</span><div><h3>Verify the host</h3><p>Unknown or changed SSH host keys block setup.</p></div></li>
         <li><span>02</span><div><h3>Send a fixed snapshot</h3><p>Tracked edits, deletions, and allowed untracked files travel as a capped raw Git bundle.</p></div></li>
-        <li><span>03</span><div><h3>Run in detached space</h3><p>The host creates one owned worktree and performs no network Git operation.</p></div></li>
-        <li class="review-stage"><span>04</span><div><h3>Import a review ref</h3><p>Import writes only <code>refs/workjet/&lt;run-id&gt;</code>. It does not merge, move HEAD, stage files, or touch the active worktree.</p></div></li>
+        <li><span>03</span><div><h3>Create an isolated worktree</h3><p>The host creates one run-owned worktree and performs no network Git operation.</p></div></li>
+        <li class="review-stage"><span>04</span><div><h3>Import a review-only ref</h3><p>Import writes only <code>refs/workjet/&lt;run-id&gt;</code>. It does not merge, move HEAD, stage files, or touch the active worktree.</p></div></li>
       </ol>
     </section>
 
@@ -291,7 +291,7 @@ brew install librsvg
 ./install.sh</code></pre>
         </div>
         <div class="install-notes">
-          <h3>Verified boundary</h3>
+          <h3>Supported runtime</h3>
           <p>Control host: macOS 14 or newer on Apple Silicon. Coding harnesses: Claude Code, Codex CLI, and OpenCode. Targets: the local Mac and configured remote Linux computers.</p>
           <p>The installer preserves unrelated global Claude content and does not change project-local prompt files.</p>
           <a class="text-link" href="https://github.com/metric-space-ai/claude-workjet/blob/main/app/README.md">Read the installation guide</a>
@@ -302,12 +302,12 @@ brew install librsvg
     <section class="final-cta" aria-labelledby="final-title">
       <div>
         <img src="assets/workjet-mark.svg" width="72" height="72" alt="Eight-blade Workjet turbine mark">
-        <h2 id="final-title">Inspect the contract, routes, and release boundary.</h2>
-        <p>Workjet is open source and under release verification. Review the source and documentation now, or follow the releases page for a future notarized artifact.</p>
+        <h2 id="final-title">Review Workjet before you install it.</h2>
+        <p>The source and documentation are available now. A notarized public download will appear only after release verification succeeds.</p>
         <div class="hero-actions">
-          <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">Open source</a>
-          <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Open docs</a>
-          <a class="release-link" href="https://github.com/metric-space-ai/claude-workjet/releases">Release status</a>
+          <a class="action action-primary" href="https://github.com/metric-space-ai/claude-workjet">View source</a>
+          <a class="action action-secondary" href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Read docs</a>
+          <a class="release-link" href="https://github.com/metric-space-ai/claude-workjet/releases">Check release status</a>
         </div>
       </div>
     </section>
@@ -318,7 +318,7 @@ brew install librsvg
       <img src="assets/workjet-mark.svg" width="26" height="26" alt="">
       <span>Workjet</span>
     </a>
-    <p>Native macOS control for declared local and remote coding workers.</p>
+    <p>Native macOS control for local and remote coding workers.</p>
     <nav aria-label="Project links">
       <a href="https://github.com/metric-space-ai/claude-workjet">Source</a>
       <a href="https://github.com/metric-space-ai/claude-workjet/tree/main/docs">Docs</a>
