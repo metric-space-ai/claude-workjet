@@ -10,6 +10,34 @@ Workjet is an open-source native macOS menu-bar app and CLI for managing special
 
 <p align="center"><em>Actual Workjet source build with an anonymized, non-secret configuration.</em></p>
 
+## Why Workjet exists
+
+**Get shit done with subagents, efficiently and simply.**
+
+Claude is good at deciding what work matters. The operational friction begins after that decision: which worker definition, harness, model, provider account, computer, repository snapshot, tool policy, and result belongs to this run? Workjet turns that mutable setup into a visible worker catalog and one stable CLI contract. Claude can hand off a complete brief, continue as the sole orchestrator, and inspect durable evidence when the worker finishes.
+
+The default setup covers two common paths:
+
+- Clear, difficult work goes directly to Sol with a hard whitelist and exact checks.
+- Unclear work goes first to the same bounded discovery brief on Grok, Luna, and GLM. Claude compares the three disposable attempts, writes a better production specification, and only then assigns the real implementation to Sol or the appropriate Kimi role.
+
+It also includes separate defaults for exhaustive bulk work, online-only Terra research, cybersecurity review, and greenfield UI/UX. These are visible editable prompts, not hidden routing code.
+
+## Why not only use Claude Code's built-in agents?
+
+Claude Code's [custom subagents](https://code.claude.com/docs/en/sub-agents) and [Agent Teams](https://code.claude.com/docs/en/agent-teams) are useful when the workers are Claude Code contexts and direct in-session coordination is valuable. Workjet solves a different operational problem: running a heterogeneous, persistent worker fleet without turning coordination into the product.
+
+| Need | Claude Code built-ins | Workjet |
+| --- | --- | --- |
+| Worker runtime | Claude Code subagents or Claude Code teammate sessions | Declared combinations of supported harness, model route, provider access, skills, and computer |
+| Coordination | A subagent reports to its caller; Agent Teams add a shared task list and agent messaging | Fire-and-forget by design; workers do not coordinate with each other and Claude owns synthesis |
+| Remote code | Use the environment and worktree available to that Claude Code session | Send an immutable Git snapshot over verified SSH or Tailscale; the worker computer needs no GitHub login |
+| Isolation and handoff | Session result or worktree, depending on the chosen built-in mode | One run worktree, bounded telemetry, completion receipt, and protected `refs/workjet/<run-id>` result |
+| Reusable policy | Agent definitions, skills, settings, and project instructions | One app-managed catalog that keeps role prompt, harness, model, provider route, target, and managed skills visible together |
+| Failure policy | Managed inside the active Claude workflow | Required worker, quota failure, and any explicitly authorized degradation remain visible and attributable |
+
+Workjet is better when different models or harnesses, remote computers, durable run evidence, or credential-free repository transport matter. Claude Code's built-ins are simpler when one Claude session on one computer is enough, or when teammates need live discussion and steering. Workjet complements those features; it does not claim to replace them.
+
 ## Product boundary
 
 Workjet provides configuration, execution plumbing, and observable run state. It does not replace the agent that plans and integrates the work.

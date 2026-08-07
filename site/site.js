@@ -92,7 +92,7 @@
     });
 
     appearingItems.forEach((item) => {
-      const itemStage = Number(item.dataset.revealStage ?? item.dataset.lineStage);
+      const itemStage = Number(item.dataset.appearStage ?? item.dataset.lineStage);
       item.dataset.reached = itemStage <= currentStage ? 'true' : 'false';
     });
 

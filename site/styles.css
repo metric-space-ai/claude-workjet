@@ -15,7 +15,7 @@
   --orange: oklch(0.72 0.145 55);
   --orange-dark: oklch(0.28 0.045 55);
   --max: 1180px;
-  --gutter: clamp(0.9rem, 4vw, 4rem);
+  --gutter: clamp(1.5rem, 4vw, 4rem);
   --sans: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --display: "Avenir Next", Avenir, "Segoe UI", sans-serif;
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -483,6 +483,10 @@ h3 {
   line-height: 1.38;
 }
 
+.execution-rail p {
+  max-width: 60ch;
+}
+
 .system-node strong,
 .evidence-output strong {
   color: var(--ink-strong);
@@ -645,13 +649,13 @@ h3 {
 
 .js .system-sequence[data-motion="active"] [data-appear-stage],
 .js .system-sequence[data-motion="active"] [data-line-stage] {
-  opacity: 0.4;
+  visibility: hidden;
   transform: translateY(5px);
-  transition: opacity 280ms ease, transform 280ms ease;
+  transition: transform 280ms ease;
 }
 
 .js .system-sequence[data-motion="active"] [data-reached="true"] {
-  opacity: 1;
+  visibility: visible;
   transform: translateY(0);
 }
 
@@ -751,6 +755,150 @@ h3 {
 .review-stage > span,
 .review-stage h3 {
   color: var(--orange) !important;
+}
+
+.default-playbook {
+  margin-top: clamp(4rem, 8vw, 7rem);
+}
+
+.playbook-intro {
+  display: grid;
+  grid-template-columns: minmax(15rem, 0.82fr) minmax(18rem, 1.18fr);
+  gap: clamp(2rem, 8vw, 7rem);
+  align-items: end;
+  padding: clamp(2rem, 4vw, 3.5rem) 0;
+}
+
+.playbook-intro h3,
+.playbook-intro p,
+.path-question p,
+.synthesis-step p {
+  margin: 0;
+}
+
+.playbook-intro h3 {
+  max-width: 17ch;
+  font-size: 1.75rem;
+}
+
+.playbook-intro p,
+.path-question p,
+.synthesis-step p,
+.specialist-paths dd {
+  color: var(--ink-muted);
+}
+
+.discovery-path {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.8fr) minmax(22rem, 1.6fr);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.path-question,
+.synthesis-step {
+  padding: 1.5rem;
+}
+
+.path-question {
+  border-right: 1px solid var(--line);
+}
+
+.path-question > span,
+.synthesis-step > span {
+  display: block;
+  margin-bottom: 0.45rem;
+  color: var(--blue-strong);
+  font-weight: 740;
+}
+
+.prototype-panel {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prototype-panel li {
+  display: grid;
+  grid-template-columns: 1.8rem 1fr;
+  gap: 0.12rem 0.6rem;
+  align-content: center;
+  min-height: 6.5rem;
+  padding: 1rem;
+}
+
+.prototype-panel li + li {
+  border-left: 1px solid var(--line);
+}
+
+.prototype-panel li > span {
+  grid-row: 1 / 3;
+  color: var(--orange);
+  font-size: 1.25rem;
+  font-weight: 760;
+}
+
+.prototype-panel strong {
+  color: var(--ink-strong);
+}
+
+.prototype-panel small {
+  color: var(--ink-muted);
+  font-size: 0.875rem;
+}
+
+.synthesis-step {
+  border-top: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+}
+
+.production-workers {
+  border-top: 1px solid var(--line);
+}
+
+.production-workers > div {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.65fr) 1fr;
+  gap: 1rem;
+  padding: 0.8rem 1rem;
+}
+
+.production-workers > div + div {
+  border-top: 1px solid var(--line);
+}
+
+.production-workers strong {
+  color: var(--ink-strong);
+}
+
+.production-workers span {
+  color: var(--ink-muted);
+}
+
+.specialist-paths {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.specialist-paths > div {
+  padding: 1.25rem 1.5rem;
+}
+
+.specialist-paths > div + div {
+  border-left: 1px solid var(--line);
+}
+
+.specialist-paths dt {
+  color: var(--ink-strong);
+  font-weight: 740;
+}
+
+.specialist-paths dd {
+  margin: 0.3rem 0 0;
 }
 
 .proof {
@@ -964,6 +1112,10 @@ pre {
   max-width: 17ch;
 }
 
+.final-cta p {
+  max-width: 60ch;
+}
+
 .final-cta .hero-actions {
   margin-top: 1.1rem;
 }
@@ -984,6 +1136,7 @@ pre {
 }
 
 .site-footer p {
+  max-width: 60ch;
   margin: 0;
   color: var(--ink-muted);
   font-size: 0.875rem;
@@ -1076,6 +1229,19 @@ pre {
     border-top: 1px solid var(--line);
   }
 
+  .discovery-path {
+    grid-template-columns: 1fr;
+  }
+
+  .path-question,
+  .synthesis-step {
+    border-right: 0;
+  }
+
+  .path-question {
+    border-bottom: 1px solid var(--line);
+  }
+
   .proof-row,
   .proof-row-reverse {
     grid-template-columns: 1fr;
@@ -1144,6 +1310,7 @@ pre {
   }
 
   .section-intro,
+  .playbook-intro,
   .docs-head,
   .install-layout {
     grid-template-columns: 1fr;
@@ -1318,6 +1485,22 @@ pre {
 
   .mechanism-list {
     grid-template-columns: 1fr;
+  }
+
+  .prototype-panel,
+  .specialist-paths {
+    grid-template-columns: 1fr;
+  }
+
+  .prototype-panel li + li,
+  .specialist-paths > div + div {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
+  .production-workers > div {
+    grid-template-columns: 1fr;
+    gap: 0.2rem;
   }
 
   .mechanism-list li + li {
