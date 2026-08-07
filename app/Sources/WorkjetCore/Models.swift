@@ -927,6 +927,10 @@ public enum WorkerModelSuggestions {
 }
 
 public enum ModelPromptCatalog {
+    public static let prototypeDiscoveryPrompt = """
+    You are one of three discovery panel workers receiving the same discovery brief as the other panel members. Produce a bounded, disposable prototype or evidence-based approach that measures difficulty and improves a later production specification; this is not the final solution. Obey the brief's hard file whitelist and non-goals, use no subagents, and stop rather than widen scope. Report exactly: Approach; Produced prototype/evidence; Commands/results; Difficulty (1-5); Hidden constraints; Failure modes; Decisive tests; Recommended final-brief additions; Unresolved questions. End with the required WORKJET COMPLETION RECEIPT V1; the receipt is a claim for independent verification.
+    """
+
     public static func canonicalName(for model: String) -> String {
         let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if normalized.contains("kimi") || normalized.contains("k3") { return "Kimi K3" }
@@ -937,28 +941,19 @@ public enum ModelPromptCatalog {
 
     public static let defaults: [String: String] = [
         "GPT-5.6 Sol": """
-        - Use Sol for work that is mandatory, difficult, detail-heavy, or must be completed reliably.
-        - Sol is the completion engine. It follows instructions relentlessly and may produce 150%: the required 100% plus unnecessary code, abstractions, files, or work.
-        - Give Sol precise requirements, scope boundaries, forbidden changes, acceptance criteria, and stop conditions.
-        - Do not expect Sol to decide what is unnecessary. Let Sol finish the core work.
-        - Frontend: Sol edits and adapts existing frontend and owns frontend-to-backend interaction; greenfield frontend/design goes to Kimi (see Kimi-K3).
-        """,
-        "MiniMax M3": """
-        - Use MiniMax for work that is clear, relatively simple, repetitive, tool-heavy, and high-volume.
-        - Give it explicit steps, examples, fixed output formats, and clear failure conditions.
-        - MiniMax must report unexpected obstacles instead of improvising around them.
-        - Do not assign it ambiguous architecture, difficult judgment calls, or fragile tasks.
+        Use Sol for final production implementation that is difficult and clearly specified. Supply exact scope, hard whitelist, non-goals, acceptance commands, artifacts, and stop conditions. Sol owns existing frontend adaptation and frontend-to-backend wiring; independently verify its diff, code, and tests.
         """,
         "Kimi K3": """
-        - Kimi is the wildcard, independent reviewer, and dispute resolver.
-        - **Kimi is the best frontend-development LLM and the default for all frontend and design work that must be built from scratch and look/feel genuinely good** — new UIs, pages, components, visual design, interaction design. Give it the design intent and constraints, let it own the aesthetic.
-        - Frontend split: Kimi builds from scratch; **Sol takes over when existing frontend must be edited or adapted, and whenever the task is frontend-to-backend interaction** (wiring, APIs, state, data flow).
-        - Kimi reviews substantial integrations and your final edits, cleanup, simplification, or architectural changes.
-        - Kimi is not automatically inserted between you and Sol.
-        - First allow a real disagreement to become explicit.
-        - A disagreement exists when two agents reach incompatible conclusions and neither position can be resolved through requirements, tests, or evidence.
-        - Only then give Kimi both positions neutrally and ask it to identify the stronger position, missing evidence, or a decisive test.
-        - Kimi may also be used for a valuable independent second opinion, but it is not the default worker or co-orchestrator.
+        Use Kimi UI/UX for greenfield or explicitly assigned visual implementation. Use Kimi Cyber & Review for read-oriented cybersecurity or independent adversarial review, requiring confirmed findings to be separated from hypotheses. Existing frontend adaptation and frontend-to-backend wiring remain with Sol.
+        """,
+        "MiniMax M3": """
+        Use MiniMax only for clear, disjoint, counted, fixed-schema repetitive slices. Require coverage counts and explicit outputs, forbid edits to existing files and git use, stop on ambiguity, and independently sample the result afterward.
+        """,
+        "grok-4.5": prototypeDiscoveryPrompt,
+        "gpt-5.6-luna": prototypeDiscoveryPrompt,
+        "glm-5.2": prototypeDiscoveryPrompt,
+        "gpt-5.6-terra": """
+        Use Terra only for current online research with WebSearch and WebFetch. Require primary sources, direct links, careful separation of confirmed and uncertain evidence, no subagents, and no local repository, file, shell, or code work.
         """
     ]
 

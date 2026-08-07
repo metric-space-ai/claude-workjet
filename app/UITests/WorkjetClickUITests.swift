@@ -71,7 +71,7 @@ final class WorkjetClickUITests: XCTestCase {
         completionPencil.click()
 
         XCTAssertTrue(app.staticTexts["Worker bearbeiten"].waitForExistence(timeout: 3))
-        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Completion Engine")
+        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Sol · Completion")
         XCTAssertTrue(app.buttons["worker.editor.harness.claude-code"].exists)
         XCTAssertTrue(app.buttons["worker.editor.model.gpt-5.6-sol"].exists)
         XCTAssertTrue(app.buttons["worker.editor.reasoning.high"].exists)
@@ -91,20 +91,20 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Modellregeln")).count, 0,
                        "Modellregeln gehören in die Einstellungen und dürfen im Worker-Editor nicht als zweites Aufgabenfeld erscheinen.")
 
-        replaceText(in: app.textFields["worker.editor.name"], with: "Completion Engine UI")
+        replaceText(in: app.textFields["worker.editor.name"], with: "Sol · Completion UI")
         let instructions = app.descendants(matching: .any)["worker.editor.instructions"]
         scrollToHittable(instructions)
         replaceText(in: instructions, with: "Persistierte Aufgabe aus dem echten Klicktest.")
         app.buttons["worker.editor.save"].click()
 
-        XCTAssertTrue(app.staticTexts["Completion Engine UI"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sol · Completion UI"].waitForExistence(timeout: 5))
         app.terminate()
         app = configuredApplication()
         app.launch()
         XCTAssertTrue(app.windows["Workjet UI Test"].waitForExistence(timeout: 8))
 
         app.buttons["worker.edit.\(completionID.uppercased())"].click()
-        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Completion Engine UI")
+        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Sol · Completion UI")
         let reopenedInstructions = app.descendants(matching: .any)["worker.editor.instructions"]
         XCTAssertTrue(reopenedInstructions.exists)
         XCTAssertEqual(reopenedInstructions.value as? String, "Persistierte Aufgabe aus dem echten Klicktest.")
@@ -298,8 +298,8 @@ final class WorkjetClickUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.windows["Workjet UI Test"].waitForExistence(timeout: 8))
 
-        XCTAssertTrue(app.staticTexts["UI/UX-Experte"].waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["k3[1m] · Reasoning high · Tempo schnell · Kimi Testzugang"].exists)
+        XCTAssertTrue(app.staticTexts["Kimi · UI/UX"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["kimi-k3-256k · Reasoning high · Tempo schnell · Kimi Testzugang"].exists)
         XCTAssertTrue(app.staticTexts["Remote Ready · Verbindung unterbrochen · Arbeitet"].exists)
 
         let recovery = app.descendants(matching: .any)["active.recover.remote:ui-test-remote-run"]
@@ -357,7 +357,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(pencil.waitForExistence(timeout: 3))
         pencil.click()
 
-        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Completion Engine")
+        XCTAssertEqual(app.textFields["worker.editor.name"].value as? String, "Sol · Completion")
         XCTAssertEqual(app.descendants(matching: .any).matching(identifier: "worker.editor.instructions").count, 1)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Modellregeln")).count, 0)
     }
@@ -373,7 +373,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(app.buttons[deleteID].waitForExistence(timeout: 3))
         app.buttons[deleteID].click()
         XCTAssertTrue(app.descendants(matching: .any)["worker.editor.delete.confirmation.\(reviewerID.uppercased())"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["„Reviewer“ wirklich löschen?"].exists)
+        XCTAssertTrue(app.staticTexts["„Kimi · Cyber & Review“ wirklich löschen?"].exists)
         XCTAssertTrue(app.buttons[cancelID].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons[cancelID].isHittable)
         app.buttons[cancelID].click()

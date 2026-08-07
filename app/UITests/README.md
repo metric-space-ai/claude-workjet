@@ -27,7 +27,7 @@ xcodebuild \
   test
 ```
 
-The journey covers the production Completion Engine pencil and editor fields,
+The journey covers the production Sol · Completion pencil and editor fields,
 save/relaunch persistence, the missing-route recovery action, masked provider
 account identity, provider deselection and disconnect, Settings quick
 navigation, and the one-click custom compatible-endpoint form.

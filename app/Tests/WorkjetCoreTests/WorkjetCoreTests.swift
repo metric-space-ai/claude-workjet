@@ -3,20 +3,134 @@ import XCTest
 @testable import WorkjetCore
 
 final class DefaultsAndLogicTests: XCTestCase {
-    func testDefaultsMatchRepositoryAndHaveNoFabricatedCapacity() {
+    func testDefaultsShipTheProvenEightWorkerOrchestrationSetup() throws {
         let config = WorkjetDefaults.configuration()
         XCTAssertEqual(config.computers, [WorkjetDefaults.localComputer])
         XCTAssertEqual(config.selectedComputerID, WorkjetDefaults.localID)
-        XCTAssertEqual(config.workers.map(\.name), ["Completion Engine", "Reviewer", "UI/UX-Experte", "Bulk Worker"])
-        XCTAssertEqual(config.workers.map(\.invocation.executable), ["~/.local/bin/claude-sol", "~/.local/bin/claude-kimi", "~/.local/bin/claude-kimi", "~/.local/bin/claude-minimax"])
+        XCTAssertEqual(config.workers.map(\.id), (11...18).map {
+            UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", $0))!
+        })
+        XCTAssertEqual(config.workers.map(\.name), [
+            "Sol · Completion",
+            "Kimi · Cyber & Review",
+            "Kimi · UI/UX",
+            "Bulk · Thoroughness",
+            "Prototype A · Grok 4.5",
+            "Prototype B · Luna 5.6",
+            "Prototype C · GLM 5.2",
+            "Web Research · Terra"
+        ])
+        XCTAssertEqual(config.workers.map(\.model), [
+            "gpt-5.6-sol",
+            "kimi-k3-256k",
+            "kimi-k3-256k",
+            "MiniMax-M3",
+            "grok-4.5",
+            "gpt-5.6-luna",
+            "glm-5.2",
+            "gpt-5.6-terra"
+        ])
+        XCTAssertTrue(config.workers.allSatisfy { $0.harness == .claudeCode })
+        XCTAssertTrue(config.workers.allSatisfy { $0.computerID == WorkjetDefaults.localID })
+        let expectedClaudeExecutable = HarnessAdapterRegistry.defaultLocalInvocation(for: .claudeCode)?.executable
+            ?? HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation.executable
+        XCTAssertTrue(config.workers.allSatisfy { $0.invocation.executable == expectedClaudeExecutable })
+        if HarnessAdapterRegistry.defaultLocalInvocation(for: .claudeCode) != nil {
+            XCTAssertTrue(expectedClaudeExecutable.hasPrefix("/"))
+            XCTAssertTrue(FileManager.default.isExecutableFile(atPath: expectedClaudeExecutable))
+            XCTAssertNil(HarnessAdapterRegistry.localInvocationIssue(
+                harness: .claudeCode,
+                invocation: config.workers[0].invocation
+            ))
+        }
         XCTAssertTrue(config.workers.allSatisfy { $0.capacity.fraction == nil })
+
+        let expectedTools = [
+            "Read,Write,Edit,Grep,Glob,Bash",
+            "Read,Grep,Glob,Bash",
+            "Read,Write,Edit,Grep,Glob,Bash",
+            "Read,Write,Grep,Glob,Bash",
+            "Read,Write,Edit,Grep,Glob,Bash",
+            "Read,Write,Edit,Grep,Glob,Bash",
+            "Read,Write,Edit,Grep,Glob,Bash",
+            "WebSearch,WebFetch"
+        ]
+        for (worker, tools) in zip(config.workers, expectedTools) {
+            XCTAssertEqual(worker.invocation.arguments, ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", tools])
+            XCTAssertEqual(worker.invocation.arguments.filter { $0 == "--bare" }.count, 1)
+            XCTAssertEqual(worker.invocation.arguments.filter { $0 == "-p" }.count, 1)
+        }
+        XCTAssertEqual(config.workers.map { $0.invocation.options["fastMode"] }, [
+            "false", "false", "false", "false", "true", "true", "true", "false"
+        ])
+        XCTAssertTrue(config.workers.dropLast().allSatisfy { $0.skillOverrides.isEmpty })
+        XCTAssertEqual(config.workers.last?.skillOverrides, ["greppy": false])
+        XCTAssertTrue(config.workers.last?.invocation.capabilities.contains(where: { $0.contains("Primary-source") }) == true)
+        XCTAssertTrue(config.workers.last?.invocation.capabilities.contains(where: { $0.contains("No local repository") }) == true)
+
+        let prototypes = Array(config.workers[4...6])
+        XCTAssertEqual(Set(prototypes.map(\.instructions)), [ModelPromptCatalog.prototypeDiscoveryPrompt])
+        XCTAssertTrue(ModelPromptCatalog.prototypeDiscoveryPrompt.contains("same discovery brief as the other panel members"))
+        for field in [
+            "Approach", "Produced prototype/evidence", "Commands/results", "Difficulty (1-5)",
+            "Hidden constraints", "Failure modes", "Decisive tests", "Recommended final-brief additions",
+            "Unresolved questions"
+        ] {
+            XCTAssertTrue(ModelPromptCatalog.prototypeDiscoveryPrompt.contains(field), "Missing prototype report field: \(field)")
+        }
+        XCTAssertTrue(ModelPromptCatalog.prototypeDiscoveryPrompt.contains("not the final solution"))
+        XCTAssertTrue(ModelPromptCatalog.prototypeDiscoveryPrompt.contains("no subagents"))
+        XCTAssertTrue(ModelPromptCatalog.prototypeDiscoveryPrompt.contains("hard file whitelist and non-goals"))
+
+        let prompts = try XCTUnwrap(config.modelPrompts)
+        XCTAssertEqual(Set(prompts.keys), [
+            "GPT-5.6 Sol", "Kimi K3", "MiniMax M3", "grok-4.5",
+            "gpt-5.6-luna", "glm-5.2", "gpt-5.6-terra"
+        ])
+        XCTAssertEqual(prompts["grok-4.5"], prototypes[0].instructions)
+        XCTAssertEqual(prompts["gpt-5.6-luna"], prototypes[1].instructions)
+        XCTAssertEqual(prompts["glm-5.2"], prototypes[2].instructions)
+        XCTAssertFalse(prompts.values.joined(separator: "\n").localizedCaseInsensitiveContains("best frontend-development LLM"))
+
+        XCTAssertTrue(config.workers[0].instructions.contains("final production solution"))
+        XCTAssertTrue(config.workers[1].instructions.contains("confirmed findings"))
+        XCTAssertTrue(config.workers[1].instructions.contains("hypotheses"))
+        XCTAssertTrue(config.workers[2].instructions.contains("greenfield UI/UX"))
+        XCTAssertTrue(config.workers[3].instructions.contains("Count requested, completed, skipped, and failed"))
+        XCTAssertTrue(config.workers[3].instructions.contains("never edit existing files and never use git"))
+        XCTAssertTrue(config.workers[7].instructions.contains("current online research only"))
+        XCTAssertTrue(config.workers.allSatisfy { $0.instructions.contains("no subagents") })
+        XCTAssertTrue(config.workers.allSatisfy { $0.instructions.contains("WORKJET COMPLETION RECEIPT V1") })
+    }
+
+    func testPersistedCustomConfigurationIsNotReplacedAndOnlyReferencedMissingPromptsAreFilled() throws {
+        var persisted = WorkjetDefaults.configuration()
+        persisted.workers = Array(persisted.workers.prefix(2))
+        persisted.workers[0].name = "Owner Sol"
+        persisted.workers[0].instructions = "OWNER INSTRUCTIONS"
+        persisted.workers[0].skillOverrides = ["greppy": false, "owner-skill": true]
+        persisted.workers[1].instructions = "OWNER REVIEW INSTRUCTIONS"
+        persisted.skillRules = "OWNER ROUTING CONTRACT"
+        persisted.modelPrompts = ["GPT-5.6 Sol": "OWNER MODEL PROMPT"]
+
+        let decoded = try JSONDecoder().decode(WorkjetConfiguration.self, from: JSONEncoder().encode(persisted))
+        let normalized = WorkjetBootstrap.normalized(decoded)
+
+        XCTAssertEqual(normalized.workers, persisted.workers)
+        XCTAssertEqual(normalized.skillRules, "OWNER ROUTING CONTRACT")
+        XCTAssertEqual(normalized.workers[0].instructions, "OWNER INSTRUCTIONS")
+        XCTAssertEqual(normalized.workers[0].skillOverrides, ["greppy": false, "owner-skill": true])
+        XCTAssertEqual(normalized.modelPrompts?["GPT-5.6 Sol"], "OWNER MODEL PROMPT")
+        XCTAssertEqual(normalized.modelPrompts?["Kimi K3"], ModelPromptCatalog.defaults["Kimi K3"])
+        XCTAssertNil(normalized.modelPrompts?["MiniMax M3"])
+        XCTAssertNil(normalized.modelPrompts?["gpt-5.6-terra"])
     }
 
     func testCapacityAndPureLogic() {
         XCTAssertEqual(CapacityStatus.measured(used: 25, limit: 100, unit: "requests", rateLimited: false).fraction, 0.25)
         XCTAssertNil(CapacityStatus.measured(used: 110, limit: 100, unit: "requests", rateLimited: false).fraction)
         XCTAssertEqual(CapacityStatus.unavailable(reason: "none").level, .unavailable)
-        XCTAssertEqual(WorkerFilter.filtered(WorkjetDefaults.configuration().workers, query: "review", computerID: WorkjetDefaults.localID).map(\.name), ["Reviewer"])
+        XCTAssertEqual(WorkerFilter.filtered(WorkjetDefaults.configuration().workers, query: "review", computerID: WorkjetDefaults.localID).map(\.name), ["Kimi · Cyber & Review"])
         XCTAssertEqual(DurationFormatter.string(for: 3725), "1h 2m")
     }
 
@@ -271,7 +385,7 @@ final class ManagedPromptTests: XCTestCase {
         XCTAssertLessThan(learningOffset, technicalOffset)
         XCTAssertTrue(text.contains("#### Modellregeln · Kimi K3"))
         XCTAssertEqual(text.components(separatedBy: "#### Modellregeln · Kimi K3").count - 1, 1)
-        XCTAssertTrue(text.contains("Kimi is the wildcard, independent reviewer, and dispute resolver."))
+        XCTAssertTrue(text.contains("Use Kimi UI/UX for greenfield or explicitly assigned visual implementation."))
         XCTAssertTrue(text.contains(config.technicalRules!))
         for worker in config.workers { XCTAssertTrue(text.contains(worker.id.uuidString.lowercased())); XCTAssertTrue(text.contains(worker.invocation.executable)); XCTAssertTrue(text.contains(worker.model)) }
         var hostile = config; hostile.workers[0].instructions = ManagedPrompt.endMarker
@@ -292,13 +406,13 @@ final class ManagedPromptTests: XCTestCase {
     func testMultilineInstructionsMentionsAndReasoningRenderExactlyOnce() throws {
         var config = WorkjetDefaults.configuration()
         config.workers[0].name = "Kimi-K3"
-        config.workers[0].instructions = "Erste Zeile\n\n- Markdown bleibt\nArbeite mit @UI-UX-Experte."
+        config.workers[0].instructions = "Erste Zeile\n\n- Markdown bleibt\nArbeite mit @Kimi-UI-UX."
         config.workers[0].reasoningEffort = .xhigh
         XCTAssertEqual(config.workers[0].mentionTag, "@Kimi-K3")
-        XCTAssertEqual(config.workers[2].mentionTag, "@UI-UX-Experte")
+        XCTAssertEqual(config.workers[2].mentionTag, "@Kimi-UI-UX")
         let text = String(decoding: ManagedPrompt.workerBody(configuration: config), as: UTF8.self)
         XCTAssertTrue(text.contains("### @Kimi-K3 — Kimi-K3"))
-        XCTAssertTrue(text.contains("Erste Zeile\n\n- Markdown bleibt\nArbeite mit @UI-UX-Experte."))
+        XCTAssertTrue(text.contains("Erste Zeile\n\n- Markdown bleibt\nArbeite mit @Kimi-UI-UX."))
         XCTAssertEqual(text.components(separatedBy: "Erste Zeile").count - 1, 1)
         XCTAssertTrue(text.contains("Reasoning: `xhigh`"))
         XCTAssertFalse(text.contains("Fable muss den konfigurierten Effort"))
@@ -457,8 +571,8 @@ final class RunTelemetryTests: XCTestCase {
     private func identity(_ pid: Int32, start: String = "1785747600.000000") -> ProcessIdentity { ProcessIdentity(pid: pid, executablePath: "/usr/bin/worker", startToken: start) }
 
     func testRunningCompletedDeadUnknownMalformedAndDeliveryFixtures() throws {
-        let f = try Fixture(); let run = try f.make("running", 100, "claude-sol"); try Data("safe title".utf8).write(to: run.appendingPathComponent("title")); FileManager.default.createFile(atPath: run.appendingPathComponent("stream-json").path, contents: Data()); f.probe.identities[100] = identity(100)
-        _ = try f.make("completed", 101, "claude-sol", terminal: "exit-code"); _ = try f.make("dead", 102, "claude-sol"); _ = try f.make("unknown", 103, "mystery-wrapper"); f.probe.identities[103] = identity(103)
+        let f = try Fixture(); let run = try f.make("running", 100, "claude"); try Data("safe title".utf8).write(to: run.appendingPathComponent("title")); FileManager.default.createFile(atPath: run.appendingPathComponent("stream-json").path, contents: Data()); f.probe.identities[100] = identity(100)
+        _ = try f.make("completed", 101, "claude", terminal: "exit-code"); _ = try f.make("dead", 102, "claude"); _ = try f.make("unknown", 103, "mystery-wrapper"); f.probe.identities[103] = identity(103)
         let malformed = f.runs.appendingPathComponent("malformed"); try FileManager.default.createDirectory(at: malformed, withIntermediateDirectories: true); try Data(malformed.path.utf8).write(to: f.index.appendingPathComponent("malformed"))
         let records = f.store.scan(workers: WorkjetDefaults.configuration().workers)
         let running = records.first { $0.sourceRunID == "running" }; XCTAssertEqual(running?.state, .running); XCTAssertEqual(running?.activeRun?.delivery, .live); XCTAssertEqual(running?.activeRun?.activity, "safe title"); XCTAssertNotNil(running?.activeRun?.lastHeartbeat)
@@ -470,7 +584,7 @@ final class RunTelemetryTests: XCTestCase {
         let f = try Fixture(); var pi = WorkjetDefaults.configuration().workers[0]; pi.harness = .piSidecar; pi.invocation.executable = "pi-worker"
         let piRun = try f.make("pi", 104, "pi-worker"); FileManager.default.createFile(atPath: piRun.appendingPathComponent("response-events.jsonl").path, contents: Data()); f.probe.identities[104] = identity(104)
         XCTAssertEqual(f.store.scan(workers: [pi]).first?.activeRun?.delivery, .postHoc)
-        _ = try f.make("stop", 105, "claude-sol"); f.probe.identities[105] = identity(105); let active = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first { $0.sourceRunID == "stop" }?.activeRun)
+        _ = try f.make("stop", 105, "claude"); f.probe.identities[105] = identity(105); let active = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first { $0.sourceRunID == "stop" }?.activeRun)
         f.probe.identities[105] = ProcessIdentity(pid: 105, executablePath: "/other", startToken: "reused"); XCTAssertThrowsError(try f.store.stop(active)) { XCTAssertEqual($0 as? StopError, .pidMismatch) }; XCTAssertTrue(f.probe.terminated.isEmpty)
         f.probe.identities[105] = identity(105); try f.store.stop(active); XCTAssertEqual(f.probe.terminated, [105])
     }
@@ -492,7 +606,7 @@ final class RunTelemetryTests: XCTestCase {
 
     func testReusedPIDWithLaterProcessStartIsInterrupted() throws {
         let f = try Fixture()
-        _ = try f.make("old-run", 691, "claude-sol")
+        _ = try f.make("old-run", 691, "claude")
         f.probe.identities[691] = identity(691, start: "1785920400.000000")
         let record = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first { $0.sourceRunID == "old-run" })
         XCTAssertEqual(record.state, .interrupted)
@@ -502,7 +616,7 @@ final class RunTelemetryTests: XCTestCase {
 
     func testCanonicalRunSnapshotRequiresFreshHeartbeat() throws {
         let f = try Fixture()
-        let run = try f.make("snapshot", 692, "claude-sol")
+        let run = try f.make("snapshot", 692, "claude")
         f.probe.identities[692] = identity(692)
         let fresh = "{\"schemaVersion\":1,\"sequence\":1,\"state\":\"running\",\"heartbeatAt\":\"\(ISO8601DateFormatter().string(from: Date()))\"}"
         try Data(fresh.utf8).write(to: run.appendingPathComponent("run-state.json"))

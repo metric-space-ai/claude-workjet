@@ -1538,7 +1538,7 @@ public final class WorkjetViewModel: ObservableObject {
         guard environment["WORKJET_UI_TEST_WINDOW"] == "1",
               environment["WORKJET_UI_TEST_SEED"] == "1",
               environment["WORKJET_UI_TEST_REMOTE_RUN"] == "1",
-              let worker = workers.first(where: { $0.name == "UI/UX-Experte" }),
+              let worker = workers.first(where: { $0.name == "Kimi · UI/UX" }),
               let computer = computers.first(where: { $0.id == worker.computerID && !$0.isLocal }) else { return }
         let startedAt = Date().addingTimeInterval(-73)
         let timestamp = ISO8601DateFormatter().string(from: startedAt)
@@ -1553,7 +1553,7 @@ public final class WorkjetViewModel: ObservableObject {
                 workerID: worker.id,
                 workerName: worker.name,
                 harnessID: worker.harness.rawValue,
-                model: "k3[1m]",
+                model: "kimi-k3-256k",
                 reasoning: ReasoningEffort.high.rawValue,
                 speed: RunSpeed.fast.rawValue,
                 providerRoute: "Kimi Testzugang",

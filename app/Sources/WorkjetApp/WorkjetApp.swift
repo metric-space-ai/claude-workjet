@@ -113,11 +113,11 @@ final class WorkjetAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
                 statusDetail: "Deterministische UI-Test-Fixture."
             )
         ]
-        if let completionIndex = configuration.workers.firstIndex(where: { $0.name == "Completion Engine" }) {
+        if let completionIndex = configuration.workers.firstIndex(where: { $0.name == "Sol · Completion" }) {
             configuration.workers[completionIndex].providerRoute = .pool(.openAI)
             configuration.workers[completionIndex].reasoningEffort = .high
         }
-        if let uiWorkerIndex = configuration.workers.firstIndex(where: { $0.name == "UI/UX-Experte" }) {
+        if let uiWorkerIndex = configuration.workers.firstIndex(where: { $0.name == "Kimi · UI/UX" }) {
             configuration.workers[uiWorkerIndex].computerID = readyComputerID
         }
         try? JSONConfigurationStore(fileURL: fileURL).save(configuration)

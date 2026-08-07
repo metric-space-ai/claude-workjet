@@ -25,7 +25,7 @@ final class RunMetadataTelemetryTests: XCTestCase {
             user: "test",
             deploymentStatus: .installed
         ))
-        let index = try XCTUnwrap(configuration.workers.firstIndex(where: { $0.name == "UI/UX-Experte" }))
+        let index = try XCTUnwrap(configuration.workers.firstIndex(where: { $0.name == "Kimi · UI/UX" }))
         configuration.workers[index].computerID = remoteID
         configuration.workers[index].model = "later-configured-model"
         configuration.workers[index].reasoningEffort = .low
@@ -33,9 +33,9 @@ final class RunMetadataTelemetryTests: XCTestCase {
         let model = WorkjetViewModel(configuration: configuration)
         let run = try XCTUnwrap(model.activeRunPresentations.first)
 
-        XCTAssertEqual(run.workerName, "UI/UX-Experte")
+        XCTAssertEqual(run.workerName, "Kimi · UI/UX")
         XCTAssertEqual(run.computerName, "Remote Ready")
-        XCTAssertEqual(run.model, "k3[1m]")
+        XCTAssertEqual(run.model, "kimi-k3-256k")
         XCTAssertEqual(run.reasoning, .high)
         XCTAssertEqual(run.speed, .fast)
         XCTAssertEqual(run.providerRoute, "Kimi Testzugang")

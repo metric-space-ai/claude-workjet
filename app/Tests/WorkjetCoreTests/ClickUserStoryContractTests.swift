@@ -413,7 +413,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertEqual(model.effectiveCapacity(for: configuration.workers[0]).fraction, 0.2)
         XCTAssertNil(model.effectiveCapacity(for: configuration.workers[1]).fraction)
         XCTAssertEqual(model.effectiveCapacity(for: configuration.workers[1]).reason, WorkjetDefaults.unavailableCapacity.reason)
-        XCTAssertTrue(model.runtimeHealthIssues.contains("3 Worker ohne Anbieterzugang"))
+        XCTAssertTrue(model.runtimeHealthIssues.contains("\(configuration.workers.count - 1) Worker ohne Anbieterzugang"))
     }
 
     func testEveryWorkerGetsTruthfulOperationalStatusFromItsOwnDependencies() throws {

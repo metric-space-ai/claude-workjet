@@ -152,6 +152,49 @@ final class PromptRuntimeTruthTests: XCTestCase {
         XCTAssertFalse(prompt.contains("/usr/bin/ssh"))
     }
 
+    func testDefaultRoutingContractIsVisibleAndMatchesTheDeclaredWorkerBoundaries() throws {
+        let configuration = WorkjetDefaults.configuration()
+        let rules = configuration.skillRules
+        for required in [
+            "Claude/Fable is the sole Workjet orchestrator",
+            "decomposition, routing, synthesis, integration, cleanup, and final verification",
+            "reports and completion receipts are claims, never proof",
+            "Small bounded work may be done directly",
+            "Route clear difficult production work to Sol",
+            "same bounded discovery brief to Prototype A, B, and C",
+            "never silently substitute another worker when one panel member is unavailable",
+            "byte-for-byte equivalent apart from unavoidable transport metadata",
+            "Inspect all three artifacts, then write a new consolidated production brief",
+            "never pass one prototype through as the solution",
+            "Send the consolidated work to Sol",
+            "greenfield UI/UX and explicitly assigned visual implementation to Kimi UI/UX",
+            "cybersecurity and independent adversarial review to Kimi Cyber & Review",
+            "Existing frontend adaptation and frontend-to-backend wiring default to Sol",
+            "disjoint, counted, fixed-schema repetitive slices",
+            "independently sample its output",
+            "Terra only current online research requiring primary sources and direct links",
+            "Terra never receives local repository, file, shell, or code work",
+            "hard file whitelist",
+            "forbidden files and non-goals",
+            "exact acceptance commands",
+            "required artifacts",
+            "a stop/escape hatch",
+            "no-subagents",
+            "fixed completion report",
+            "independently inspect actual artifacts, scope, diff, code, and tests"
+        ] {
+            XCTAssertTrue(rules.contains(required), "Missing routing contract text: \(required)")
+        }
+
+        let prompt = String(decoding: ManagedPrompt.workerBody(configuration: configuration), as: UTF8.self)
+        for modelName in try XCTUnwrap(configuration.modelPrompts).keys {
+            XCTAssertTrue(prompt.contains("#### Modellregeln · \(modelName)"), "Missing visible model prompt: \(modelName)")
+        }
+        XCTAssertTrue(prompt.contains("- Argumente: [`--bare`, `-p`, `<WORKJET_BRIEF>`, `--allowedTools`, `WebSearch,WebFetch`]"))
+        XCTAssertTrue(prompt.contains("Greppy: deaktiviert (Worker-Override)"))
+        XCTAssertFalse(prompt.localizedCaseInsensitiveContains("objectively the best"))
+    }
+
     func testDefaultTechnicalRulesContainNoDirectInvocationOrAutomaticWorkerDegradation() {
         let rules = WorkjetDefaults.configuration().technicalRules ?? ""
         XCTAssertTrue(rules.contains("workjet run <exakter-name-oder-uuid> --brief-file <pfad> --json"))

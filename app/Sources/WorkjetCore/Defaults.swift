@@ -52,19 +52,184 @@ public enum WorkjetDefaults {
     """
 
     public static func configuration() -> WorkjetConfiguration {
-        let commonArguments = ["-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"]
+        let claudeExecutable = HarnessAdapterRegistry.defaultLocalInvocation(for: .claudeCode)?.executable
+            ?? HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation.executable
+
+        func invocation(
+            allowedTools: String,
+            capabilities: [String],
+            fastMode: Bool
+        ) -> WorkerInvocation {
+            WorkerInvocation(
+                executable: claudeExecutable,
+                arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", allowedTools],
+                capabilities: capabilities,
+                options: ["fastMode": fastMode ? "true" : "false"]
+            )
+        }
+
+        let completionReceipt = "End with the required WORKJET COMPLETION RECEIPT V1; the receipt is a claim for independent verification."
         let workers = [
-            Worker(id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!, name: "Completion Engine", harness: .claudeCode, model: "gpt-5.6-sol", instructions: "Harte, detailreiche Umsetzung exakt nach Brief. Whitelist strikt einhalten, kein Scope-Drift.", computerID: localID, invocation: WorkerInvocation(executable: "~/.local/bin/claude-sol", arguments: commonArguments, capabilities: ["Bestehende Dateien lesen und bearbeiten", "Lokale Build- und Testbefehle im Ziel-Checkout ausführen"]), capacity: unavailableCapacity),
-            Worker(id: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!, name: "Reviewer", harness: .claudeCode, model: "k3[1m]", instructions: "Unabhängiges Review substanzieller Integrationen; entscheidet Dispute zwischen Agents.", computerID: localID, invocation: WorkerInvocation(executable: "~/.local/bin/claude-kimi", arguments: commonArguments, capabilities: ["Repository lesen und Änderungen reviewen", "Lokale Verifikation im Ziel-Checkout ausführen"]), capacity: unavailableCapacity),
-            Worker(id: UUID(uuidString: "00000000-0000-0000-0000-000000000013")!, name: "UI/UX-Experte", harness: .claudeCode, model: "k3[1m]", instructions: "Greenfield-UI und Integrationsdesign; Systemtypografie, lineare Hierarchie, keine dekorativen Elemente.", computerID: localID, invocation: WorkerInvocation(executable: "~/.local/bin/claude-kimi", arguments: commonArguments, capabilities: ["UI-Code lesen und bearbeiten", "Lokale UI-Builds und Tests im Ziel-Checkout ausführen"]), capacity: unavailableCapacity),
-            Worker(id: UUID(uuidString: "00000000-0000-0000-0000-000000000014")!, name: "Bulk Worker", harness: .claudeCode, model: "MiniMax-M3", instructions: "Klar umrissene, repetitive Massenarbeit: Generierung, Klassifikation, Tests. Write-only, kein Edit, kein git.", computerID: localID, invocation: WorkerInvocation(executable: "~/.local/bin/claude-minimax", arguments: ["-p", "<WORKJET_BRIEF>"], capabilities: ["Klar benannte neue Dateien erzeugen", "Keine Host-Build-/Test-Autorität und keine Git-Operationen"]), capacity: unavailableCapacity)
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
+                name: "Sol · Completion",
+                harness: .claudeCode,
+                model: "gpt-5.6-sol",
+                instructions: "Implement the final production solution for difficult, clearly specified work. Follow the brief exactly, obey its hard file whitelist and non-goals, run every acceptance command, stop rather than widen scope, and use no subagents. Report changed artifacts, commands/results, and unresolved concerns. \(completionReceipt)",
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Edit,Grep,Glob,Bash",
+                    capabilities: [
+                        "Final production implementation in the assigned checkout",
+                        "Read, create, and edit only brief-whitelisted files",
+                        "Run local build, test, and verification commands"
+                    ],
+                    fastMode: false
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000012")!,
+                name: "Kimi · Cyber & Review",
+                harness: .claudeCode,
+                model: "kimi-k3-256k",
+                instructions: "Perform read-oriented cybersecurity analysis or independent adversarial review. Default to no repository edits, obey the brief's hard file whitelist and non-goals, use no subagents, and distinguish confirmed findings backed by evidence from hypotheses that still need a decisive test. Report findings by severity, evidence, commands/results, hypotheses, and unresolved concerns. \(completionReceipt)",
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Grep,Glob,Bash",
+                    capabilities: [
+                        "Read-only repository and cybersecurity analysis",
+                        "Run non-mutating local inspection and verification commands",
+                        "Separate confirmed findings from hypotheses"
+                    ],
+                    fastMode: false
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000013")!,
+                name: "Kimi · UI/UX",
+                harness: .claudeCode,
+                model: "kimi-k3-256k",
+                instructions: "Implement greenfield UI/UX or visual work explicitly assigned by the orchestrator. Existing frontend adaptation and frontend-to-backend wiring belong to Sol unless the brief explicitly assigns them here. Obey the hard file whitelist and non-goals, use no subagents, run the visual and functional acceptance commands, and report artifacts, commands/results, and unresolved concerns. \(completionReceipt)",
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Edit,Grep,Glob,Bash",
+                    capabilities: [
+                        "Greenfield UI/UX and explicitly assigned visual implementation",
+                        "Read, create, and edit only brief-whitelisted files",
+                        "Run local visual, build, and test verification"
+                    ],
+                    fastMode: false
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000014")!,
+                name: "Bulk · Thoroughness",
+                harness: .claudeCode,
+                model: "MiniMax-M3",
+                instructions: "Execute only disjoint, counted, fixed-schema repetitive slices with explicit inputs and outputs. Count requested, completed, skipped, and failed items. Create only explicitly named new files: never edit existing files and never use git. Obey the whitelist and non-goals, use no subagents, stop on ambiguity instead of improvising, and report coverage counts, artifacts, commands/results, exceptions, and unresolved concerns. \(completionReceipt)",
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Grep,Glob,Bash",
+                    capabilities: [
+                        "Counted fixed-schema repetitive work",
+                        "Read inputs and create only explicitly named new files",
+                        "No edits to existing files and no git operations"
+                    ],
+                    fastMode: false
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000015")!,
+                name: "Prototype A · Grok 4.5",
+                harness: .claudeCode,
+                model: "grok-4.5",
+                instructions: ModelPromptCatalog.prototypeDiscoveryPrompt,
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Edit,Grep,Glob,Bash",
+                    capabilities: [
+                        "Bounded disposable discovery prototypes and evidence",
+                        "Read, create, and edit only brief-whitelisted files",
+                        "Run local measurements and decisive tests"
+                    ],
+                    fastMode: true
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000016")!,
+                name: "Prototype B · Luna 5.6",
+                harness: .claudeCode,
+                model: "gpt-5.6-luna",
+                instructions: ModelPromptCatalog.prototypeDiscoveryPrompt,
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Edit,Grep,Glob,Bash",
+                    capabilities: [
+                        "Bounded disposable discovery prototypes and evidence",
+                        "Read, create, and edit only brief-whitelisted files",
+                        "Run local measurements and decisive tests"
+                    ],
+                    fastMode: true
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000017")!,
+                name: "Prototype C · GLM 5.2",
+                harness: .claudeCode,
+                model: "glm-5.2",
+                instructions: ModelPromptCatalog.prototypeDiscoveryPrompt,
+                computerID: localID,
+                invocation: invocation(
+                    allowedTools: "Read,Write,Edit,Grep,Glob,Bash",
+                    capabilities: [
+                        "Bounded disposable discovery prototypes and evidence",
+                        "Read, create, and edit only brief-whitelisted files",
+                        "Run local measurements and decisive tests"
+                    ],
+                    fastMode: true
+                ),
+                capacity: unavailableCapacity
+            ),
+            Worker(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000018")!,
+                name: "Web Research · Terra",
+                harness: .claudeCode,
+                model: "gpt-5.6-terra",
+                instructions: "Perform current online research only with WebSearch and WebFetch. Prioritize primary sources, quote factual evidence carefully, and provide direct links. Never inspect or modify a local repository or use local files or shell/code tools; use no subagents. Obey the brief's source boundaries and non-goals. Report question, sources consulted, confirmed findings, conflicting or uncertain evidence, links, and unresolved questions. \(completionReceipt)",
+                computerID: localID,
+                skillOverrides: [WorkerSkillCatalog.greppyID: false],
+                invocation: invocation(
+                    allowedTools: "WebSearch,WebFetch",
+                    capabilities: [
+                        "Current online research using WebSearch and WebFetch only",
+                        "Primary-source research with direct links",
+                        "No local repository, file, shell, or code work"
+                    ],
+                    fastMode: false
+                ),
+                capacity: unavailableCapacity
+            )
         ]
         return WorkjetConfiguration(
             workers: workers,
             computers: [localComputer],
             providers: [],
             selectedComputerID: localID,
-            skillRules: "Du bist Fable, der einzige Workjet-Orchestrator. Zerlege Aufgaben, wähle genau einen passenden deklarierten Worker pro Invocation, verfasse einen präzisen Brief und integriere sowie verifiziere das Ergebnis. Die App trifft keine Worker- oder Workflow-Entscheidungen.",
+            skillRules: """
+            Claude/Fable is the sole Workjet orchestrator and owns decomposition, routing, synthesis, integration, cleanup, and final verification. Workers are fire-and-forget: their reports and completion receipts are claims, never proof. Small bounded work may be done directly.
+
+            Route clear difficult production work to Sol. Genuine uncertainty triggers the same bounded discovery brief to Prototype A, B, and C; never silently substitute another worker when one panel member is unavailable. Discovery briefs for A/B/C must be byte-for-byte equivalent apart from unavoidable transport metadata. Inspect all three artifacts, then write a new consolidated production brief; never pass one prototype through as the solution. Send the consolidated work to Sol.
+
+            Route greenfield UI/UX and explicitly assigned visual implementation to Kimi UI/UX. Route cybersecurity and independent adversarial review to Kimi Cyber & Review. Existing frontend adaptation and frontend-to-backend wiring default to Sol. Give Bulk only disjoint, counted, fixed-schema repetitive slices, then independently sample its output. Give Terra only current online research requiring primary sources and direct links; Terra never receives local repository, file, shell, or code work.
+
+            Every worker brief must include: objective; hard file whitelist; forbidden files and non-goals; relevant context; exact acceptance commands; required artifacts; a stop/escape hatch; no-subagents; and a fixed completion report. Integration must independently inspect actual artifacts, scope, diff, code, and tests.
+            """,
             skillLoaderInstructions: skillLoaderInstructions,
             modelPrompts: ModelPromptCatalog.defaults,
             progressBoardRules: progressBoardRules,
