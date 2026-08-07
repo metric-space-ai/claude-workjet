@@ -328,6 +328,7 @@ h3 {
 .turbine-rotor {
   transform-box: fill-box;
   transform-origin: center;
+  will-change: transform;
   animation: turbine-spin 4.8s linear infinite;
 }
 
