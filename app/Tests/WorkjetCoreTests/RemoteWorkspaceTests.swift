@@ -326,7 +326,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         ])
         var runIDs: [String] = []
         for (harness, model, executable) in [("claude-code", "test", "claude"), ("codex-cli", "test", "codex"), ("opencode", "openai/test", "opencode")] {
-            let launch = RemoteHarnessLaunch(harnessID: harness, model: model, reasoning: nil, sandbox: false, input: Data("brief".utf8), workspace: snapshot.manifest.descriptor)
+            let launch = RemoteHarnessLaunch(harnessID: harness, model: model, reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: harness == "claude-code" ? ["Read", "Write", "Edit", "Grep", "Glob", "Bash"] : nil, workspace: snapshot.manifest.descriptor)
             let started = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, providerExecution: route))
             let runID = try XCTUnwrap(started.runID, started.error ?? "start rejected")
             runIDs.append(runID)
@@ -368,12 +368,12 @@ final class RemoteWorkspaceTests: XCTestCase {
         let repos = home.appendingPathComponent(".local/state/workjet/host/repos")
         try FileManager.default.createSymbolicLink(at: repos.appendingPathComponent("\(unsafeRepoID).git"), withDestinationURL: repos.appendingPathComponent("\(snapshot.manifest.repoID).git"))
         let unsafeWorkspace = RemoteWorkspaceDescriptor(repoID: unsafeRepoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID)
-        let unsafeLaunch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), workspace: unsafeWorkspace)
+        let unsafeLaunch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], workspace: unsafeWorkspace)
         let unsafeStart = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: unsafeLaunch, providerExecution: route))
         XCTAssertEqual(unsafeStart.error, "workspace_cache_missing")
 
         let marker = home.appendingPathComponent("release-fallback-marker")
-        let noWorkspace = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8))
+        let noWorkspace = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"])
         let rejected = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: noWorkspace, providerExecution: route))
         XCTAssertEqual(rejected.error, "workspace_required")
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
@@ -423,7 +423,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         let route = RemoteProviderExecution(displayName: "Offline", candidates: [
             RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Offline", endpoint: "https://example.invalid/", authentication: .none, secret: nil)
         ])
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), workspace: snapshot.manifest.descriptor)
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], workspace: snapshot.manifest.descriptor)
         let rejected = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, providerExecution: route))
         XCTAssertEqual(rejected.error, "workspace_snapshot_tree_unsafe")
         let worktrees = home.appendingPathComponent(".local/state/workjet/host/worktrees")
@@ -508,7 +508,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         let route = RemoteProviderExecution(displayName: "Offline", candidates: [
             RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Offline", endpoint: "https://example.invalid/", authentication: .none, secret: nil)
         ])
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("edit".utf8), workspace: snapshot.manifest.descriptor)
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("edit".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], workspace: snapshot.manifest.descriptor)
         let started = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: route))
         let runID = try XCTUnwrap(started.runID)
         let remoteWorktree = home.appendingPathComponent(".local/state/workjet/host/worktrees/\(runID)")
@@ -586,7 +586,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         _ = try hostImport(host: host, home: home, bin: bin, snapshot: snapshot)
         let ownerID = "workjet-worker-00000000-0000-0000-0000-000000000222"
         let route = RemoteProviderExecution(displayName: "Offline", candidates: [RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Offline", endpoint: "https://example.invalid/", authentication: .none, secret: nil)])
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("wait".utf8), workspace: snapshot.manifest.descriptor)
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("wait".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], workspace: snapshot.manifest.descriptor)
         let runID = try XCTUnwrap(hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: route)).runID)
         let request = RemoteWorkspaceResultRequest(runID: runID, ownerID: ownerID, repoID: snapshot.manifest.repoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID)
         XCTAssertEqual(try hostResultFailure(host: host, home: home, bin: bin, request: request), "workspace_run_not_terminal")

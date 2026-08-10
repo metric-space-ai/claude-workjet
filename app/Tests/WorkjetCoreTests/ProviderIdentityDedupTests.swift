@@ -40,7 +40,7 @@ final class ProviderIdentityDedupTests: XCTestCase {
 
         XCTAssertEqual(model.workers[0].providerRoute, .pool(.kimi))
         XCTAssertNil(model.workers[1].providerRoute)
-        XCTAssertEqual(model.operationalStatus(for: model.workers[0]).state, .unavailable)
+        XCTAssertEqual(model.operationalStatus(for: model.workers[0]).state, .unverified)
     }
 
     func testTwoWorkersCanShareOneProviderAccount() {
@@ -93,7 +93,7 @@ final class ProviderIdentityDedupTests: XCTestCase {
         XCTAssertEqual(WorkjetBootstrap.normalized(configuration).providers.count, 2)
     }
 
-    func testLegacySharedOAuthWarningMigratesToConnectedWithoutInventingCapacity() {
+    func testLegacySharedOAuthWarningMigratesToUnverifiedWithoutInventingCapacity() {
         var provider = kimiProvider(id: UUID(), externalID: "kimi-one.json")
         provider.status = .degraded
         provider.statusDetail = "Verbunden. Dieser Zugang kann von mehreren Workern verwendet werden."
@@ -103,8 +103,8 @@ final class ProviderIdentityDedupTests: XCTestCase {
 
         let migrated = WorkjetBootstrap.normalized(configuration).providers[0]
 
-        XCTAssertEqual(migrated.status, .connected)
-        XCTAssertEqual(migrated.statusDetail, "Verbunden.")
+        XCTAssertEqual(migrated.status, .unverified)
+        XCTAssertTrue(migrated.statusDetail.contains("nicht separat prüfbar"))
         XCTAssertNil(migrated.capacity.fraction)
     }
 
@@ -345,9 +345,9 @@ final class ProviderIdentityDedupTests: XCTestCase {
 
         let status = model.operationalStatus(for: value)
 
-        XCTAssertEqual(status.state, .unavailable)
+        XCTAssertEqual(status.state, .unverified)
         XCTAssertEqual(status.label, "Harness nicht geprüft")
-        XCTAssertEqual(model.providers[0].statusDetail, "Verbunden.")
+        XCTAssertTrue(model.providers[0].statusDetail.contains("nicht separat prüfbar"))
     }
 
     private func baseConfiguration() -> WorkjetConfiguration {

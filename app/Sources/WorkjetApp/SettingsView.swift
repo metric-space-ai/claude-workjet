@@ -343,10 +343,34 @@ private struct SkillSettingsSection: View {
 }
 
 private struct AccessSettingsSection: View {
+    @EnvironmentObject private var model: WorkjetViewModel
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            WJSectionHeader(title: "Anbieter")
-                .accessibilityIdentifier("settings.section.providers")
+            HStack(alignment: .center, spacing: 10) {
+                WJSectionHeader(title: "Anbieter")
+                    .accessibilityIdentifier("settings.section.providers")
+                Spacer()
+                if model.workerHealthProbeInFlight {
+                    ProgressView().controlSize(.mini)
+                }
+                Button(model.workerHealthProbeInFlight ? "Worker werden geprüft …" : "Alle Worker prüfen") {
+                    Task { await model.probeAllWorkersNow() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                .disabled(model.workerHealthProbeInFlight)
+                .accessibilityIdentifier("settings.providers.probe-all")
+            }
+            Text(model.workerHealthFreshnessText)
+                .font(.system(size: 10))
+                .foregroundStyle(WJTheme.secondaryText)
+            if let error = model.workerHealthProbeError {
+                Text(error)
+                    .font(.system(size: 10))
+                    .foregroundStyle(WJTheme.quotaCritical)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             ProviderAccountsView()
         }
     }
@@ -375,8 +399,17 @@ private struct ComputersSettingsSection: View {
             ForEach(model.computers) { computer in
                 VStack(alignment: .leading, spacing: 7) {
                     HStack { VStack(alignment: .leading, spacing: 2) { Text(computer.name).font(.system(size: 12, weight: .semibold)); Text(detail(computer)).font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).lineLimit(1) }; Spacer(); if !computer.isLocal { Button { onEdit(computer) } label: { Image(systemName: "pencil") }.buttonStyle(WJIconButtonStyle()) } }
-                    ForEach(Harness.allCases, id: \.self) { harness in
+                    ForEach(visibleHarnesses(for: computer), id: \.self) { harness in
                         harnessRow(harness, computer: computer)
+                    }
+                    if computer.isLocal {
+                        let piCodeBoundary = "Pi Code wird über den Workjet-Host auf eingerichteten Remote-Computern verwaltet; eine lokale One-Shot-Schnittstelle ist noch nicht implementiert."
+                        Text(piCodeBoundary)
+                            .font(.system(size: 9))
+                            .foregroundStyle(WJTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("settings.harness.local.pi-note")
+                            .accessibilityLabel(piCodeBoundary)
                     }
                 }
                 .padding(8)
@@ -414,8 +447,14 @@ private struct ComputersSettingsSection: View {
         case .broken: return WJTheme.quotaCritical
         }
     }
+    private func visibleHarnesses(for computer: Computer) -> [Harness] {
+        if computer.isLocal {
+            return HarnessAdapterRegistry.local.map(\.harness)
+        }
+        return Harness.allCases
+    }
     private func detail(_ computer: Computer) -> String {
-        computer.isLocal ? "Bereit" : "\(computer.transport.rawValue) · \(computer.host) · \(computer.deploymentStatus.rawValue)"
+        computer.isLocal ? "Dieser Mac" : "\(computer.transport.rawValue) · \(computer.host) · \(computer.deploymentStatus.rawValue)"
     }
 }
 

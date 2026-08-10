@@ -2,6 +2,25 @@ import XCTest
 @testable import WorkjetCore
 
 final class CLIProxyCopyTests: XCTestCase {
+    func testPrivateProviderCredentialStoreIsNonInteractiveAndOwnerOnly() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-private-credentials-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = PrivateFileCredentialStore(homeDirectory: home)
+
+        try store.write(Data("secret-value".utf8), reference: "provider-123")
+        XCTAssertEqual(try store.read(reference: "provider-123"), Data("secret-value".utf8))
+        var directoryInfo = stat()
+        var fileInfo = stat()
+        XCTAssertEqual(lstat(store.directory.path, &directoryInfo), 0)
+        XCTAssertEqual(lstat(store.directory.appendingPathComponent("provider-123").path, &fileInfo), 0)
+        XCTAssertEqual(directoryInfo.st_mode & 0o077, 0)
+        XCTAssertEqual(fileInfo.st_mode & 0o077, 0)
+        XCTAssertThrowsError(try store.write(Data("x".utf8), reference: "../escape"))
+
+        try store.delete(reference: "provider-123")
+        XCTAssertNil(try store.read(reference: "provider-123"))
+    }
+
     func testUserFacingCoreErrorsGiveRecoveryWithoutImplementationDetails() throws {
         let messages = [
             try XCTUnwrap(CLIProxyAccountError.executableUnavailable.errorDescription),

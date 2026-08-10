@@ -25,6 +25,7 @@ public struct WorkjetPaths: Equatable, Sendable {
     public var learningsFile: URL { homeDirectory.appendingPathComponent(".claude/workjet/LEARNINGS.md") }
     public var runIndexDirectory: URL { stateDirectory.appendingPathComponent("run-index", isDirectory: true) }
     public var runsDirectory: URL { stateDirectory.appendingPathComponent("runs", isDirectory: true) }
+    public var healthProbeDirectory: URL { stateDirectory.appendingPathComponent("health-probe", isDirectory: true) }
     public var remoteWorkspaceRunsDirectory: URL { stateDirectory.appendingPathComponent("remote-workspaces", isDirectory: true) }
     public var remoteWorkspaceImportsDirectory: URL { stateDirectory.appendingPathComponent("remote-workspace-imports", isDirectory: true) }
 }
@@ -118,7 +119,7 @@ public struct WorkjetActivationStore: Sendable {
             }
             return WorkjetActivationStatus(
                 state: .ready,
-                detail: "Workjet ist auf Datenträger aktuell und global für neue Claude-Code- und Claude-Desktop-Sitzungen installiert. Bereits laufende Sitzungen werden nicht live aktualisiert; starte sie nach Änderungen neu.",
+                detail: "Workjet ist auf Datenträger aktuell und global installiert. Neue Claude-Code- und Claude-Desktop-Sitzungen laden diesen Prompt; den Promptzustand bereits laufender Sitzungen kann Workjet nicht beobachten.",
                 promptStatus: promptStatus
             )
         } catch {

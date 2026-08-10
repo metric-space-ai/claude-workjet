@@ -247,12 +247,13 @@ public protocol RemoteGatewayTunnelManaging: Sendable {
 public enum RemoteGatewayTunnelError: LocalizedError, Equatable, Sendable {
     case missingKnownHosts
     case invalidKnownHosts
-    case startFailed
-    case allocationUnconfirmed
+    case startFailed(String)
+    case allocationUnconfirmed(String)
     public var errorDescription: String? {
         switch self {
         case .missingKnownHosts, .invalidKnownHosts: return "Bestätige zuerst die Identität dieses Computers."
-        case .startFailed, .allocationUnconfirmed: return "Der sichere Anbieter-Tunnel konnte nicht eingerichtet werden."
+        case let .startFailed(detail), let .allocationUnconfirmed(detail):
+            return "Der sichere Anbieter-Tunnel konnte nicht eingerichtet werden: \(detail)"
         }
     }
 }
@@ -264,15 +265,15 @@ public enum RemoteGatewayTunnelCommandBuilder {
         guard knownHosts.hasPrefix("/") else { throw RemoteGatewayTunnelError.missingKnownHosts }
         var arguments = [
             "-v",
+            "-F", "/dev/null",
             "-o", "BatchMode=yes",
             "-o", "ConnectTimeout=10",
             "-o", "StrictHostKeyChecking=yes",
             "-o", try RemoteCommandBuilder.knownHostsOption(for: knownHosts),
-            "-o", "ClearAllForwardings=yes",
             "-o", "ForwardAgent=no",
             "-o", "ExitOnForwardFailure=yes",
-            "-o", "ServerAliveInterval=5",
-            "-o", "ServerAliveCountMax=2"
+            "-o", "ServerAliveInterval=15",
+            "-o", "ServerAliveCountMax=4"
         ]
         arguments += try RemoteCommandBuilder.identityArguments(for: computer)
         arguments += [
@@ -570,7 +571,10 @@ public struct RemoteHostClient: RemoteHostCalling, Sendable {
         switch request.operation {
         case .events: timeout = 15
         case .harnessInstall, .harnessUpdate, .harnessRemove: timeout = 330
-        case .managedSkillInstall: timeout = 1_000
+        // The remote Greppy install performs a clean, pinned CUDA build and a
+        // real runtime probe. Keep the SSH request alive beyond the host-side
+        // one-hour build ceiling so the caller receives its typed result.
+        case .managedSkillInstall: timeout = 3_900
         default: timeout = 30
         }
         let command = try RemoteCommandBuilder.command(
@@ -642,23 +646,23 @@ public struct RemoteHostClient: RemoteHostCalling, Sendable {
         return snapshot.manifest.descriptor
     }
 
-    public func start(worker: Worker, input: Data, workspace: RemoteWorkspaceDescriptor? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
+    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
         if worker.harness != .piSidecar {
             let probe = try await probe()
             guard probe.capabilities.contains("workspace-git-v1") else { throw RemoteHostProtocolError.missingCapability("workspace-git-v1") }
         }
-        let launch = try registry.launch(worker: worker, computer: computer, input: input, workspace: workspace)
+        let launch = try registry.launch(worker: worker, computer: computer, input: input, systemPrompt: systemPrompt, workspace: workspace)
         return try await call(RemoteHostRequest(operation: .start, launch: launch))
     }
 
-    public func start(worker: Worker, input: Data, providerExecution: RemoteProviderExecution, ownerID: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, verifiedCapabilities: [String]? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
+    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, providerExecution: RemoteProviderExecution, ownerID: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, verifiedCapabilities: [String]? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
         if worker.harness != .piSidecar {
             let capabilities: [String]
         if let verifiedCapabilities { capabilities = verifiedCapabilities }
         else { capabilities = try await probe().capabilities }
             guard capabilities.contains("workspace-git-v1") else { throw RemoteHostProtocolError.missingCapability("workspace-git-v1") }
         }
-        let launch = try registry.launch(worker: worker, computer: computer, input: input, workspace: workspace)
+        let launch = try registry.launch(worker: worker, computer: computer, input: input, systemPrompt: systemPrompt, workspace: workspace)
         return try await call(RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: providerExecution))
     }
 

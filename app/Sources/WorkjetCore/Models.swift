@@ -426,6 +426,7 @@ public enum ProviderRuntimeRouteResolver {
             guard case let .valid(baseURL) = ProviderEndpointValidator.validate(provider.endpoint, kind: provider.kind) else {
                 throw ProviderRuntimeRouteError.endpointInvalid(provider.name)
             }
+            let runtimeURL = runtimeEndpoint(baseURL, provider: provider, harness: worker.harness)
             if provider.kind.isLocalGateway {
                 let modelProvider = provider.modelProvider ?? ModelProvider.inferred(from: worker.model)
                 if let modelProvider, !emittedGateways.insert(modelProvider).inserted { continue }
@@ -435,7 +436,7 @@ public enum ProviderRuntimeRouteResolver {
                     providerID: nil,
                     modelProvider: modelProvider,
                     displayName: "\(modelProvider?.rawValue ?? provider.name) Gateway-Pool",
-                    endpoint: baseURL.absoluteString,
+                    endpoint: runtimeURL.absoluteString,
                     authentication: provider.authentication,
                     credentialReference: provider.authentication == .none ? nil : reference
                 ))
@@ -448,7 +449,7 @@ public enum ProviderRuntimeRouteResolver {
                     providerID: provider.id,
                     modelProvider: provider.modelProvider,
                     displayName: provider.accountLabel ?? provider.name,
-                    endpoint: baseURL.absoluteString,
+                    endpoint: runtimeURL.absoluteString,
                     authentication: provider.authentication,
                     credentialReference: provider.credentialReference
                 ))
@@ -460,6 +461,16 @@ public enum ProviderRuntimeRouteResolver {
         }
         let name = candidates.count == 1 ? candidates[0].displayName : "\(poolProvider?.rawValue ?? "Anbieter") Pool"
         return ResolvedProviderRuntimeRoute(displayName: name, candidates: candidates)
+    }
+
+    private static func runtimeEndpoint(_ configured: URL, provider: Provider, harness: Harness) -> URL {
+        guard provider.modelProvider == .zAI, configured.host?.lowercased() == "api.z.ai" else { return configured }
+        switch harness {
+        case .claudeCode, .piSidecar, .cursorAgent:
+            return URL(string: "https://api.z.ai/api/anthropic")!
+        case .codexCLI, .openCode, .grokCLI:
+            return URL(string: "https://api.z.ai/api/coding/paas/v4")!
+        }
     }
 }
 
@@ -636,7 +647,7 @@ public enum ModelProvider: String, CaseIterable, Codable, Equatable, Identifiabl
     public var defaultEndpoint: String? {
         switch self {
         case .miniMax: return "https://api.minimax.io/anthropic"
-        case .zAI: return "https://api.z.ai/api/paas/v4"
+        case .zAI: return "https://api.z.ai/api/anthropic"
         default: return nil
         }
     }
@@ -953,7 +964,7 @@ public enum ModelPromptCatalog {
         "gpt-5.6-luna": prototypeDiscoveryPrompt,
         "glm-5.2": prototypeDiscoveryPrompt,
         "gpt-5.6-terra": """
-        Use Terra only for current online research with WebSearch and WebFetch. Require primary sources, direct links, careful separation of confirmed and uncertain evidence, no subagents, and no local repository, file, shell, or code work.
+        Terra is the dedicated read-only research worker. Use its verified Codex live-search and page-opening path for current evidence. Require primary sources, direct links, careful separation of confirmed and uncertain evidence, no subagents, and no repository editing or shell/code work.
         """
     ]
 

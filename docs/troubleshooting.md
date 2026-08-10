@@ -83,7 +83,7 @@ Configuration is not runtime proof. Check:
 - the worker points to the intended account or provider pool;
 - the account is connected and exposes the selected model;
 - the endpoint and authentication mode match the provider;
-- Keychain access was explicitly allowed for the operation;
+- the provider credential is present in `~/.config/workjet/credentials/` and readable only by the current user;
 - a remote target can receive the selected route;
 - CLIProxy-backed OAuth is treated as a gateway-managed pool, not a guaranteed pinned account.
 
@@ -113,6 +113,17 @@ git ls-files --others --exclude-standard
 
 Do not add secrets to `.gitignore` as a substitute for removing them from the worktree or secret storage.
 
+## A remote worker health probe fails
+
+Run fresh, targeted evidence instead of reusing a UI label or an earlier result:
+
+```sh
+WORKJET_BIN=$(command -v workjet)
+"$WORKJET_BIN" health --probe-workers --worker '<exact-name-or-uuid>' --json
+```
+
+The JSON `checkedAt`, `computerName`, `status`, `error`, and `message` fields identify the observed layer. `missing_capability` for `health-probe-v1` means the remote Workjet host must be updated; use the computer editor or the operator command `workjet computers setup <exact-name-or-uuid> --json`. A provider route managed by Workjet does not require a separate native Claude CLI login.
+
 ## The remote machine asks for GitHub credentials
 
 That is not part of Workjet's repository transport. Workjet sends a Git bundle over verified SSH and does not clone or fetch the origin remotely. A remote harness, custom script, or repository hook may be attempting its own network Git operation. Inspect that behavior before providing credentials.
@@ -139,7 +150,27 @@ Greppy injection requires all of the following:
 - a healthy `greppy --version` result on the exact target;
 - an intact managed prompt source block.
 
-If any condition is missing, Workjet leaves the base brief unchanged. This is expected and does not block the worker. The web-only research worker and incompatible harnesses do not receive Greppy.
+If an enabled Greppy worker is compatible but any runtime condition is missing,
+Workjet fails the launch instead of silently running without Greppy. The
+web-only research worker has Greppy explicitly disabled; incompatible harnesses
+cannot enable it effectively.
+
+## Web Research is enabled but search or page access is unavailable
+
+The Web Research toggle is additive: the worker must retain its normal harness
+tools while gaining both live search and the ability to open a specific page.
+Check all of the following:
+
+- the toggle is enabled for that exact worker;
+- Claude Code has `Bash`, or the worker uses Codex CLI with native `--search`;
+- the exact local or remote computer reports a healthy Codex CLI, or a local
+  direct-provider worker has the Antigravity `agy` helper;
+- the selected provider route is authenticated and reachable;
+- the worker's appended system prompt contains the marked Workjet Web Research
+  source.
+
+Workjet reports `WEB_RESEARCH_UNAVAILABLE` rather than pretending that cached
+knowledge or a raw HTTP request was live research.
 
 ## Gatekeeper rejects a ZIP or app
 

@@ -168,13 +168,31 @@ final class RemoteHostProtocolTests: XCTestCase {
         XCTAssertFalse(String(decoding: events, as: UTF8.self).contains(sentinel))
     }
 
+    func testHealthLaunchIsTypedAndDoesNotRelaxNormalWorkspaceRequirement() throws {
+        let computer = installedComputer()
+        var worker = Worker(name: "Remote", harness: .claudeCode, model: "gpt-5.6-sol", computerID: computer.id)
+        worker.invocation = HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation
+        worker.invocation.options["workjet.health-probe"] = "v1"
+        let registry = RemoteHarnessAdapterRegistry()
+        let health = try registry.launch(worker: worker, computer: computer, input: Data("health".utf8))
+        XCTAssertEqual(health.healthProbe, true)
+        XCTAssertNil(health.workspace)
+        XCTAssertNil(health.options["workjet.health-probe"], "internal control markers must not leak into harness options")
+
+        worker.invocation.options.removeValue(forKey: "workjet.health-probe")
+        XCTAssertThrowsError(try registry.launch(worker: worker, computer: computer, input: Data("task".utf8))) { error in
+            XCTAssertEqual(error as? RemoteHarnessAdapterError, .workspaceRequired)
+        }
+    }
+
     func testGatewayTunnelCommandIsStrictRunScopedLoopbackOnlySSH() throws {
         let command = try RemoteGatewayTunnelCommandBuilder.command(for: installedComputer())
         XCTAssertEqual(command.executable, "/usr/bin/ssh")
         XCTAssertTrue(command.arguments.contains("StrictHostKeyChecking=yes"))
         XCTAssertTrue(command.arguments.contains("UserKnownHostsFile=\"/private/workjet-known-hosts\""))
         XCTAssertTrue(command.arguments.contains("ExitOnForwardFailure=yes"))
-        XCTAssertTrue(command.arguments.contains("ClearAllForwardings=yes"))
+        XCTAssertFalse(command.arguments.contains("ClearAllForwardings=yes"))
+        XCTAssertTrue(command.arguments.contains("/dev/null"))
         XCTAssertTrue(command.arguments.contains("127.0.0.1:0:127.0.0.1:8317"))
         XCTAssertFalse(command.arguments.contains(where: { $0.contains("0.0.0.0") || $0.contains("tailscale serve") || $0.contains("sh -c") }))
         XCTAssertEqual(command.arguments.suffix(4), ["-T", "-N", "--", "remote.tailnet.ts.net"])
@@ -236,7 +254,7 @@ final class RemoteHostProtocolTests: XCTestCase {
     }
 
     func testClientManagedSkillMaintenanceSendsOnlyTypedIDAndAction() async throws {
-        let result = RemoteManagedSkillLifecycleResult(skillID: "greppy", action: .install, state: .installed, version: "1.3.0")
+        let result = RemoteManagedSkillLifecycleResult(skillID: "greppy", action: .install, state: .installed, version: "0.3.1")
         let response = RemoteHostResponse(ok: true, managedSkillResult: result)
         let runner = ReplyRunner(CommandResult(exitCode: 0, standardOutput: try responseLine(response)))
         let client = RemoteHostClient(computer: installedComputer(), runner: runner, tailscaleLocator: Locator(path: nil))
@@ -270,8 +288,9 @@ final class RemoteHostProtocolTests: XCTestCase {
         XCTAssertTrue(source.contains(#"path.join(path.dirname(process.execPath), "npm")"#), "the verified Node runtime must use its matching npm before a potentially incompatible system npm")
         XCTAssertTrue(source.contains(#"["managed-skill-inspect", "managed-skill-install"].includes(request.operation)"#))
         XCTAssertTrue(source.contains(#"reject("client commands and URLs are forbidden")"#))
-        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppyLinuxX8664URL))
-        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppyLinuxX8664SHA256))
+        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppySourceURL))
+        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppySourceSHA256))
+        XCTAssertTrue(source.contains(RemoteManagedSkillArtifact.greppyCommit))
         XCTAssertTrue(source.contains(#"reject("unsupported operation")"#))
         XCTAssertFalse(source.contains("harness-execute"))
         XCTAssertFalse(source.contains("harness-command"))

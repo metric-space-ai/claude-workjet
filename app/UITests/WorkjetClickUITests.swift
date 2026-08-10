@@ -5,6 +5,10 @@ final class WorkjetClickUITests: XCTestCase {
     private let reviewerID = "00000000-0000-0000-0000-000000000012"
     private let uiWorkerID = "00000000-0000-0000-0000-000000000013"
     private let bulkWorkerID = "00000000-0000-0000-0000-000000000014"
+    private let prototypeAWorkerID = "00000000-0000-0000-0000-000000000015"
+    private let prototypeBWorkerID = "00000000-0000-0000-0000-000000000016"
+    private let prototypeCWorkerID = "00000000-0000-0000-0000-000000000017"
+    private let researchWorkerID = "00000000-0000-0000-0000-000000000018"
     private let providerID = "00000000-0000-0000-0000-000000000101"
     private let localComputerID = "00000000-0000-0000-0000-000000000001"
     private let readyComputerID = "00000000-0000-0000-0000-000000000002"
@@ -90,7 +94,16 @@ final class WorkjetClickUITests: XCTestCase {
                        "Der Worker-Editor darf genau eine Worker-Aufgabenquelle zeigen.")
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Modellregeln")).count, 0,
                        "Modellregeln gehören in die Einstellungen und dürfen im Worker-Editor nicht als zweites Aufgabenfeld erscheinen.")
+        let greppyVersion = app.descendants(matching: .any)["worker.editor.skill.greppy.version"]
+        scrollToHittable(greppyVersion)
+        XCTAssertEqual(greppyVersion.label, "Greppy verwaltete Version 0.3.1")
+        let webResearch = app.switches["worker.editor.skill.web-research"]
+        scrollToHittable(webResearch)
+        XCTAssertEqual(webResearch.value as? String, "Deaktiviert")
+        webResearch.click()
+        XCTAssertEqual(webResearch.value as? String, "Aktiviert")
 
+        scrollToHittable(app.textFields["worker.editor.name"])
         replaceText(in: app.textFields["worker.editor.name"], with: "Sol · Completion UI")
         let instructions = app.descendants(matching: .any)["worker.editor.instructions"]
         scrollToHittable(instructions)
@@ -108,6 +121,9 @@ final class WorkjetClickUITests: XCTestCase {
         let reopenedInstructions = app.descendants(matching: .any)["worker.editor.instructions"]
         XCTAssertTrue(reopenedInstructions.exists)
         XCTAssertEqual(reopenedInstructions.value as? String, "Persistierte Aufgabe aus dem echten Klicktest.")
+        let reopenedWebResearch = app.switches["worker.editor.skill.web-research"]
+        scrollToHittable(reopenedWebResearch)
+        XCTAssertEqual(reopenedWebResearch.value as? String, "Aktiviert")
 
         // The production provider sheet must expose the masked, non-secret
         // account identity and allow a selected route to be cleared again.
@@ -116,29 +132,28 @@ final class WorkjetClickUITests: XCTestCase {
         scrollToHittable(providerSetup)
         providerSetup.click()
         XCTAssertTrue(app.descendants(matching: .any)["Anbieter und Zugang"].waitForExistence(timeout: 5))
-        let account = app.descendants(matching: .any)["provider.account.identity.\(providerID)"]
+        let account = app.buttons["provider.account.select.\(providerID)"]
         XCTAssertTrue(account.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(account.label.contains("ui…@example.invalid"))
         let pool = app.buttons["provider.pool.select.OpenAI"]
         XCTAssertTrue(pool.waitForExistence(timeout: 3))
         XCTAssertTrue(pool.isSelected)
         pool.click()
-        app.buttons["Anbieter schließen"].click()
         XCTAssertTrue(app.staticTexts["Worker bearbeiten"].waitForExistence(timeout: 3))
 
         openProviderSetup()
         let deselectedPool = app.buttons["provider.pool.select.OpenAI"]
         XCTAssertFalse(deselectedPool.isSelected)
         deselectedPool.click()
-        app.buttons["Anbieter schließen"].click()
+        XCTAssertTrue(app.staticTexts["Worker bearbeiten"].waitForExistence(timeout: 3))
         saveAndReopenCompletionEditor()
         openProviderSetup()
         XCTAssertTrue(app.buttons["provider.pool.select.OpenAI"].isSelected)
         app.buttons["provider.account.disconnect.\(providerID)"].click()
-        let confirmDisconnect = app.buttons["UI Test OpenAI trennen"]
+        let confirmDisconnect = app.sheets.buttons["UI Test OpenAI trennen"].firstMatch
         XCTAssertTrue(confirmDisconnect.waitForExistence(timeout: 3))
         confirmDisconnect.click()
-        XCTAssertTrue(waitForNonexistence(app.descendants(matching: .any)["provider.account.identity.\(providerID)"], timeout: 10))
+        XCTAssertTrue(waitForNonexistence(app.buttons["provider.account.select.\(providerID)"], timeout: 10))
         app.buttons["Anbieter schließen"].click()
         XCTAssertTrue(app.staticTexts["Worker bearbeiten"].waitForExistence(timeout: 3))
         app.buttons["Schließen ohne Speichern"].click()
@@ -241,7 +256,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(reopenedWorkerText.value as? String, workerSentinel)
         XCTAssertFalse((reopenedWorkerText.value as? String)?.contains(modelSentinel) ?? true)
         XCTAssertTrue(app.staticTexts["MODELL · GPT-5.6 SOL"].exists)
-        XCTAssertTrue(app.staticTexts["WORKER · COMPLETION ENGINE"].exists)
+        XCTAssertTrue(app.staticTexts["WORKER · SOL · COMPLETION"].exists)
     }
 
     func testProgressBoardPromptSourcePersistsAcrossSettingsReopen() {
@@ -335,6 +350,34 @@ final class WorkjetClickUITests: XCTestCase {
                       "Die Header-Warnung muss die erste konkrete Recovery direkt öffnen.")
     }
 
+    func testSettingsExposeRealWorkerProbeCredentialRenewalAndHonestLocalPiBoundary() {
+        app.buttons["main.open-settings"].click()
+        assertSettingsJump(button: "Anbieter", sectionID: "settings.section.providers")
+
+        let probe = app.buttons["settings.providers.probe-all"]
+        XCTAssertTrue(probe.waitForExistence(timeout: 3))
+        XCTAssertTrue(probe.isHittable)
+        XCTAssertTrue(app.staticTexts["Noch keine echte Worker-Probe ausgeführt"].exists)
+        XCTAssertTrue(app.descendants(matching: .any)["provider.pool.health.OpenAI"].exists)
+
+        let renewal = app.buttons["provider.account.renew.\(providerID)"]
+        scrollToHittable(renewal)
+        XCTAssertTrue(renewal.exists)
+        XCTAssertEqual(renewal.label, "Schlüssel für UI Test OpenAI ersetzen")
+
+        assertSettingsJump(button: "Computer", sectionID: "settings.section.computers")
+        let localPiNote = app.staticTexts["settings.harness.local.pi-note"]
+        scrollToHittable(localPiNote)
+        XCTAssertTrue(localPiNote.exists)
+        let localPiAccessibilityText = [localPiNote.label, localPiNote.value as? String]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        XCTAssertTrue(
+            localPiAccessibilityText.contains("Remote-Computern"),
+            "Der lokale Pi-Code-Hinweis muss seinen Inhalt für VoiceOver liefern, tatsächlich: \(localPiAccessibilityText)"
+        )
+    }
+
     func testLongRuntimeStatusNeverCollapsesComputerChoices() {
         let local = app.buttons["Computer Local"]
         let remote = app.buttons["Computer Remote Ready"]
@@ -417,7 +460,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(localChoice.isSelected)
         localChoice.click()
         XCTAssertTrue(localChoice.isSelected)
-        assertVisibleWorkerIDs([completionID, reviewerID, bulkWorkerID])
+        assertVisibleWorkerIDs(localWorkerIDs)
 
         app.buttons["worker.edit.\(completionID.uppercased())"].click()
         let workerComputer = app.buttons["worker.editor.computer.\(localComputerID)"]
@@ -446,21 +489,19 @@ final class WorkjetClickUITests: XCTestCase {
             "Die Computerwahl darf nicht in ein Dropdown zurückfallen."
         )
         XCTAssertTrue(localChoice.isSelected)
-        assertVisibleWorkerIDs([completionID, reviewerID, bulkWorkerID])
+        assertVisibleWorkerIDs(localWorkerIDs)
 
-        readyChoice.click()
-        XCTAssertTrue(app.buttons["Computer Remote Ready"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Computer Remote Ready"].isSelected)
+        clickComputer("Computer Remote Ready")
+        XCTAssertTrue(waitForSelection("Computer Remote Ready"))
         assertVisibleWorkerIDs([uiWorkerID])
 
-        app.buttons["Computer Remote Offline"].click()
-        XCTAssertTrue(app.buttons["Computer Remote Offline"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons["Computer Remote Offline"].isSelected)
+        clickComputer("Computer Remote Offline")
+        XCTAssertTrue(waitForSelection("Computer Remote Offline"))
         assertVisibleWorkerIDs([])
 
         clickComputer("Computer Local")
         XCTAssertTrue(waitForSelection("Computer Local"))
-        assertVisibleWorkerIDs([completionID, reviewerID, bulkWorkerID])
+        assertVisibleWorkerIDs(localWorkerIDs)
         app.buttons["worker.edit.\(completionID.uppercased())"].click()
 
         let readyTarget = app.buttons["worker.editor.computer.\(readyComputerID)"]
@@ -468,10 +509,16 @@ final class WorkjetClickUITests: XCTestCase {
         readyTarget.click()
         XCTAssertTrue(readyTarget.isSelected)
         app.buttons["worker.editor.save"].click()
-        XCTAssertTrue(app.buttons["Computer Local"].waitForExistence(timeout: 20))
+        let returnedToMain = app.buttons["Computer Local"].waitForExistence(timeout: 20)
+        if !returnedToMain {
+            let saveError = app.staticTexts.matching(identifier: "worker.editor.save.error").firstMatch
+            XCTFail("save-error label=[\(saveError.label)] value=[\(String(describing: saveError.value))] exists=\(saveError.exists)")
+            return
+        }
 
-        assertVisibleWorkerIDs([reviewerID, bulkWorkerID])
-        readyChoice.click()
+        assertVisibleWorkerIDs(localWorkerIDs.subtracting([completionID]))
+        clickComputer("Computer Remote Ready")
+        XCTAssertTrue(waitForSelection("Computer Remote Ready"))
         assertVisibleWorkerIDs([completionID, uiWorkerID])
 
         // Saving once more while the remote peer is selected flushes both the
@@ -500,7 +547,7 @@ final class WorkjetClickUITests: XCTestCase {
         app.buttons["Schließen ohne Speichern"].click()
 
         app.buttons["Computer Local"].click()
-        assertVisibleWorkerIDs([reviewerID, bulkWorkerID])
+        assertVisibleWorkerIDs(localWorkerIDs.subtracting([completionID]))
         app.buttons["Computer Remote Ready"].click()
         assertVisibleWorkerIDs([completionID, uiWorkerID])
     }
@@ -606,11 +653,20 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(actual, expected, "Die Computerfilterung muss exakt die erwarteten Worker-UUIDs zeigen.")
     }
 
+    private var localWorkerIDs: Set<String> {
+        [completionID, reviewerID, bulkWorkerID, prototypeAWorkerID, prototypeBWorkerID, prototypeCWorkerID, researchWorkerID]
+    }
+
     private func clickComputer(_ label: String) {
         let button = app.buttons[label]
         XCTAssertTrue(button.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.buttons[label].isHittable)
-        app.buttons[label].click()
+        for _ in 0..<8 where !button.isHittable {
+            let scroll = app.scrollViews["header.computer-scroll"]
+            XCTAssertTrue(scroll.exists)
+            scroll.scroll(byDeltaX: -140, deltaY: 0)
+        }
+        XCTAssertTrue(button.isHittable)
+        button.click()
     }
 
     private func waitForHittableButton(label: String, timeout: TimeInterval = 3) -> XCUIElement? {

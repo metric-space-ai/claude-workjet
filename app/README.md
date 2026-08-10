@@ -226,7 +226,7 @@ The live app stores versioned non-secret state under:
 ~/Library/Application Support/Workjet/
 ```
 
-Provider credentials are stored in macOS Keychain. The managed Claude prompt is stored separately at `~/.claude/workjet/AGENTS.md`. Run journals and indexes use Workjet state paths managed by `WorkjetCore` and the wrapper tools.
+Provider credentials are stored as owner-only files under `~/.config/workjet/credentials/` (directory mode `0700`, files `0600`). The managed Claude prompt is stored separately at `~/.claude/workjet/AGENTS.md`. Run journals and indexes use Workjet state paths managed by `WorkjetCore` and the wrapper tools.
 
 Never attach these directories to an issue without inspecting and redacting account labels, repository paths, hostnames, usernames, provider output, and any accidental secret material.
 

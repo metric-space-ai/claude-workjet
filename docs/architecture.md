@@ -41,10 +41,13 @@ Workjet menu-bar app
 ```text
 workjet workers list --json
 workjet workers describe <exact-name-or-uuid> --json
+workjet health --probe-workers [--worker <exact-name-or-uuid>] --json
 workjet run <exact-name-or-uuid> --brief-file <path> --json
 workjet events <run-id> --after <exclusive-sequence> --json
 workjet stop <run-id> --json
 ```
+
+The operator-only recovery command `workjet computers setup <exact-name-or-uuid> --json` redeploys Workjet's content-addressed remote host and persists the verified result. It is not part of Claude's ordinary delegation loop.
 
 The CLI resolves current configuration and delegates to WorkjetCore. Claude does not construct raw SSH or harness commands from the managed prompt.
 
@@ -71,7 +74,7 @@ The live app stores non-secret product state under:
 ~/Library/Application Support/Workjet/
 ```
 
-Provider credentials are stored in macOS Keychain. The managed Claude prompt is:
+Provider credentials are stored as owner-only files under `~/.config/workjet/credentials/` (directory mode `0700`, files `0600`). The managed Claude prompt is:
 
 ```text
 ~/.claude/workjet/AGENTS.md

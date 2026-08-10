@@ -491,8 +491,18 @@ struct WorkerEditorView: View {
                         set: { draft.setConfiguredEnabled($0, for: skill) }
                     )) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(skill.displayName)
-                                .font(.system(size: 12, weight: .medium))
+                            HStack(spacing: 5) {
+                                Text(skill.displayName)
+                                    .font(.system(size: 12, weight: .medium))
+                                if let version = skill.version {
+                                    Text(version)
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(WJTheme.secondaryText)
+                                        .accessibilityElement(children: .ignore)
+                                        .accessibilityLabel("\(skill.displayName) verwaltete Version \(version)")
+                                        .accessibilityIdentifier("worker.editor.skill.\(skill.id).version")
+                                }
+                            }
                             Text(skill.description)
                                 .font(.system(size: 10))
                                 .foregroundStyle(WJTheme.secondaryText)

@@ -54,13 +54,16 @@ Workjet provides configuration, execution plumbing, and observable run state. It
 1. Configure the provider accounts and compatible endpoints you use.
 2. Keep work local or add a remote computer over Tailscale or SSH with an explicitly confirmed host key.
 3. Define named workers with a harness, model, provider route, instructions, skills, and target computer.
+   Greppy is available for repository navigation, and the optional Web Research
+   toggle adds live search plus normal page access without removing a worker's
+   ordinary harness tools.
 4. Start a fresh Claude Code or Claude Desktop session. The installer-managed global include exposes the current Workjet worker contract.
 5. Claude invokes the stable `workjet` CLI to list, describe, start, observe, and stop a worker.
 6. Workjet records bounded telemetry and, where supported, a structured completion receipt. Claude independently verifies the delivered result.
 
 ## Security model
 
-- Provider secrets are stored in macOS Keychain. Non-secret configuration is stored under `~/Library/Application Support/Workjet/`.
+- Provider secrets are stored as owner-only files under `~/.config/workjet/credentials/` (directory mode `0700`, files `0600`). Non-secret configuration is stored under `~/Library/Application Support/Workjet/`.
 - Remote commands use strict, host-key-verified OpenSSH for both SSH and Tailscale-discovered computers. SSH agent forwarding is disabled.
 - Remote repositories are transferred as immutable Git bundles over the verified connection. The remote computer does not need a GitHub account, origin credentials, origin network access, or a forwarded SSH agent.
 - Remote result import creates only `refs/workjet/<run-id>` in the source repository. It does not merge, rebase, stage, checkout, or modify the working tree.
@@ -75,7 +78,7 @@ Claude Code / Claude Desktop
           |
           | chooses a worker and calls the stable CLI
           v
-     workjet CLI  <---->  WorkjetCore  <---->  local persistence / Keychain
+     workjet CLI  <---->  WorkjetCore  <---->  local state / private credentials
           |                    |
           |                    +----> menu-bar UI and telemetry
           |

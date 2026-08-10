@@ -47,8 +47,8 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
             harness("claude-code", .install, .installed, version: "2.1.222"),
             harness("claude-code", .inspect, .installed, version: "2.1.222"),
             skill("greppy", .inspect, .missing),
-            skill("greppy", .install, .installed, version: "1.3.0"),
-            skill("greppy", .inspect, .installed, version: "1.3.0"),
+            skill("greppy", .install, .installed, version: "0.3.1"),
+            skill("greppy", .inspect, .installed, version: "0.3.1"),
             probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"])
         ])
         let coordinator = RemoteWorkerProvisioningCoordinator(remoteClient: { _ in host })
@@ -85,13 +85,56 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         XCTAssertFalse(requests.contains { $0.skillID != nil })
     }
 
+    func testWebResearchInstallsCodexHarnessWithoutInventingManagedSkill() async {
+        let computer = remoteComputer()
+        var worker = remoteWorker(computerID: computer.id)
+        worker.skillOverrides = [WorkerSkillCatalog.greppyID: false, WorkerSkillCatalog.webResearchID: true]
+        let host = Host([
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code"]),
+            harness("claude-code", .inspect, .installed, version: "2.1.222"),
+            harness("codex-cli", .inspect, .missing),
+            harness("codex-cli", .install, .installed, version: "1.0.0"),
+            harness("codex-cli", .inspect, .installed, version: "1.0.0"),
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "codex-cli"])
+        ])
+        let result = await RemoteWorkerProvisioningCoordinator(remoteClient: { _ in host }).provision(worker: worker, on: computer)
+
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.components.map(\.id), ["claude-code", "codex-cli"])
+        let requests = await host.recorded()
+        XCTAssertFalse(requests.contains { $0.skillID != nil })
+    }
+
+    func testBrokenGreppyInstallationIsRepairedAndReverified() async {
+        let computer = remoteComputer()
+        let worker = remoteWorker(computerID: computer.id)
+        let host = Host([
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1"]),
+            harness("claude-code", .inspect, .installed, version: "2.1.222"),
+            skill("greppy", .inspect, .broken, version: "0.3.1", detail: "Falsche Befehlsoberfläche."),
+            skill("greppy", .install, .installed, version: "0.3.1"),
+            skill("greppy", .inspect, .installed, version: "0.3.1"),
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"])
+        ])
+        let coordinator = RemoteWorkerProvisioningCoordinator(remoteClient: { _ in host })
+
+        let result = await coordinator.provision(worker: worker, on: computer)
+
+        XCTAssertTrue(result.succeeded)
+        let requests = await host.recorded()
+        XCTAssertEqual(requests.map(\.operation), [
+            .probe, .harnessInspect,
+            .managedSkillInspect, .managedSkillInstall, .managedSkillInspect, .probe
+        ])
+    }
+
     func testSharedHarnessAndDefaultSkillAreDeduplicatedAcrossAssignedWorkers() async {
         let computer = remoteComputer()
         let workers = [remoteWorker(computerID: computer.id), remoteWorker(computerID: computer.id)]
         let host = Host([
             probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1"]),
             harness("claude-code", .inspect, .installed, version: "2.1.222"),
-            skill("greppy", .inspect, .installed, version: "1.3.0"),
+            skill("greppy", .inspect, .installed, version: "0.3.1"),
             probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"])
         ])
         let coordinator = RemoteWorkerProvisioningCoordinator(remoteClient: { _ in host })
@@ -104,6 +147,40 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         XCTAssertEqual(requests.filter { $0.operation == .harnessInspect }.count, 1)
         XCTAssertEqual(requests.filter { $0.operation == .managedSkillInspect }.count, 1)
         XCTAssertEqual(requests.count, 4)
+    }
+
+    func testMultipleRemoteComputersKeepProvisioningHostsAndWorkerAssignmentsIsolated() async {
+        let first = remoteComputer(name: "gpu3-a4500")
+        let second = remoteComputer(name: "gpu4-a4500")
+        let firstWorker = remoteWorker(computerID: first.id)
+        let secondWorker = remoteWorker(computerID: second.id)
+        let firstHost = Host([
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1"]),
+            harness("claude-code", .inspect, .installed),
+            skill("greppy", .inspect, .installed),
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"])
+        ])
+        let secondHost = Host([
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1"]),
+            harness("claude-code", .inspect, .installed),
+            skill("greppy", .inspect, .installed),
+            probe(["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"])
+        ])
+        let firstID = first.id
+        let coordinator = RemoteWorkerProvisioningCoordinator(remoteClient: { computer in
+            computer.id == firstID ? firstHost : secondHost
+        })
+
+        async let firstResult = coordinator.provision(worker: firstWorker, on: first)
+        async let secondResult = coordinator.provision(worker: secondWorker, on: second)
+        let results = await [firstResult, secondResult]
+        let firstOperations = await firstHost.recorded().map(\.operation)
+        let secondOperations = await secondHost.recorded().map(\.operation)
+
+        XCTAssertEqual(Set(results.map(\.computerID)), Set([first.id, second.id]))
+        XCTAssertTrue(results.allSatisfy(\.succeeded))
+        XCTAssertEqual(firstOperations, [.probe, .harnessInspect, .managedSkillInspect, .probe])
+        XCTAssertEqual(secondOperations, [.probe, .harnessInspect, .managedSkillInspect, .probe])
     }
 
     func testProvisioningFailureNamesExactComponentAndDetail() async {
@@ -159,12 +236,12 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         XCTAssertEqual(model.workerProvisioningFailures[worker.id]?.component.id, "greppy")
     }
 
-    private func remoteComputer() -> Computer {
+    private func remoteComputer(name: String = "gpu3-a4500") -> Computer {
         Computer(
             id: UUID(),
-            name: "gpu3-a4500",
+            name: name,
             transport: .ssh,
-            host: "gpu3-a4500.example.test",
+            host: "\(name).example.test",
             user: "workjet",
             deploymentStatus: .installed,
             deploymentDetail: "Eingerichtet.",

@@ -45,15 +45,40 @@ A receipt is non-authoritative telemetry. It may be incomplete, mistaken, or dec
 Greppy is an optional managed code-navigation skill backed by a symbol graph and local semantic index.
 
 - It is enabled by default for compatible coding workers.
-- Compatible app harnesses are Claude Code, Codex CLI, and OpenCode.
-- Launch injection occurs only for a repository-backed task when the exact local or remote target passes a bounded `greppy --version` health check.
+- The currently compatible harness is Claude Code. Workjet does not claim support for a harness until it can append the prescribed text as a real harness system-prompt modification and provide repository-backed shell execution.
+- Launch injection occurs only for a repository-backed task when the exact local or remote target passes the managed Greppy 0.3.1 version and command-surface checks.
 - A configured default is not evidence that the binary is installed or healthy.
-- A missing or broken Greppy command leaves the base brief unchanged and does not block the worker.
+- A configured Greppy worker fails closed when its target binary, repository, required command surface, system-prompt source, or Claude Code `Bash` permission is unavailable. Workjet never silently starts that worker without Greppy.
 - Pi Code, Cursor Agent, and Grok CLI do not receive the Greppy prompt through the current compatibility catalog.
 - The web-only research worker has Greppy disabled because it does not operate on a repository checkout.
 - Workjet does not create a global `grep` alias. Ordinary `grep` remains the system command.
 
 Remote managed installation is limited by the pinned artifact's supported OS and architecture and must pass digest and version checks before availability is advertised.
+
+## Web Research
+
+Web Research is an optional, additive worker skill. It is disabled by default;
+the dedicated `Web Research · Terra` worker is the shipped exception.
+
+- A normal worker keeps its ordinary harness tools and role. Enabling Web
+  Research adds live search and normal page opening; it does not turn that
+  worker into a read-only research role.
+- Claude Code receives the fixed Web Research appendix as a real
+  `--append-system-prompt` modification and invokes the selected read-only
+  research helper through its existing `Bash` tool.
+- Codex CLI receives native `--search`. Gateway-backed workers use the
+  configured OpenAI/Codex route; a direct local worker can use the installed
+  Antigravity `agy` research proxy.
+- Search results are not enough: the helper can be asked to open an exact URL
+  and extract evidence from the page. Reports must include direct URLs and
+  distinguish source facts from inference.
+- The skill fails closed when the selected backend, provider route,
+  authentication, or Claude Code `Bash` permission is unavailable. Workjet
+  does not silently fall back to curl, wget, raw HTTP, or another model.
+
+Remote workers are checked and provisioned per selected computer. Each remote
+computer therefore needs a healthy supported research harness, but it does not
+need a GitHub account or repository credentials.
 
 ## Prompt transparency
 
@@ -63,7 +88,7 @@ The managed prompt exposes configured and effective skill state separately:
 - **Effective** shows harness compatibility.
 - **Available at launch** comes from a target-specific health check or verified remote capability.
 
-The exact Greppy task prompt is stored in visible technical rules and injected as a marked task-input block. Missing or malformed source markers fail closed and prevent injection.
+The exact Greppy 0.3.1 and Web Research prompts are stored in visible technical rules and appended through Claude Code's `--append-system-prompt`; they are never mixed into the user's brief. Both helpers are CLI programs, not native Claude tool names: Claude receives the native `Bash` tool and the system prompt instructs it to invoke the selected command through Bash. Missing or malformed source markers fail closed and prevent launch.
 
 The completion receipt instructions are also visible in technical rules. They are not a hidden runtime prompt.
 

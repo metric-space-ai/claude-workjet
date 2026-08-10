@@ -268,10 +268,7 @@ private struct RuntimeStatusView: View {
     private var activationLabel: String {
         switch model.workjetActivationStatus.state {
         case .checking: return "Claude Code · wird geprüft"
-        case .ready:
-            return model.claudeRestartRequired
-                ? "Claude · Neustart erforderlich"
-                : "Claude · Workjet aktuell"
+        case .ready: return "Claude · Workjet aktuell"
         case .missing: return "Claude Code · Workjet einrichten"
         case .outOfDate: return "Claude Code · Workjet aktualisieren"
         case .failed: return "Claude Code · Workjet reparieren"
@@ -281,18 +278,12 @@ private struct RuntimeStatusView: View {
     private var activationColor: Color {
         switch model.workjetActivationStatus.state {
         case .checking: return WJTheme.secondaryText
-        case .ready:
-            return model.claudeRestartRequired
-                ? Color(nsColor: .systemOrange)
-                : WJTheme.accent
+        case .ready: return WJTheme.accent
         case .missing, .outOfDate, .failed: return Color(nsColor: .systemOrange)
         }
     }
 
     private var activationHelp: String {
-        if model.workjetActivationStatus.state == .ready, model.claudeRestartRequired {
-            return "Die Workjet-Änderung ist gespeichert. Laufende Claude-Code- und Claude-Desktop-Sitzungen verwenden noch den vorherigen Prompt. Claude vollständig beenden und neu starten."
-        }
         return model.workjetActivationStatus.detail
     }
 

@@ -97,6 +97,20 @@ final class ProviderRuntimeRouteTests: XCTestCase {
         XCTAssertEqual(route.candidates.first?.credentialReference, "custom-endpoint-key")
     }
 
+    func testOfficialZAIEndpointMatchesTheSelectedHarnessProtocol() throws {
+        let provider = Provider(name: "Z.ai", kind: .directAPI, endpoint: "https://api.z.ai/api/paas/v4", authentication: .bearerToken, modelProvider: .zAI, credentialReference: "zai-key")
+        var claude = Worker(name: "GLM Claude", harness: .claudeCode, model: "glm-5.2", computerID: localID)
+        claude.providerID = provider.id
+        var codex = claude
+        codex.harness = .codexCLI
+
+        let claudeRoute = try ProviderRuntimeRouteResolver.resolve(worker: claude, providers: [provider], target: .local)
+        let codexRoute = try ProviderRuntimeRouteResolver.resolve(worker: codex, providers: [provider], target: .local)
+
+        XCTAssertEqual(claudeRoute.candidates.first?.endpoint, "https://api.z.ai/api/anthropic")
+        XCTAssertEqual(codexRoute.candidates.first?.endpoint, "https://api.z.ai/api/coding/paas/v4")
+    }
+
     func testRemoteRouteUsesSameExactNonSecretMetadataAsLocal() throws {
         let provider = Provider(name: "OpenAI", kind: .directAPI, endpoint: "https://api.openai.com/v1", authentication: .none, modelProvider: .openAI)
         var worker = Worker(name: "Remote", harness: .claudeCode, model: "gpt-5.6-sol", computerID: UUID())

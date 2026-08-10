@@ -65,7 +65,9 @@ public enum ManagedPrompt {
         let learnings = configuration.adHocLearnings?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !learnings.isEmpty { lines += [safeMultilineInstructions(learnings), ""] }
         lines += ["## Technische Regeln", ""]
-        let technical = configuration.technicalRules?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let technical = WorkerSkillCatalog.removingPromptSources(
+            from: configuration.technicalRules ?? ""
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
         if !technical.isEmpty { lines.append(safeMultilineInstructions(technical)) }
         return Data(lines.joined(separator: "\n").trimmingCharacters(in: .newlines).utf8)
     }

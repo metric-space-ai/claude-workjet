@@ -86,6 +86,8 @@ else if (behavior.includes("ctx:%s:%s:%s:%s")) {
 } else if (behavior.includes("split-secret-")) {
   process.stdout.write("split-secret-");
   setTimeout(() => line("sentinel"), 1000);
+} else if (behavior === "web-research-environment") {
+  line(`web:${process.env.WORKJET_WEB_RESEARCH_BACKEND}:${process.env.WORKJET_WEB_RESEARCH_BASE_URL}:${process.env.WORKJET_WEB_RESEARCH_API_KEY}:${process.env.GREPPY_STORE_DIR}:${process.execPath}`);
 } else if (behavior.includes("HTTP 429 rate limit")) {
   if (token === "first-secret") { errorLine("HTTP 429 rate limit"); process.exitCode = 1; } else line("used-second");
 } else if (behavior.includes("tests failed")) {
@@ -97,11 +99,14 @@ else if (behavior.includes("ctx:%s:%s:%s:%s")) {
 } else if (behavior.includes("term-trap-ready")) {
   process.on("SIGTERM", () => {}); line("term-trap-ready"); setInterval(() => {}, 1000);
 } else if (behavior === "echo 'claude 1.2.3'") line("claude 1.2.3");
+else if (behavior === "echo WORKJET_HEALTH_OK") line("WORKJET_HEALTH_OK");
 else if (behavior.includes("OpenCode 1.2.3")) { if (args[0] !== "upgrade") line("OpenCode 1.2.3"); }
 else if (behavior.includes("while [ $i -lt 10000 ]")) { process.stderr.write("x".repeat(10000)); process.exitCode = 7; }
 else if (behavior.includes("managed target missing")) { errorLine("managed target missing"); process.exitCode = 78; }
-else if (behavior.includes("greppy 1.3.0")) {
-  if (args.length === 1 && args[0] === "--version") line("greppy 1.3.0"); else process.exitCode = 64;
+else if (behavior.includes("greppy 0.3.1")) {
+  if (args.length === 1 && args[0] === "--version") line("greppy 0.3.1");
+  else if (args.length === 1 && args[0] === "--help") line("who-calls search-symbol bash-smart");
+  else process.exitCode = 64;
 } else { errorLine("unknown fixture behavior"); process.exitCode = 64; }
 """#
             .replacingOccurrences(of: "__NODE__", with: executable)
@@ -110,7 +115,12 @@ else if (behavior.includes("greppy 1.3.0")) {
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
     }
 
-    private func fixture(script: String, greppyScript: String? = nil, allowManagedSkillsOnFixturePlatform: Bool = false, forceUnsupportedManagedSkillTarget: Bool = false) throws -> Fixture {
+    private func compileShellExecutable(script: String, at url: URL) throws {
+        try Data("#!/bin/sh\n\(script)\n".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+    }
+
+    private func fixture(script: String, greppyScript: String? = nil, codexAvailable: Bool = false, allowManagedSkillsOnFixturePlatform: Bool = false, forceUnsupportedManagedSkillTarget: Bool = false) throws -> Fixture {
         let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
             .appendingPathComponent(".build/workjet-host-v2-fixtures/\(UUID().uuidString)", isDirectory: true)
         let home = root.appendingPathComponent("home")
@@ -141,11 +151,14 @@ else if (behavior.includes("greppy 1.3.0")) {
         let fakeClaude = bin.appendingPathComponent("claude")
         try compileExecutable(script: script, at: fakeClaude)
         try FileManager.default.copyItem(at: fakeClaude, to: managedBin.appendingPathComponent("claude"))
+        if codexAvailable {
+            try FileManager.default.copyItem(at: fakeClaude, to: managedBin.appendingPathComponent("codex"))
+        }
         let fakeOpenCode = bin.appendingPathComponent("opencode")
         try FileManager.default.copyItem(at: fakeClaude, to: fakeOpenCode)
         if let greppyScript {
             let fakeGreppy = managedSkillsBin.appendingPathComponent("greppy")
-            try compileExecutable(script: greppyScript, at: fakeGreppy)
+            try compileShellExecutable(script: greppyScript, at: fakeGreppy)
         }
         let nativeOpenCode = home.appendingPathComponent(".opencode/bin/opencode")
         try FileManager.default.createDirectory(at: nativeOpenCode.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -189,7 +202,7 @@ else if (behavior.includes("greppy 1.3.0")) {
 
     private func call(_ fixture: Fixture, _ request: RemoteHostRequest, timeout: TimeInterval = 90) throws -> RemoteHostResponse {
         var request = request
-        if request.operation == .start, request.launch?.harnessID != "pi-code", request.launch?.workspace == nil {
+        if request.operation == .start, request.launch?.harnessID != "pi-code", request.launch?.healthProbe != true, request.launch?.workspace == nil {
             request.launch?.workspace = fixture.workspace
         }
         var payload = try JSONEncoder().encode(request)
@@ -223,7 +236,7 @@ else if (behavior.includes("greppy 1.3.0")) {
     }
 
     private func start(_ fixture: Fixture, owner: String = "app-before-restart") throws -> String {
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test-model", reasoning: "low", sandbox: false, input: Data("test brief".utf8))
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test-model", reasoning: "low", sandbox: false, input: Data("test brief".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"])
         let route = RemoteProviderExecution(displayName: "Test", candidates: [
             RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Test", endpoint: "https://api.anthropic.com/", authentication: .none, secret: nil)
         ])
@@ -232,7 +245,7 @@ else if (behavior.includes("greppy 1.3.0")) {
     }
 
     private func start(_ fixture: Fixture, route: RemoteProviderExecution, model: String = "test-model", reasoning: String = "high", fast: Bool = true) throws -> String {
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: model, reasoning: reasoning, sandbox: false, input: Data("test brief".utf8), options: ["fastMode": fast ? "true" : "false"])
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: model, reasoning: reasoning, sandbox: false, input: Data("test brief".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], options: ["fastMode": fast ? "true" : "false"])
         let response = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, ownerID: "secure-route-test", providerExecution: route))
         return try XCTUnwrap(response.runID, response.error ?? "missing run id")
     }
@@ -288,6 +301,7 @@ else if (behavior.includes("greppy 1.3.0")) {
             reasoning: "high",
             sandbox: false,
             input: Data("durable brief".utf8),
+            allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
             options: ["fastMode": "true"]
         )
         let route = RemoteProviderExecution(displayName: "Anthropic Pool", candidates: [
@@ -326,6 +340,32 @@ else if (behavior.includes("greppy 1.3.0")) {
         XCTAssertTrue(persisted.contains("Completion Engine"))
         XCTAssertTrue(persisted.contains("claude-sonnet-test"))
         _ = try call(fixture, RemoteHostRequest(operation: .stop, runID: runID))
+    }
+
+    func testRemoteWebResearchRequiresCodexAndInjectsGatewayIntoNormalClaudeHarness() throws {
+        let fixture = try fixture(script: "web-research-environment", greppyScript: "exit 0", codexAvailable: true)
+        let relay = RemoteGatewayRelay(id: UUID(), remotePort: 48123)
+        let launch = RemoteHarnessLaunch(
+            harnessID: "claude-code",
+            model: "grok-4.5",
+            reasoning: "medium",
+            sandbox: false,
+            input: Data("research".utf8),
+            systemPrompt: "WEB RESEARCH SYSTEM PROMPT",
+            allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
+            webResearch: true,
+            greppy: true
+        )
+        let route = RemoteProviderExecution(displayName: "xAI Gateway", candidates: [
+            RemoteProviderExecutionCandidate(kind: .gatewayPool, providerID: nil, modelProvider: .xAI, displayName: "xAI Gateway", endpoint: "http://127.0.0.1:48123", authentication: .bearerToken, secret: "gateway-token", relay: relay)
+        ])
+        let started = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, ownerID: "web-research-test", providerExecution: route))
+        let runID = try XCTUnwrap(started.runID, started.error ?? "missing run")
+        let terminal = try waitForState(fixture, runID: runID, { $0.state.isTerminal })
+        let output = terminal.events.compactMap(\.text).joined()
+        XCTAssertTrue(output.contains("web:codex:http://127.0.0.1:48123/v1:[REDACTED]"))
+        XCTAssertTrue(output.contains(fixture.home.appendingPathComponent(".local/state/workjet/host/greppy").path))
+        XCTAssertFalse(output.contains("gateway-token"))
     }
 
     func testRetentionRemovesOnlyOldOwnedTerminalAndDefinitelyDeadRuns() throws {
@@ -484,7 +524,8 @@ server.listen(socketPath);
             model: "test-model",
             reasoning: nil,
             sandbox: true,
-            input: Data("brief".utf8)
+            input: Data("brief".utf8),
+            allowedTools: ["Read"]
         )
 
         let rejected = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, providerExecution: route))
@@ -494,6 +535,25 @@ server.listen(socketPath);
         XCTAssertNil(rejected.runID, "invalid sandbox claims must be rejected before a run is allocated")
         let listed = try call(fixture, RemoteHostRequest(operation: .probe, wireOperation: "list"))
         XCTAssertTrue(listed.runs.isEmpty)
+    }
+
+    func testExactHealthProbeRunsWithoutRepositoryAndArbitraryBypassIsRejected() throws {
+        let fixture = try fixture(script: "echo WORKJET_HEALTH_OK")
+        let route = RemoteProviderExecution(displayName: "Health", candidates: [
+            RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Health", endpoint: "https://api.anthropic.com/", authentication: .none, secret: nil)
+        ])
+        let prompt = "WORKJET HEALTH PROBE V1. This is a real user health ping: hi. Do not inspect or edit files. Do not use tools. Do not spawn subagents. Reply exactly WORKJET_HEALTH_OK and exit."
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test-model", reasoning: nil, sandbox: false, input: Data(prompt.utf8), allowedTools: ["Read"], healthProbe: true)
+
+        let started = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, ownerID: "health", providerExecution: route))
+        let runID = try XCTUnwrap(started.runID, started.error ?? "missing run id")
+        let completed = try waitForState(fixture, runID: runID, { $0.state == .completed })
+        XCTAssertTrue(completed.events.contains(where: { $0.text?.contains("WORKJET_HEALTH_OK") == true }))
+
+        let forged = RemoteHarnessLaunch(harnessID: "claude-code", model: "test-model", reasoning: nil, sandbox: false, input: Data("do arbitrary work".utf8), allowedTools: ["Read"], healthProbe: true)
+        let rejected = try call(fixture, RemoteHostRequest(operation: .start, launch: forged, ownerID: "health", providerExecution: route))
+        XCTAssertFalse(rejected.ok)
+        XCTAssertEqual(rejected.error, "invalid health probe")
     }
 
     func testCredentialSplitAcrossOutputChunksIsStillNeverExposed() throws {
@@ -575,7 +635,7 @@ server.listen(socketPath);
         XCTAssertTrue(response.events.contains(where: { $0.kind == "error" && $0.text?.contains("credentials were not delivered") == true }))
     }
 
-    func testProbeAdvertisesGreppyOnlyAfterBoundedVersionHealthCheck() throws {
+    func testProbeAdvertisesGreppyOnlyAfterVersionSurfaceAndRuntimeHealthCheck() throws {
         let missing = try fixture(script: "echo unused")
         defer { try? FileManager.default.removeItem(at: missing.root) }
         XCTAssertFalse(try call(missing, RemoteHostRequest(operation: .probe)).capabilities.contains(WorkerSkillCatalog.greppyCapability))
@@ -587,7 +647,7 @@ server.listen(socketPath);
 
         let healthy = try fixture(
             script: "echo unused",
-            greppyScript: "[ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ] || exit 64; printf 'greppy 1.3.0\\n'",
+            greppyScript: "if [ \"$#\" -eq 1 ] && [ \"$1\" = \"--version\" ]; then printf 'greppy 0.3.1\\n'; elif [ \"$#\" -eq 1 ] && [ \"$1\" = \"--help\" ]; then i=0; while [ \"$i\" -lt 5000 ]; do printf x; i=$((i + 1)); done; printf ' who-calls search-symbol bash-smart\\n'; elif [ \"$#\" -eq 2 ] && [ \"$1\" = \"index\" ] && [ -f \"$2/runtime_probe.rs\" ]; then printf 'indexed runtime probe\\n'; else exit 64; fi",
             allowManagedSkillsOnFixturePlatform: true
         )
         defer { try? FileManager.default.removeItem(at: healthy.root) }
@@ -602,7 +662,7 @@ server.listen(socketPath);
         XCTAssertTrue(probe.capabilities.contains("provider-execution-v1"))
         XCTAssertTrue(probe.capabilities.contains("gateway-relay-v1"))
         XCTAssertTrue(probe.capabilities.contains("relay-loss-v1"))
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8))
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: ["Read"])
         let response = try call(fixture, RemoteHostRequest(operation: .start, launch: launch))
         XCTAssertFalse(response.ok)
         XCTAssertEqual(response.error, "invalid provider route")
@@ -614,7 +674,7 @@ server.listen(socketPath);
         let route = RemoteProviderExecution(displayName: "Kimi Gateway", candidates: [
             RemoteProviderExecutionCandidate(kind: .gatewayPool, providerID: nil, modelProvider: .kimi, displayName: "Kimi Gateway", endpoint: "http://127.0.0.1:8317/v1", authentication: .bearerToken, secret: "gateway-token")
         ])
-        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "kimi", reasoning: nil, sandbox: false, input: Data("brief".utf8))
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "kimi", reasoning: nil, sandbox: false, input: Data("brief".utf8), allowedTools: ["Read"])
         let response = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, providerExecution: route))
         XCTAssertFalse(response.ok)
         XCTAssertEqual(response.error, "gateway relay identity missing")
@@ -739,7 +799,8 @@ server.listen(socketPath);
         XCTAssertFalse(rejected.ok)
         XCTAssertEqual(rejected.error, "client commands are forbidden")
         XCTAssertFalse(RemotePiBootstrap.hostRuntimeSource.contains("sh -c"))
-        XCTAssertFalse(RemotePiBootstrap.hostRuntimeSource.contains("/bin/sh"))
+        XCTAssertFalse(RemotePiBootstrap.hostRuntimeSource.contains("\"/bin/sh\""))
+        XCTAssertFalse(RemotePiBootstrap.hostRuntimeSource.contains("\"/usr/bin/sh\""))
     }
 
     func testManagedSkillLifecycleRejectsCommandAndURLInjectionAndUnsupportedTargetFailsClosed() throws {
@@ -766,14 +827,22 @@ server.listen(socketPath);
         XCTAssertTrue(RemoteManagedSkillArtifact.supportsGreppy(os: "linux", architecture: "x86_64"))
         XCTAssertFalse(RemoteManagedSkillArtifact.supportsGreppy(os: "darwin", architecture: "arm64"))
         XCTAssertFalse(RemoteManagedSkillArtifact.supportsGreppy(os: "linux", architecture: "aarch64"))
-        XCTAssertFalse(RemoteManagedSkillArtifact.validatesGreppyArchive(Data("not the pinned release".utf8)))
-        XCTAssertEqual(RemoteManagedSkillArtifact.greppyVersion, "1.3.0")
-        XCTAssertEqual(RemoteManagedSkillArtifact.greppyCargoPackage, "greppy-cli")
-        XCTAssertEqual(RemoteManagedSkillArtifact.greppyLinuxX8664SHA256, "a386c892d2b67476ea9d8753e81f7e352f8a8f755319dc19ddf0db7f1eebdd3d")
-        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("cargo installation failed"))
+        XCTAssertFalse(RemoteManagedSkillArtifact.validatesGreppySourceArchive(Data("not the pinned release".utf8)))
+        XCTAssertEqual(RemoteManagedSkillArtifact.greppyVersion, "0.3.1")
+        XCTAssertEqual(RemoteManagedSkillArtifact.greppyCommit, "547705051d2c69481955e218f62f404e75e974ed")
+        XCTAssertEqual(RemoteManagedSkillArtifact.greppySourceSHA256, "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d")
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("cargo build failed"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("--locked"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("[\"build\", \"--quiet\", \"--manifest-path\""))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("3600000"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains(".cargo/bin/cargo"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("path.dirname(cargo)"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("MODEL_ASSETS.json"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("model asset digest mismatch"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("\"--bin\", \"greppy\""))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("verifyManagedGreppyRuntime"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("greppy-runtime-probe.json"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("eingebetteten Modell- und Index-Runtimepfad"))
     }
 
     func testHarnessInspectAndNativeUpdateUseFixedPlanAndReturnStructuredResult() throws {

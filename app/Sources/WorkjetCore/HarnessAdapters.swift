@@ -78,7 +78,7 @@ public struct HarnessAdapterDescriptor: Identifiable, Equatable, Sendable {
 
 public enum HarnessAdapterRegistry {
     public static let all: [HarnessAdapterDescriptor] = [
-        HarnessAdapterDescriptor(id: "claude-code", displayName: "Claude Code", harness: .claudeCode, invocationProtocol: .claudePrompt, defaultInvocation: WorkerInvocation(executable: "claude", arguments: ["-p", "<WORKJET_BRIEF>"])),
+        HarnessAdapterDescriptor(id: "claude-code", displayName: "Claude Code", harness: .claudeCode, invocationProtocol: .claudePrompt, defaultInvocation: WorkerInvocation(executable: "claude", arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])),
         HarnessAdapterDescriptor(id: "pi-code", displayName: "Pi Code", harness: .piSidecar, invocationProtocol: .piTurnNDJSON, defaultInvocation: WorkerInvocation(executable: "node")),
         HarnessAdapterDescriptor(id: "codex-cli", displayName: "Codex CLI", harness: .codexCLI, invocationProtocol: .codexExec, defaultInvocation: WorkerInvocation(executable: "codex", arguments: ["exec", "--json", "<WORKJET_BRIEF>"])),
         HarnessAdapterDescriptor(id: "cursor-agent", displayName: "Cursor Agent", harness: .cursorAgent, invocationProtocol: .agentClientProtocol, defaultInvocation: WorkerInvocation(executable: "cursor-agent", arguments: ["acp"])),
@@ -128,9 +128,15 @@ public enum HarnessAdapterRegistry {
             guard invocation.arguments.contains("-p") || invocation.arguments.contains("--print") else {
                 return "Claude Code muss als nicht interaktiver Print-Aufruf (-p) konfiguriert sein."
             }
+            guard let toolsIndex = invocation.arguments.firstIndex(of: "--allowedTools"),
+                  invocation.arguments.indices.contains(toolsIndex + 1),
+                  !invocation.arguments[toolsIndex + 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return "Claude Code benötigt für den headless Workjet-Lauf eine explizite, nicht leere --allowedTools-Liste."
+            }
         case .codexCLI:
-            guard invocation.arguments.first == "exec" else {
-                return "Codex CLI muss über den verifizierten One-Shot-Aufruf „codex exec“ gestartet werden."
+            guard let execIndex = invocation.arguments.firstIndex(of: "exec"),
+                  execIndex < invocation.arguments.firstIndex(of: "<WORKJET_BRIEF>")! else {
+                return "Codex CLI muss über den verifizierten One-Shot-Aufruf „codex exec“ gestartet werden; globale Optionen wie --search müssen davor stehen."
             }
         case .openCode:
             guard invocation.arguments.first == "run" else {
@@ -140,6 +146,16 @@ public enum HarnessAdapterRegistry {
             return "Dieses Harness besitzt noch keine verifizierte lokale One-Shot-Schnittstelle."
         }
         return nil
+    }
+
+    public static func allowedTools(in invocation: WorkerInvocation) -> [String]? {
+        guard let index = invocation.arguments.firstIndex(of: "--allowedTools"),
+              invocation.arguments.indices.contains(index + 1) else { return nil }
+        let tools = invocation.arguments[index + 1]
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return tools.isEmpty ? nil : tools
     }
 
     public static func descriptor(for harness: Harness) -> HarnessAdapterDescriptor {
@@ -178,17 +194,36 @@ public struct RemoteHarnessLaunch: Codable, Equatable, Sendable {
     public var reasoning: String?
     public var sandbox: Bool
     public var inputBase64: String
+    /// A real harness system-prompt appendix. Never merge these bytes into the
+    /// user brief; only harness adapters with a verified system-prompt API may
+    /// populate this field.
+    public var systemPromptBase64: String?
+    public var allowedTools: [String]?
     public var options: [String: String]
     public var workspace: RemoteWorkspaceDescriptor?
+    /// A narrowly-scoped, read-only liveness probe. The remote host accepts
+    /// this only with Workjet's exact fixed health prompt and no workspace.
+    public var healthProbe: Bool?
+    /// Opt-in additive web capability. The host validates the matching Codex
+    /// dependency and injects only the already selected gateway credential.
+    public var webResearch: Bool?
+    /// Opt-in managed Greppy runtime. The host gives it a Workjet-owned cache
+    /// so unrelated user-level Greppy state cannot break a worker launch.
+    public var greppy: Bool?
 
-    public init(harnessID: String, model: String, reasoning: String?, sandbox: Bool, input: Data, options: [String: String] = [:], workspace: RemoteWorkspaceDescriptor? = nil) {
+    public init(harnessID: String, model: String, reasoning: String?, sandbox: Bool, input: Data, systemPrompt: String? = nil, allowedTools: [String]? = nil, options: [String: String] = [:], workspace: RemoteWorkspaceDescriptor? = nil, healthProbe: Bool = false, webResearch: Bool = false, greppy: Bool = false) {
         self.harnessID = harnessID
         self.model = model
         self.reasoning = reasoning
         self.sandbox = sandbox
         self.inputBase64 = input.base64EncodedString()
+        self.systemPromptBase64 = systemPrompt.map { Data($0.utf8).base64EncodedString() }
+        self.allowedTools = allowedTools
         self.options = options
         self.workspace = workspace
+        self.healthProbe = healthProbe ? true : nil
+        self.webResearch = webResearch ? true : nil
+        self.greppy = greppy ? true : nil
     }
 }
 
@@ -272,7 +307,7 @@ public struct RemoteHarnessAdapterRegistry: Sendable {
         }
     }
 
-    public func launch(worker: Worker, computer: Computer, input: Data, workspace: RemoteWorkspaceDescriptor? = nil) throws -> RemoteHarnessLaunch {
+    public func launch(worker: Worker, computer: Computer, input: Data, systemPrompt: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil) throws -> RemoteHarnessLaunch {
         var launch: RemoteHarnessLaunch
         switch worker.harness {
         case .claudeCode:
@@ -286,8 +321,37 @@ public struct RemoteHarnessAdapterRegistry: Sendable {
         case .cursorAgent, .grokCLI:
             throw RemoteHarnessAdapterError.unsupportedHarness(worker.harness.rawValue)
         }
+        if let systemPrompt {
+            let bytes = systemPrompt.utf8
+            guard worker.harness == .claudeCode else {
+                throw RemoteHarnessAdapterError.invalidInput("Dieses Harness besitzt keine verifizierte System-Prompt-Erweiterung.")
+            }
+            guard !bytes.isEmpty, bytes.count <= 65_536, !systemPrompt.contains("\0") else {
+                throw RemoteHarnessAdapterError.invalidInput("Der Harness-System-Prompt muss nicht leer, frei von NUL-Bytes und höchstens 64 KiB groß sein.")
+            }
+            launch.systemPromptBase64 = Data(bytes).base64EncodedString()
+        }
+        if worker.harness == .claudeCode {
+            guard let tools = HarnessAdapterRegistry.allowedTools(in: worker.invocation),
+                  tools.allSatisfy({ $0.range(of: #"^[A-Za-z][A-Za-z0-9_-]{0,63}$"#, options: .regularExpression) != nil }) else {
+                throw RemoteHarnessAdapterError.invalidInput("Claude Code benötigt eine gültige explizite --allowedTools-Liste.")
+            }
+            if systemPrompt != nil, !tools.contains("Bash") {
+                throw RemoteHarnessAdapterError.invalidInput("Ein aktivierter Workjet-Skill benötigt das freigegebene Claude-Code-Tool Bash.")
+            }
+            launch.allowedTools = tools
+        }
+        let healthProbe = worker.invocation.options["workjet.health-probe"] == "v1"
+        launch.healthProbe = healthProbe ? true : nil
+        let webResearch = !healthProbe && WorkerSkillCatalog.effectiveSkills(for: worker).contains(where: { $0.id == WorkerSkillCatalog.webResearchID })
+        launch.webResearch = webResearch ? true : nil
+        let greppy = !healthProbe && WorkerSkillCatalog.effectiveSkills(for: worker).contains(where: { $0.id == WorkerSkillCatalog.greppyID })
+        launch.greppy = greppy ? true : nil
+        launch.options.removeValue(forKey: "workjet.health-probe")
         if worker.harness == .piSidecar {
             launch.workspace = nil // Preserve Pi Code's explicit in-memory request contract.
+        } else if healthProbe {
+            launch.workspace = nil
         } else {
             guard let workspace else { throw RemoteHarnessAdapterError.workspaceRequired }
             launch.workspace = workspace

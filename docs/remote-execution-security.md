@@ -10,7 +10,7 @@ A remote computer is not trusted merely because it appears in Tailscale or answe
 2. The user compares and explicitly confirms the fingerprint.
 3. Workjet writes the confirmed entry to its private known-hosts file.
 4. Every remote command uses `StrictHostKeyChecking=yes` and that explicit `UserKnownHostsFile`.
-5. `BatchMode=yes`, `ClearAllForwardings=yes`, and `ForwardAgent=no` are enforced.
+5. `BatchMode=yes`, `ForwardAgent=no`, an isolated SSH config (`-F /dev/null`), and strict known-host verification are enforced. Gateway runs add only Workjet's run-scoped loopback reverse forwarding.
 6. If an identity file is configured, Workjet uses `IdentitiesOnly=yes` and passes the local absolute path directly to OpenSSH.
 
 There is no `StrictHostKeyChecking=no` fallback. A changed or unknown key blocks setup or execution until the user resolves the trust change.
@@ -18,6 +18,8 @@ There is no `StrictHostKeyChecking=no` fallback. A changed or unknown key blocks
 ## Repository transport
 
 Repository-backed Claude Code, Codex CLI, and OpenCode runs use an immutable snapshot of the invoking Git worktree.
+
+The fixed `WORKJET HEALTH PROBE V1` token exchange is the only non-Pi remote launch allowed without a repository. The host accepts it only as a typed health probe with the exact no-tools prompt and no workspace; arbitrary input cannot use that bypass.
 
 The snapshot includes:
 
@@ -77,10 +79,10 @@ Currently represented remote start adapters are Claude Code, Pi Code, Codex CLI,
 
 Provider routing remains Workjet-owned.
 
-- Direct API credentials are read from Keychain when explicitly needed.
+- Direct API credentials are read from Workjet's owner-only local credential directory only when explicitly needed.
 - Remote direct API secrets are delivered only through the run's encrypted request and monitor path.
 - CLIProxy-backed OAuth uses a run-scoped loopback relay with an ephemeral access secret.
-- OAuth files, OAuth tokens, Keychain contents, and run secrets are not copied to or persisted on the remote host.
+- OAuth files, OAuth tokens, local credential-store contents, and run secrets are not copied to or persisted on the remote host.
 - CLIProxy may manage multiple OAuth accounts as one gateway pool. Workjet does not claim per-request pinning when the gateway does not expose it.
 
 Remote machines therefore do not need provider credential files copied from the Mac.

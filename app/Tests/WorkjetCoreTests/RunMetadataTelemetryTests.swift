@@ -180,6 +180,7 @@ private final class RetentionFixture {
         var processes: [Int32: ProcessIdentity] = [:]
         func identity(for pid: Int32) -> ProcessIdentity? { processes[pid] }
         func sendTERM(to pid: Int32) throws {}
+        func sendKILL(to pid: Int32) throws {}
     }
 
     let root: URL
@@ -231,6 +232,7 @@ private final class Fixture {
         var processIdentity: ProcessIdentity?
         func identity(for pid: Int32) -> ProcessIdentity? { processIdentity?.pid == pid ? processIdentity : nil }
         func sendTERM(to pid: Int32) throws {}
+        func sendKILL(to pid: Int32) throws {}
     }
 
     let root: URL

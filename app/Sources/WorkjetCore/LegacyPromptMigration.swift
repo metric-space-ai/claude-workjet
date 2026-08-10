@@ -59,6 +59,19 @@ public enum LegacyPromptMigration {
         return value
     }
 
+    /// Corrects an exact shipped routing sentence after Web Research became
+    /// an additive per-worker capability. Owner-authored routing prose is not
+    /// inferred or rewritten.
+    public static func correctingKnownSkillDefaults(in rules: String) -> String {
+        rules.replacingOccurrences(
+            of: legacyWebResearchRoutingSentence,
+            with: currentWebResearchRoutingSentence
+        ).replacingOccurrences(
+            of: legacyNumberedWebResearchRoutingSentence,
+            with: currentNumberedWebResearchRoutingSentence
+        )
+    }
+
     /// Replaces every complete Workjet-owned technical block with the current
     /// default bytes. Text outside the explicit marker pairs is copied exactly.
     /// Missing blocks are appended once; duplicate complete blocks are removed.
@@ -101,9 +114,13 @@ public enum LegacyPromptMigration {
     public static let cliExecutionContractEndMarker = "<!-- WORKJET CLI EXECUTION CONTRACT END -->"
     public static let currentSkillActivationSentence = "Dieser vollständige, in der Workjet-App sichtbare Prompt ist die globale Workjet-Ergänzung für neue Claude-Code- und Claude-Desktop-Sitzungen. Workjet wird nicht per Slash-Command aktiviert."
     public static let currentFallbackSentence = "Direkte Anbieter-Pools werden deterministisch abgearbeitet und wechseln nur nach klassifizierten Auth-, Quota- oder Rate-Limit-Fehlern zum nächsten Zugang; Netzwerk-, Timeout-, 5xx- und Task-Fehler lösen keinen Fallback aus."
+    public static let currentWebResearchRoutingSentence = "Use Terra as the default for standalone current online research requiring primary sources and direct links; Terra never receives repository editing or shell/code work. A different worker with an effective Web Research toggle may use bounded live search and page opening inside its normal assignment without changing its role or removing its ordinary harness tools."
+    public static let currentNumberedWebResearchRoutingSentence = "7. Use `Web Research · Terra` as the default for standalone current online research. Require primary sources and direct links; Terra must never touch local files or code. A normal worker whose Web Research toggle is effective may also search and open pages inside its normal assignment; it keeps its ordinary role and harness tools."
 
     private static let legacySkillActivationSentence = "Der Skill `/workjet` lädt ausschließlich diesen vollständigen, in der Workjet-App sichtbaren Prompt. Der Skill selbst fügt keine Routing- oder Worker-Regeln hinzu."
     private static let legacyFallbackSentence = "Direkte Anbieter-Pools werden deterministisch abgearbeitet und wechseln nur nach klassifizierten Auth-, Quota- oder Netzwerkfehlern zum nächsten Zugang; Task-Fehler lösen keinen Fallback aus."
+    private static let legacyWebResearchRoutingSentence = "Give Terra only current online research requiring primary sources and direct links through its verified Codex native-web-search harness; Terra never receives repository editing or shell/code work."
+    private static let legacyNumberedWebResearchRoutingSentence = "7. Use `Web Research · Terra` only for current online research. Require primary sources and direct links; it must never touch local files or code."
     private static let knownSupersededTechnicalParagraphs = [
         "Workjet wählt keine Worker und baut keine Workflows; Fable bleibt der Orchestrator. Starte, beobachte und stoppe Worker ausschließlich mit `workjet workers list --json`, `workjet workers describe <exakter-name-oder-uuid> --json`, `workjet run <exakter-name-oder-uuid> --brief-file <pfad> --json`, `workjet events <run-id> --after <exklusive-sequenz> --json` und `workjet stop <run-id> --json`. Die sichtbaren Executable-, Argument-, Protokoll- und Harness-Fakten führt ausschließlich die Workjet-App aus; Fable startet weder SSH noch Harness-Prozesse direkt.",
         "\(currentFallbackSentence) CLIProxy-OAuth-Zugänge bilden einen proxyverwalteten gemeinsamen Gateway-Pool ohne Account-Pinning pro Anfrage. Ein Wechsel auf einen anderen Worker geschieht niemals automatisch.",
@@ -118,11 +135,12 @@ public enum LegacyPromptMigration {
             ("<!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->", "<!-- WORKJET OPUS SYSTEM PROMPT END -->"),
             ("<!-- WORKJET HEALTH PROBE PROMPT BEGIN -->", "<!-- WORKJET HEALTH PROBE PROMPT END -->"),
             ("<!-- WORKJET COMPLETION RECEIPT PROMPT BEGIN -->", "<!-- WORKJET COMPLETION RECEIPT PROMPT END -->"),
+        ] + WorkerSkillCatalog.all.map { skill in
             (
-                WorkerSkillCatalog.promptSourceBeginMarker(for: WorkerSkillCatalog.greppyID),
-                WorkerSkillCatalog.promptSourceEndMarker(for: WorkerSkillCatalog.greppyID)
+                WorkerSkillCatalog.promptSourceBeginMarker(for: skill.id),
+                WorkerSkillCatalog.promptSourceEndMarker(for: skill.id)
             )
-        ]
+        }
     }
     private static let legacyProgressBoardRules = """
     ## Progress board (mandatory for every larger orchestrated task)

@@ -4,6 +4,21 @@ import XCTest
 @testable import WorkjetCore
 
 final class WorkjetCLITests: XCTestCase {
+    private final class Credentials: CredentialStoring, @unchecked Sendable {
+        var values: [String: Data]
+        private(set) var reads: [String] = []
+
+        init(_ values: [String: Data]) { self.values = values }
+
+        func read(reference: String) throws -> Data? {
+            reads.append(reference)
+            return values[reference]
+        }
+
+        func write(_ secret: Data, reference: String) throws { values[reference] = secret }
+        func delete(reference: String) throws { values[reference] = nil }
+    }
+
     private var builtWorkjetCLI: URL {
         Bundle(for: WorkjetCLITests.self).bundleURL
             .deletingLastPathComponent()
@@ -21,6 +36,8 @@ final class WorkjetCLITests: XCTestCase {
         private(set) var listCalls: [(UUID, String)] = []
         private(set) var localStarts: [(UUID, Data)] = []
         var localRunID: String? = "local-run"
+        var localProbeOutput = "WORKJET_HEALTH_OK"
+        var localProbeState: RemoteHostRunState = .completed
         var listedRuns: [UUID: [RemoteHostRunDescriptor]] = [:]
         var importReceipt: WorkspaceResultImportReceipt?
         var markReceipt: WorkspaceLifecycleReceipt?
@@ -31,6 +48,14 @@ final class WorkjetCLITests: XCTestCase {
         func startLocal(worker: Worker, brief: Data) async throws -> RemoteHostResponse {
             lock.withLock { localStarts.append((worker.id, brief)) }
             return RemoteHostResponse(ok: true, runID: localRunID, state: .running, cursor: 1)
+        }
+
+        func localEvents(runID: String, after: UInt64) async throws -> RemoteHostResponse? {
+            guard runID == localRunID else { return nil }
+            return RemoteHostResponse(ok: true, runID: runID, state: localProbeState, cursor: after + 2, events: [
+                RemoteHostEvent(sequence: after + 1, timestamp: "2026-08-08T10:00:00Z", kind: "stdout", text: localProbeOutput),
+                RemoteHostEvent(sequence: after + 2, timestamp: "2026-08-08T10:00:01Z", kind: "lifecycle", text: localProbeState.rawValue, exitCode: localProbeState == .completed ? 0 : 1)
+            ])
         }
 
         func start(worker: Worker, computer: Computer, brief: Data, ownerID: String) async throws -> RemoteHostResponse {
@@ -89,8 +114,14 @@ final class WorkjetCLITests: XCTestCase {
     private let workerID = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
 
     func testParserCoversCommandsAndRejectsInvalidBriefCombinations() throws {
+        XCTAssertEqual(
+            try WorkjetCLIParser.parse(["computers", "setup", "gpu3-a4500", "--json"]),
+            .computerSetup(identifier: "gpu3-a4500", json: true)
+        )
         XCTAssertEqual(try WorkjetCLIParser.parse(["workers", "list", "--json"]), .workersList(json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["workers", "describe", "Reviewer", "--json"]), .workerDescribe(identifier: "Reviewer", json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["health", "--probe-workers", "--timeout", "30", "--json"]), .healthProbeWorkers(identifiers: [], timeoutSeconds: 30, json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["health", "--probe-workers", "--worker", "Reviewer", "--json"]), .healthProbeWorkers(identifiers: ["Reviewer"], timeoutSeconds: nil, json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["run", "Reviewer", "--brief", "review", "--json"]), .run(identifier: "Reviewer", brief: .inline("review"), json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["events", "run-1", "--after", "8", "--json"]), .events(runID: "run-1", after: 8, json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["stop", "run-1", "--json"]), .stop(runID: "run-1", json: true))
@@ -103,6 +134,55 @@ final class WorkjetCLITests: XCTestCase {
             XCTAssertEqual((error as? WorkjetCLIError)?.exitCode, .usage)
         }
         XCTAssertThrowsError(try WorkjetCLIParser.parse(["events", "run-1", "--after", "-1", "--json"]))
+        XCTAssertThrowsError(try WorkjetCLIParser.parse(["health", "--json"]))
+        XCTAssertThrowsError(try WorkjetCLIParser.parse(["health", "--probe-workers", "--timeout", "2", "--json"]))
+    }
+
+    func testHealthProbeStartsWorkerAndRequiresExactResponseToken() async throws {
+        var worker = Worker(id: workerID, name: "Probe", harness: .claudeCode, model: "gpt", computerID: localID, invocation: WorkerInvocation(executable: "/usr/bin/true", arguments: ["<WORKJET_BRIEF>"]))
+        let provider = fixtureProvider(.openAI)
+        worker.providerID = provider.id
+        let backing = Backing(configuration: configuration(remoteWorkers: [], extraWorkers: [worker], providers: [provider]))
+        let engine = WorkjetCLIEngine(backing: backing)
+
+        let ready = try await engine.execute(.healthProbeWorkers(identifiers: [], timeoutSeconds: 5, json: true))
+        XCTAssertTrue(ready.ok)
+        XCTAssertNotNil(ready.checkedAt)
+        XCTAssertEqual(ready.health?.first?.status, "ready")
+        XCTAssertEqual(ready.health?.first?.responseTokenObserved, true)
+        XCTAssertTrue(String(decoding: try XCTUnwrap(backing.localStarts.first?.1), as: UTF8.self).contains("WORKJET HEALTH PROBE V1"))
+
+        backing.localProbeOutput = "hello"
+        let failed = try await engine.execute(.healthProbeWorkers(identifiers: [], timeoutSeconds: 5, json: true))
+        XCTAssertFalse(failed.ok)
+        XCTAssertEqual(failed.health?.first?.status, "failed")
+        XCTAssertEqual(failed.health?.first?.error, "health_response_invalid")
+
+        backing.localProbeOutput = "Failed to authenticate. HTTP 403 usage limit reached for this billing cycle."
+        backing.localProbeState = .failed
+        let providerFailed = try await engine.execute(.healthProbeWorkers(identifiers: [], timeoutSeconds: 5, json: true))
+        XCTAssertEqual(providerFailed.health?.first?.error, "provider_unavailable")
+        XCTAssertTrue(providerFailed.health?.first?.message?.contains("HTTP 403") == true)
+    }
+
+    func testCurrentExecutableResolutionDoesNotDependOnRelativeArgvZero() throws {
+        let executable = try LiveWorkjetCLIBacking.currentExecutableURL()
+        XCTAssertTrue(executable.path.hasPrefix("/"))
+        XCTAssertTrue(FileManager.default.isExecutableFile(atPath: executable.path))
+    }
+
+    func testLocalRunReadsGatewayCredentialFromGatewayStoreAndDirectCredentialFromConfiguredStore() throws {
+        let keychain = Credentials(["provider-direct": Data("direct-secret".utf8)])
+        let gateway = Credentials([CLIProxyGatewayCredentialStore.reference: Data("gateway-secret".utf8)])
+        let service = LocalRunService(paths: .live, credentials: keychain, gatewayCredentials: gateway)
+
+        XCTAssertEqual(
+            try service.credentialData(reference: CLIProxyGatewayCredentialStore.reference),
+            Data("gateway-secret".utf8)
+        )
+        XCTAssertEqual(try service.credentialData(reference: "provider-direct"), Data("direct-secret".utf8))
+        XCTAssertEqual(gateway.reads, [CLIProxyGatewayCredentialStore.reference])
+        XCTAssertEqual(keychain.reads, ["provider-direct"])
     }
 
     func testListDescribeAndExactNameAmbiguityHaveStableContract() async throws {
@@ -222,7 +302,7 @@ final class WorkjetCLITests: XCTestCase {
         }
 
         var short = Worker(id: UUID(), name: "Short Local", harness: .claudeCode, model: "fixture", computerID: localID)
-        short.invocation = WorkerInvocation(executable: "/usr/bin/true", arguments: ["-p", "<WORKJET_BRIEF>"])
+        short.invocation = WorkerInvocation(executable: "/usr/bin/true", arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
         let shortResponse = try service.start(worker: short, brief: Data("ignored".utf8), supervisorExecutable: cli)
         let shortRunID = try XCTUnwrap(shortResponse.runID)
         let shortRC = paths.runsDirectory.appendingPathComponent(shortRunID).appendingPathComponent("rc")
@@ -231,7 +311,7 @@ final class WorkjetCLITests: XCTestCase {
         XCTAssertEqual(try service.events(runID: shortRunID, after: 0)?.state, .completed)
 
         var worker = Worker(id: workerID, name: "Real Local", harness: .claudeCode, model: "gpt-5.6-sol", reasoningEffort: .high, computerID: localID)
-        worker.invocation = WorkerInvocation(executable: "/usr/bin/yes", arguments: ["-p", "<WORKJET_BRIEF>"], options: ["fastMode": "true"])
+        worker.invocation = WorkerInvocation(executable: "/usr/bin/yes", arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"], options: ["fastMode": "true"])
         let response = try service.start(worker: worker, brief: Data("bounded fixture".utf8), supervisorExecutable: cli)
         let runID = try XCTUnwrap(response.runID)
         XCTAssertEqual(response.state, .running)
@@ -269,24 +349,28 @@ final class WorkjetCLITests: XCTestCase {
         let argumentsFile = root.appendingPathComponent("arguments.txt")
         let environmentFile = root.appendingPathComponent("environment.txt")
         let script = root.appendingPathComponent("fixture-harness")
+        let scriptLink = root.appendingPathComponent("fixture-harness-link")
         let body = """
         #!/bin/sh
         printf '%s\\n' "$@" > '\(argumentsFile.path)'
         env > '\(environmentFile.path)'
+        printf '%s\\n' 'fixture-output'
         """
         try Data(body.utf8).write(to: script)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        try FileManager.default.createSymbolicLink(at: scriptLink, withDestinationURL: script)
 
         let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
         let cli = builtWorkjetCLI
         var worker = Worker(name: "Fixture", harness: .claudeCode, model: "gpt-5.6-sol", reasoningEffort: .high, computerID: localID)
-        worker.invocation = WorkerInvocation(executable: script.path, arguments: ["-p", "<WORKJET_BRIEF>"], options: ["fastMode": "true"])
+        worker.invocation = WorkerInvocation(executable: scriptLink.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"], options: ["fastMode": "true"])
         let route = ResolvedProviderRuntimeRoute(displayName: "Fixture Account", candidates: [
             ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .openAI, displayName: "Fixture Account", endpoint: "https://api.openai.com/v1", authentication: .none, credentialReference: nil)
         ])
         setenv("WORKJET_SECRET_SENTINEL", "must-not-leak", 1)
         defer { unsetenv("WORKJET_SECRET_SENTINEL") }
-        let response = try LocalRunService(paths: paths).start(worker: worker, route: route, brief: Data("implement".utf8), supervisorExecutable: cli)
+        let greppySystemPrompt = "GREPPY SYSTEM PROMPT SENTINEL"
+        let response = try LocalRunService(paths: paths).start(worker: worker, route: route, brief: Data("implement".utf8), systemPrompt: greppySystemPrompt, supervisorExecutable: cli)
         let runID = try XCTUnwrap(response.runID)
         let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
         let deadline = Date().addingTimeInterval(5)
@@ -296,12 +380,87 @@ final class WorkjetCLITests: XCTestCase {
         XCTAssertTrue(arguments.contains("--model\ngpt-5.6-sol"))
         XCTAssertTrue(arguments.contains("--effort\nhigh"))
         XCTAssertTrue(arguments.contains("--settings\n{\"fastMode\":true,\"fastModePerSessionOptIn\":true}"))
+        XCTAssertTrue(arguments.contains("--append-system-prompt\n\(greppySystemPrompt)"))
+        XCTAssertTrue(arguments.contains("--allowedTools\nRead,Write,Edit,Grep,Glob,Bash"))
         let environment = try String(contentsOf: environmentFile, encoding: .utf8)
         XCTAssertTrue(environment.contains("WORKJET_MODEL=gpt-5.6-sol"))
         XCTAssertTrue(environment.contains("WORKJET_REASONING=high"))
         XCTAssertTrue(environment.contains("WORKJET_SPEED=fast"))
         XCTAssertTrue(environment.contains("WORKJET_PROVIDER_ROUTE=Fixture Account"))
         XCTAssertFalse(environment.contains("WORKJET_SECRET_SENTINEL"))
+        let events = try XCTUnwrap(LocalRunService(paths: paths).events(runID: runID, after: 0))
+        XCTAssertTrue(events.events.contains { $0.kind == "stdout" && $0.text?.contains("fixture-output") == true })
+    }
+
+    func testDirectCredentialIsPrefetchedBeforeDetachedSupervisorStarts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-prefetched-credential-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let observed = root.appendingPathComponent("observed.txt")
+        let harness = root.appendingPathComponent("fixture-harness")
+        let script = """
+        #!/bin/sh
+        printf '%s' "$ANTHROPIC_API_KEY" > '\(observed.path)'
+        """
+        try Data(script.utf8).write(to: harness)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+
+        let credentials = Credentials(["provider-direct": Data("prefetched-value".utf8)])
+        let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
+        var worker = Worker(name: "Direct", harness: .claudeCode, model: "fixture", computerID: localID)
+        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
+        let route = ResolvedProviderRuntimeRoute(displayName: "Direct", candidates: [
+            ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .miniMax, displayName: "Direct", endpoint: "https://example.test/v1", authentication: .apiKeyHeader, credentialReference: "provider-direct")
+        ])
+        let response = try LocalRunService(paths: paths, credentials: credentials).start(worker: worker, route: route, brief: Data("probe".utf8), supervisorExecutable: builtWorkjetCLI)
+        let runID = try XCTUnwrap(response.runID)
+        let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
+        let deadline = Date().addingTimeInterval(30)
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rc.path))
+        XCTAssertEqual(try String(contentsOf: observed, encoding: .utf8), "prefetched-value")
+        XCTAssertEqual(credentials.reads, ["provider-direct"], "Nur der autorisierte Elternprozess darf den Zugang lesen.")
+    }
+
+    func testWebResearchKeepsClaudeToolsAndInjectsGatewayForCodexHelper() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-web-context-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let observed = root.appendingPathComponent("observed.txt")
+        let harness = root.appendingPathComponent("fixture-harness")
+        let script = """
+        #!/bin/sh
+        printf '%s\n%s\n%s\n%s\n%s\n' "$WORKJET_WEB_RESEARCH_BACKEND" "$WORKJET_WEB_RESEARCH_BASE_URL" "$WORKJET_WEB_RESEARCH_API_KEY" "$GREPPY_STORE_DIR" "$*" > '\(observed.path)'
+        """
+        try Data(script.utf8).write(to: harness)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+
+        let gateway = Credentials([CLIProxyGatewayCredentialStore.reference: Data("gateway-secret".utf8)])
+        let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
+        var worker = Worker(name: "Research-enabled Grok", harness: .claudeCode, model: "grok-4.5", computerID: localID)
+        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
+        let route = ResolvedProviderRuntimeRoute(displayName: "xAI Gateway", candidates: [
+            ProviderRuntimeCandidate(kind: .gatewayPool, providerID: nil, modelProvider: .xAI, displayName: "xAI Gateway", endpoint: "http://127.0.0.1:8317", authentication: .bearerToken, credentialReference: CLIProxyGatewayCredentialStore.reference)
+        ])
+        let response = try LocalRunService(paths: paths, gatewayCredentials: gateway).start(
+            worker: worker,
+            route: route,
+            brief: Data("research".utf8),
+            systemPrompt: "WEB RESEARCH SYSTEM PROMPT",
+            skillIDs: [WorkerSkillCatalog.greppyID, WorkerSkillCatalog.webResearchID],
+            supervisorExecutable: builtWorkjetCLI
+        )
+        let runID = try XCTUnwrap(response.runID)
+        let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
+        let deadline = Date().addingTimeInterval(30)
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+
+        let value = try String(contentsOf: observed, encoding: .utf8)
+        XCTAssertTrue(value.hasPrefix("codex\nhttp://127.0.0.1:8317/v1\ngateway-secret\n\(paths.stateDirectory.appendingPathComponent("greppy").path)\n"))
+        XCTAssertTrue(value.contains("--allowedTools Read,Write,Edit,Grep,Glob,Bash"))
+        XCTAssertTrue(value.contains("--append-system-prompt WEB RESEARCH SYSTEM PROMPT"))
+        XCTAssertEqual(gateway.reads, [CLIProxyGatewayCredentialStore.reference])
     }
 
     func testLocalDirectPoolRetriesOnlyAnAuthenticatedCapacityFailure() throws {
@@ -315,7 +474,7 @@ final class WorkjetCLITests: XCTestCase {
         printf '%s\n' "$WORKJET_PROVIDER_ROUTE" >> '\(trace.path)'
         sleep 1
         if [ "$WORKJET_PROVIDER_ROUTE" = "Primary" ]; then
-          if [ "$2" = "rate" ]; then
+          if printf '%s\n' "$*" | grep -q 'rate'; then
             printf '%s\n' 'HTTP 429 rate limit exceeded' >&2
           else
             printf '%s\n' 'HTTP 503 task-owned integration failed' >&2
@@ -330,7 +489,7 @@ final class WorkjetCLITests: XCTestCase {
         let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
         let supervisor = builtWorkjetCLI
         var worker = Worker(name: "Pool", harness: .claudeCode, model: "fixture", computerID: localID)
-        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["-p", "<WORKJET_BRIEF>"])
+        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
         let route = ResolvedProviderRuntimeRoute(displayName: "Direct Pool", candidates: [
             ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .openAI, displayName: "Primary", endpoint: "https://primary.example.test/v1", authentication: .none, credentialReference: nil),
             ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .openAI, displayName: "Reserve", endpoint: "https://reserve.example.test/v1", authentication: .none, credentialReference: nil)
@@ -379,8 +538,9 @@ final class WorkjetCLITests: XCTestCase {
             let response = try LocalRunService(paths: paths).start(worker: worker, brief: Data("implement".utf8), supervisorExecutable: cli)
             let runID = try XCTUnwrap(response.runID)
             let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
-            let deadline = Date().addingTimeInterval(5)
+            let deadline = Date().addingTimeInterval(30)
             while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: rc.path), "\(harness)")
             let actual = try String(contentsOf: output, encoding: .utf8)
                 .split(whereSeparator: \.isNewline).map(String.init)
             XCTAssertEqual(actual, expected, "\(harness)")

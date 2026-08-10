@@ -41,17 +41,17 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
 /// The same values are embedded in the deployed host runtime; no client request
 /// can replace the target, URL, version, or digest.
 public enum RemoteManagedSkillArtifact {
-    public static let greppyVersion = "1.3.0"
-    public static let greppyCargoPackage = "greppy-cli"
-    public static let greppyLinuxX8664URL = "https://github.com/KBLCode/greppy/releases/download/v1.3.0/greppy-linux-x86_64.tar.gz"
-    public static let greppyLinuxX8664SHA256 = "a386c892d2b67476ea9d8753e81f7e352f8a8f755319dc19ddf0db7f1eebdd3d"
+    public static let greppyVersion = "0.3.1"
+    public static let greppyCommit = "547705051d2c69481955e218f62f404e75e974ed"
+    public static let greppySourceURL = "https://github.com/metric-space-ai/greppy/archive/547705051d2c69481955e218f62f404e75e974ed.tar.gz"
+    public static let greppySourceSHA256 = "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d"
 
     public static func supportsGreppy(os: String, architecture: String) -> Bool {
         os == "linux" && ["x86_64", "x64", "amd64"].contains(architecture.lowercased())
     }
 
-    public static func validatesGreppyArchive(_ data: Data) -> Bool {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == greppyLinuxX8664SHA256
+    public static func validatesGreppySourceArchive(_ data: Data) -> Bool {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() == greppySourceSHA256
     }
 }
 
@@ -659,9 +659,10 @@ const managedNPMRoot = path.join(harnessesRoot, "npm");
 const managedNPMBin = path.join(managedNPMRoot, "bin");
 const managedSkillsRoot = path.join(os.homedir(), ".local", "lib", "workjet", "skills");
 const managedSkillsBin = path.join(managedSkillsRoot, "bin");
-const GREPPY_VERSION = "1.3.0";
-const GREPPY_URL = "https://github.com/KBLCode/greppy/releases/download/v1.3.0/greppy-linux-x86_64.tar.gz";
-const GREPPY_SHA256 = "a386c892d2b67476ea9d8753e81f7e352f8a8f755319dc19ddf0db7f1eebdd3d";
+const GREPPY_VERSION = "0.3.1";
+const GREPPY_COMMIT = "547705051d2c69481955e218f62f404e75e974ed";
+const GREPPY_SOURCE_URL = "https://github.com/metric-space-ai/greppy/archive/547705051d2c69481955e218f62f404e75e974ed.tar.gz";
+const GREPPY_SOURCE_SHA256 = "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d";
 process.umask(0o077);
 for (const directory of [stateRoot, runsRoot, reposRoot, worktreesRoot, importsRoot]) {
   fs.mkdirSync(directory, {recursive: true, mode: 0o700});
@@ -939,15 +940,15 @@ const harnessDefinitions = {
     versionArguments: ["--version"], inspectOnly: true
   }
 };
-const boundedText = value => String(value ?? "").slice(0, 4096);
-const runLifecycleCommand = (executable, arguments_, timeout = 60000, extraEnvironment = {}) => {
+const boundedText = (value, limit = 4096) => String(value ?? "").slice(0, limit);
+const runLifecycleCommand = (executable, arguments_, timeout = 60000, extraEnvironment = {}, outputLimit = 4096, maxBuffer = 65536) => {
   try {
     const basePath = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
     const runtimePath = `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${basePath}`;
-    const output = execFileSync(executable, arguments_, {encoding: "utf8", timeout, maxBuffer: 65536, env: {HOME: os.homedir(), PATH: runtimePath, ...extraEnvironment}});
-    return {ok: true, output: boundedText(output)};
+    const output = execFileSync(executable, arguments_, {encoding: "utf8", timeout, maxBuffer, env: {HOME: os.homedir(), PATH: runtimePath, ...extraEnvironment}});
+    return {ok: true, output: boundedText(output, outputLimit)};
   } catch (error) {
-    return {ok: false, output: boundedText(`${error.stdout ?? ""}\n${error.stderr ?? ""}`.trim() || error.message)};
+    return {ok: false, output: boundedText(`${error.stdout ?? ""}\n${error.stderr ?? ""}`.trim() || error.message, outputLimit)};
   }
 };
 const parsedVersion = text => String(text ?? "").match(/(?:^|[^0-9])v?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)/i)?.[1];
@@ -1044,11 +1045,40 @@ const maintainHarness = (harnessID, action) => {
 const managedSkillDefinitions = {
   greppy: {
     version: GREPPY_VERSION,
-    cargoPackage: "greppy-cli",
-    url: GREPPY_URL,
-    sha256: GREPPY_SHA256,
+    commit: GREPPY_COMMIT,
+    sourceURL: GREPPY_SOURCE_URL,
+    sourceSHA256: GREPPY_SOURCE_SHA256,
     executable: path.join(managedSkillsBin, "greppy"),
     versionArguments: ["--version"]
+  }
+};
+const verifyManagedGreppyRuntime = (definition, executable) => {
+  const executableInfo = fs.lstatSync(executable);
+  const stampFile = path.join(managedSkillsRoot, "greppy-runtime-probe.json");
+  try {
+    const stampInfo = fs.lstatSync(stampFile);
+    if (!stampInfo.isFile() || stampInfo.isSymbolicLink() || stampInfo.uid !== process.geteuid() || stampInfo.size > 4096) throw new Error("unsafe stamp");
+    const stamp = readJSON(stampFile);
+    if (stamp.schema === 1 && stamp.version === definition.version && stamp.binarySize === executableInfo.size && stamp.binaryMtimeMs === executableInfo.mtimeMs && stamp.runtimeReady === true) return true;
+  } catch {}
+
+  const probeRoot = path.join(managedSkillsRoot, "greppy-runtime-probe");
+  try {
+    if (fs.existsSync(probeRoot)) {
+      if (!safeOwnedDirectory(probeRoot, managedSkillsRoot)) return false;
+      fs.rmSync(probeRoot, {recursive: true, force: true});
+    }
+    const repository = path.join(probeRoot, "repository");
+    const store = path.join(probeRoot, "store");
+    fs.mkdirSync(repository, {recursive: true, mode: 0o700});
+    fs.mkdirSync(store, {recursive: true, mode: 0o700});
+    fs.writeFileSync(path.join(repository, "runtime_probe.rs"), "pub fn workjet_runtime_probe() -> bool { true }\n", {mode: 0o600});
+    const indexed = runLifecycleCommand(executable, ["index", repository], 120000, {GREPPY_STORE_DIR: store}, 4096, 65536);
+    if (!indexed.ok) return false;
+    atomicJSON(stampFile, {schema: 1, version: definition.version, binarySize: executableInfo.size, binaryMtimeMs: executableInfo.mtimeMs, runtimeReady: true});
+    return true;
+  } catch {
+    return false;
   }
 };
 const inspectManagedSkill = (skillID, action = "inspect") => {
@@ -1066,10 +1096,21 @@ const inspectManagedSkill = (skillID, action = "inspect") => {
   } catch {
     return {skillID, action, state: "broken", detail: "Die verwaltete Greppy-Datei ist nicht sicher oder nicht ausführbar."};
   }
-  const result = runLifecycleCommand(executable, definition.versionArguments, 5000);
+  const result = runLifecycleCommand(executable, definition.versionArguments, 10000);
   const version = parsedVersion(result.output);
   if (!result.ok || version !== definition.version) {
     return {skillID, action, state: "broken", version, detail: `Erwartet wird Greppy ${definition.version}; die verwaltete Installation konnte nicht bestätigt werden.`};
+  }
+  // Greppy's real 0.3.1 help is larger than the generic 4 KiB lifecycle
+  // preview. Inspect the complete bounded command surface; otherwise required
+  // subcommands near the end are truncated and a healthy remote install is
+  // reported as broken.
+  const surface = runLifecycleCommand(executable, ["--help"], 10000, {}, 65536, 131072);
+  if (!surface.ok || !["who-calls", "search-symbol", "bash-smart"].every(command => surface.output.includes(command))) {
+    return {skillID, action, state: "broken", version, detail: `Greppy ${definition.version} meldet nicht die erwartete 0.3.1-Befehlsoberfläche.`};
+  }
+  if (!verifyManagedGreppyRuntime(definition, executable)) {
+    return {skillID, action, state: "broken", version, detail: `Greppy ${definition.version} kann seinen eingebetteten Modell- und Index-Runtimepfad nicht ausführen.`};
   }
   return {skillID, action, state: "installed", version, detail: `Greppy ${version} ist verwaltet installiert und bereit.`};
 };
@@ -1079,61 +1120,93 @@ const installManagedSkill = (skillID, action) => {
   if (process.platform !== "linux" || process.arch !== "x64") return inspectManagedSkill(skillID, action);
   const before = inspectManagedSkill(skillID, action);
   if (before.state === "installed") return before;
-  if (before.state === "broken") return before;
+  // A safe, regular managed binary with the wrong pinned version must be
+  // replaceable; otherwise upgrades are permanently blocked by inspection.
   const curl = executableAt(["/usr/bin/curl"]);
   const tar = executableAt(["/usr/bin/tar"]);
   if (!curl || !tar) return {skillID, action, state: "unavailable", detail: "Für die sichere Greppy-Installation fehlen /usr/bin/curl oder /usr/bin/tar."};
   let temporary;
+  var phase = "Vorbereitung";
   try {
     ensureManagedSkillDirectories();
     temporary = fs.mkdtempSync(path.join(managedSkillsRoot, ".greppy-install-"));
     if (!safeOwnedDirectory(temporary, managedSkillsRoot)) throw new Error("unsafe temporary directory");
-    const archive = path.join(temporary, "greppy.tar.gz");
-    const extracted = path.join(temporary, "extracted");
-    fs.mkdirSync(extracted, {mode: 0o700});
-    if (!safeOwnedDirectory(extracted, temporary)) throw new Error("unsafe extraction directory");
-    const download = runLifecycleCommand(curl, ["--disable", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--max-time", "120", "--max-filesize", "16777216", "--output", archive, definition.url], 130000);
+    const archive = path.join(temporary, "greppy-source.tar.gz");
+    const sourceRoot = path.join(temporary, "source");
+    fs.mkdirSync(sourceRoot, {mode: 0o700});
+    if (!safeOwnedDirectory(sourceRoot, temporary)) throw new Error("unsafe source directory");
+    phase = "Download";
+    const download = runLifecycleCommand(curl, ["--disable", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--max-time", "120", "--max-filesize", "33554432", "--output", archive, definition.sourceURL], 130000);
     if (!download.ok) throw new Error("download failed");
     const archiveInfo = fs.lstatSync(archive);
-    if (!archiveInfo.isFile() || archiveInfo.isSymbolicLink() || archiveInfo.uid !== process.geteuid() || archiveInfo.size < 1 || archiveInfo.size > 16777216) throw new Error("download invalid");
+    if (!archiveInfo.isFile() || archiveInfo.isSymbolicLink() || archiveInfo.uid !== process.geteuid() || archiveInfo.size < 1 || archiveInfo.size > 33554432) throw new Error("download invalid");
     const digest = crypto.createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
-    if (digest !== definition.sha256) throw new Error("digest mismatch");
-    const listing = runLifecycleCommand(tar, ["-tzf", archive], 10000);
-    if (!listing.ok || listing.output.trim() !== "greppy") throw new Error("archive layout invalid");
-    const extraction = runLifecycleCommand(tar, ["-xzf", archive, "--no-same-owner", "--no-same-permissions", "-C", extracted], 30000);
-    if (!extraction.ok || treeContainsSymlink(extracted)) throw new Error("extraction failed");
-    const entries = fs.readdirSync(extracted);
-    if (entries.length !== 1 || entries[0] !== "greppy") throw new Error("archive contents invalid");
-    let source = path.join(extracted, "greppy");
-    let sourceInfo = fs.lstatSync(source);
-    if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.uid !== process.geteuid()) throw new Error("extracted executable invalid");
-    fs.chmodSync(source, 0o700);
-    let verification = runLifecycleCommand(source, definition.versionArguments, 5000);
-    if (!verification.ok || parsedVersion(verification.output) !== definition.version) {
-      const cargo = executableAt([path.join(os.homedir(), ".cargo/bin/cargo"), "/usr/bin/cargo"]);
-      if (!cargo) throw new Error("version verification failed and cargo unavailable");
-      const cargoRoot = path.join(temporary, "cargo-root");
-      const cargoHome = path.join(temporary, "cargo-home");
-      fs.mkdirSync(cargoRoot, {mode: 0o700});
-      fs.mkdirSync(cargoHome, {mode: 0o700});
-      if (!safeOwnedDirectory(cargoRoot, temporary) || !safeOwnedDirectory(cargoHome, temporary)) throw new Error("unsafe cargo directory");
-      const compiled = runLifecycleCommand(
-        cargo,
-        ["install", definition.cargoPackage, "--version", definition.version, "--locked", "--root", cargoRoot],
-        900000,
-        {
-          CARGO_HOME: cargoHome,
-          PATH: `${path.dirname(cargo)}${path.delimiter}${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`
-        }
-      );
-      if (!compiled.ok) throw new Error("cargo installation failed");
-      source = path.join(cargoRoot, "bin", "greppy");
-      sourceInfo = fs.lstatSync(source);
-      if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.uid !== process.geteuid()) throw new Error("compiled executable invalid");
-      fs.chmodSync(source, 0o700);
-      verification = runLifecycleCommand(source, definition.versionArguments, 5000);
-      if (!verification.ok || parsedVersion(verification.output) !== definition.version) throw new Error("compiled version verification failed");
+    if (digest !== definition.sourceSHA256) throw new Error("digest mismatch");
+    phase = "Archivprüfung";
+    const listing = runLifecycleCommand(tar, ["-tzf", archive], 10000, {}, 1048576, 1048576);
+    const archivePrefix = `greppy-${definition.commit}/`;
+    const archiveEntries = listing.output.split(/\r?\n/).filter(Boolean);
+    if (!listing.ok || archiveEntries.length === 0 || archiveEntries.some(entry => !entry.startsWith(archivePrefix) || entry.includes("\\") || entry.split("/").includes(".."))) throw new Error("archive layout invalid");
+    const extraction = runLifecycleCommand(tar, ["-xzf", archive, "--strip-components=1", "--no-same-owner", "--no-same-permissions", "-C", sourceRoot], 30000);
+    if (!extraction.ok || treeContainsSymlink(sourceRoot)) throw new Error("extraction failed");
+    for (const required of ["Cargo.toml", "Cargo.lock", "crates/cli"]) if (!fs.existsSync(path.join(sourceRoot, required))) throw new Error("source contents invalid");
+    const cargo = executableAt([path.join(os.homedir(), ".cargo/bin/cargo"), "/usr/bin/cargo"]);
+    if (!cargo) throw new Error("cargo unavailable");
+    const assetManifestPath = path.join(sourceRoot, "crates/cli/assets/MODEL_ASSETS.json");
+    const sha256sum = executableAt(["/usr/bin/sha256sum"]);
+    if (!sha256sum || !fs.existsSync(assetManifestPath)) throw new Error("model asset tooling unavailable");
+    phase = "Modell-Assets";
+    const assetManifest = JSON.parse(fs.readFileSync(assetManifestPath, "utf8"));
+    const assetHost = typeof assetManifest.hf_host === "string" ? assetManifest.hf_host : "https://huggingface.co";
+    if (assetHost !== "https://huggingface.co" || !Array.isArray(assetManifest.assets) || assetManifest.assets.length < 1 || assetManifest.assets.length > 8) throw new Error("model asset manifest invalid");
+    for (const asset of assetManifest.assets) {
+      const revision = asset.revision || assetManifest.revision;
+      if (typeof asset.hf_repo !== "string" || !/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(asset.hf_repo)
+          || typeof asset.hf_file !== "string" || !/^[A-Za-z0-9._-]+$/.test(asset.hf_file)
+          || typeof revision !== "string" || !/^[0-9a-f]{40}$/.test(revision)
+          || typeof asset.dest !== "string" || asset.dest.startsWith("/") || asset.dest.split("/").includes("..")
+          || typeof asset.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(asset.sha256)) throw new Error("model asset manifest invalid");
+      const destination = path.resolve(sourceRoot, asset.dest);
+      if (!destination.startsWith(sourceRoot + path.sep)) throw new Error("model asset path invalid");
+      fs.mkdirSync(path.dirname(destination), {recursive: true, mode: 0o700});
+      const assetURL = `${assetHost}/${asset.hf_repo}/resolve/${revision}/${asset.hf_file}`;
+      const fetched = runLifecycleCommand(curl, ["--disable", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "--max-time", "600", "--max-filesize", "2147483648", "--output", destination, assetURL], 610000);
+      if (!fetched.ok) throw new Error("model asset download failed");
+      const assetInfo = fs.lstatSync(destination);
+      if (!assetInfo.isFile() || assetInfo.isSymbolicLink() || assetInfo.uid !== process.geteuid() || assetInfo.size < 1 || assetInfo.size > 2147483648) throw new Error("model asset download invalid");
+      const assetDigest = runLifecycleCommand(sha256sum, [destination], 120000, {}, 4096, 4096);
+      if (!assetDigest.ok || assetDigest.output.trim().split(/\s+/)[0] !== asset.sha256) throw new Error("model asset digest mismatch");
     }
+    const cargoTarget = path.join(temporary, "cargo-target");
+    const cargoHome = path.join(temporary, "cargo-home");
+    fs.mkdirSync(cargoTarget, {mode: 0o700});
+    fs.mkdirSync(cargoHome, {mode: 0o700});
+    if (!safeOwnedDirectory(cargoTarget, temporary) || !safeOwnedDirectory(cargoHome, temporary)) throw new Error("unsafe cargo directory");
+    phase = "Rust-Build";
+    const compiled = runLifecycleCommand(
+      cargo,
+      // Cargo's normal progress stream can exceed execFileSync's bounded
+      // capture buffer on a clean host and abort an otherwise healthy build.
+      // Quiet mode keeps failures visible while making the managed install
+      // independent of dependency count and terminal verbosity.
+      ["build", "--quiet", "--manifest-path", path.join(sourceRoot, "Cargo.toml"), "--release", "--locked", "--target-dir", cargoTarget, "--bin", "greppy"],
+      // A clean Linux CUDA build embeds both model payloads and compiles the
+      // native kernels. On a busy worker this legitimately takes longer than
+      // 15 minutes; timing it out discards a healthy build just before link.
+      3600000,
+      {
+        CARGO_HOME: cargoHome,
+        PATH: `${path.dirname(cargo)}${path.delimiter}${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`
+      }
+    );
+    if (!compiled.ok) throw new Error("cargo build failed");
+    const source = path.join(cargoTarget, "release", "greppy");
+    const sourceInfo = fs.lstatSync(source);
+    if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.uid !== process.geteuid()) throw new Error("compiled executable invalid");
+    fs.chmodSync(source, 0o700);
+    const verification = runLifecycleCommand(source, definition.versionArguments, 5000);
+    if (!verification.ok || parsedVersion(verification.output) !== definition.version) throw new Error("compiled version verification failed");
+    phase = "Aktivierung";
     const staged = path.join(managedSkillsBin, `.greppy-${process.pid}-${Date.now()}`);
     fs.copyFileSync(source, staged, fs.constants.COPYFILE_EXCL);
     fs.chmodSync(staged, 0o700);
@@ -1147,7 +1220,9 @@ const installManagedSkill = (skillID, action) => {
     if (temporary) try { fs.rmSync(temporary, {recursive: true, force: true}); } catch {}
     const reason = error.message === "digest mismatch"
       ? "Der Greppy-Download hat nicht die erwartete SHA-256-Prüfsumme. Es wurde nichts aktiviert."
-      : "Greppy konnte nicht sicher heruntergeladen, geprüft und installiert werden.";
+      : error.message === "cargo unavailable"
+        ? "Greppy 0.3.1 muss auf Linux aus dem gepinnten Quellstand gebaut werden; eine Rustup-Cargo-Toolchain wurde nicht gefunden."
+        : `Greppy 0.3.1 konnte in der Phase „${phase}“ nicht sicher installiert werden. Die bisherige Installation blieb unverändert.`;
     return {skillID, action, state: "broken", detail: reason};
   }
   if (temporary) try { fs.rmSync(temporary, {recursive: true, force: true}); } catch {}
@@ -1160,10 +1235,28 @@ const maintainManagedSkill = (skillID, action) => action === "inspect"
 const resolveLaunch = launch => {
   if (!launch || typeof launch.inputBase64 !== "string" || launch.inputBase64.length > 1500000) throw new Error("invalid launch payload");
   const needsWorkspace = ["claude-code", "codex-cli", "opencode"].includes(launch.harnessID);
-  if (needsWorkspace && (!validRepoID(launch.workspace?.repoID) || !validOID(launch.workspace?.snapshotCommitOID))) throw new Error("workspace_required");
+  const healthPrompt = "WORKJET HEALTH PROBE V1. This is a real user health ping: hi. Do not inspect or edit files. Do not use tools. Do not spawn subagents. Reply exactly WORKJET_HEALTH_OK and exit.";
+  const healthProbe = launch.healthProbe === true;
+  const webResearch = launch.webResearch === true;
+  const greppy = launch.greppy === true;
+  if (webResearch && !["claude-code", "codex-cli"].includes(launch.harnessID)) throw new Error("web research is unavailable for this harness");
+  if (webResearch && healthProbe) throw new Error("health probes cannot enable web research");
+  if (webResearch && !executableAt(harnessDefinitions["codex-cli"].candidates)) throw new Error("Web Research benötigt Codex CLI auf diesem Computer");
+  if (greppy && !executableAt([managedSkillDefinitions.greppy.executable])) throw new Error("Greppy 0.3.1 ist auf diesem Computer nicht verwaltet installiert");
+  if (healthProbe && (!needsWorkspace || launch.workspace != null || Buffer.from(launch.inputBase64, "base64").toString("utf8").trim() !== healthPrompt)) throw new Error("invalid health probe");
+  if (needsWorkspace && !healthProbe && (!validRepoID(launch.workspace?.repoID) || !validOID(launch.workspace?.snapshotCommitOID))) throw new Error("workspace_required");
   if (launch.harnessID === "pi-code" && launch.workspace != null) throw new Error("pi-code does not accept a filesystem workspace");
   const input = Buffer.from(launch.inputBase64, "base64");
   if (input.length === 0 || input.length > 1048576) throw new Error("invalid launch input size");
+  let systemPrompt = null;
+  if (launch.systemPromptBase64 != null) {
+    if (launch.harnessID !== "claude-code" || healthProbe || typeof launch.systemPromptBase64 !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(launch.systemPromptBase64)) throw new Error("invalid system prompt target");
+    const decoded = Buffer.from(launch.systemPromptBase64, "base64");
+    const canonical = decoded.toString("base64");
+    if (decoded.length === 0 || decoded.length > 65536 || canonical !== launch.systemPromptBase64 || decoded.includes(0)) throw new Error("invalid system prompt");
+    systemPrompt = decoded.toString("utf8");
+    if (!Buffer.from(systemPrompt, "utf8").equals(decoded)) throw new Error("invalid system prompt encoding");
+  }
   if (launch.sandbox === true && launch.harnessID !== "pi-code") throw new Error("sandbox is unavailable for this harness");
   if (launch.harnessID === "pi-code") {
     const text = input.toString("utf8");
@@ -1173,10 +1266,15 @@ const resolveLaunch = launch => {
   }
   if (launch.harnessID === "claude-code") {
     if (typeof launch.model !== "string" || !/^[A-Za-z0-9._:[\]-]{1,128}$/.test(launch.model)) throw new Error("invalid model");
+    if (!Array.isArray(launch.allowedTools) || launch.allowedTools.length === 0 || launch.allowedTools.length > 32 || launch.allowedTools.some(tool => typeof tool !== "string" || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(tool))) throw new Error("invalid allowed tools");
+    if (systemPrompt != null && !launch.allowedTools.includes("Bash")) throw new Error("system prompt requires Bash tool");
+    if (webResearch && !launch.allowedTools.includes("Bash")) throw new Error("web research requires Bash tool");
     const brief = input.toString("utf8").trim();
     if (!brief) throw new Error("empty claude-code brief");
     const arguments_ = ["--bare", "--model", launch.model];
     if (typeof launch.reasoning === "string" && ["low", "medium", "high", "xhigh", "max", "ultra"].includes(launch.reasoning)) arguments_.push("--effort", launch.reasoning);
+    arguments_.push("--allowedTools", launch.allowedTools.join(","));
+    if (systemPrompt != null) arguments_.push("--append-system-prompt", systemPrompt);
     arguments_.push("-p", brief);
     const executable = executableAt(harnessDefinitions["claude-code"].candidates);
     if (!executable) throw new Error("Claude Code ist auf diesem Computer nicht installiert");
@@ -1188,7 +1286,7 @@ const resolveLaunch = launch => {
     if (!brief) throw new Error("empty codex-cli brief");
     const executable = executableAt(harnessDefinitions["codex-cli"].candidates);
     if (!executable) throw new Error("Codex CLI ist auf diesem Computer nicht installiert");
-    const arguments_ = ["exec", "--json", "--model", launch.model];
+    const arguments_ = [...(webResearch ? ["--search"] : []), "exec", "--json", "--model", launch.model];
     if (typeof launch.reasoning === "string" && ["low", "medium", "high", "xhigh"].includes(launch.reasoning)) {
       arguments_.push("-c", `model_reasoning_effort=${JSON.stringify(launch.reasoning)}`);
     }
@@ -1234,7 +1332,7 @@ const providerMetadata = route => ({displayName: route.displayName, candidates: 
 const providerEnvironment = (harnessID, launch, candidate, secret) => {
   const source = process.env;
   const basePath = source.PATH ?? "/usr/local/bin:/usr/bin:/bin";
-  const environment = {HOME: source.HOME ?? os.homedir(), PATH: `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${basePath}`};
+  const environment = {HOME: source.HOME ?? os.homedir(), PATH: `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}${basePath}`};
   for (const key of ["LANG", "LC_ALL", "LC_CTYPE", "TMPDIR"]) if (typeof source[key] === "string") environment[key] = source[key];
   environment.WORKJET_MODEL = launch.model;
   environment.WORKJET_REASONING = typeof launch.reasoning === "string" ? launch.reasoning : "automatic";
@@ -1253,7 +1351,37 @@ const providerEnvironment = (harnessID, launch, candidate, secret) => {
     environment.XAI_BASE_URL = candidate.endpoint;
     if (candidate.authentication !== "Ohne Zugang") environment.XAI_API_KEY = secret;
   }
+  if (launch.webResearch === true) {
+    if (candidate.kind !== "gatewayPool") throw new Error("Web Research benötigt auf diesem Computer eine Workjet-Gateway-Route");
+    environment.WORKJET_WEB_RESEARCH_BASE_URL = webResearchBaseURL(candidate.endpoint);
+    if (candidate.authentication !== "Ohne Zugang") environment.WORKJET_WEB_RESEARCH_API_KEY = secret;
+    environment.WORKJET_WEB_RESEARCH_BACKEND = "codex";
+  }
+  if (launch.greppy === true) environment.GREPPY_STORE_DIR = path.join(stateRoot, "greppy");
   return environment;
+};
+const webResearchBaseURL = raw => {
+  const value = new URL(raw);
+  if (value.pathname === "" || value.pathname === "/") value.pathname = "/v1";
+  return value.toString();
+};
+const workjetCodexProviderArguments = endpoint => [
+  "-c", `model_provider="workjet"`,
+  "-c", `model_providers.workjet.name="Workjet Web Research"`,
+  "-c", `model_providers.workjet.base_url=${JSON.stringify(webResearchBaseURL(endpoint))}`,
+  "-c", `model_providers.workjet.env_key="WORKJET_WEB_RESEARCH_API_KEY"`,
+  "-c", `model_providers.workjet.wire_api="responses"`,
+  "-c", "model_providers.workjet.requires_openai_auth=false",
+  "-c", "model_providers.workjet.supports_websockets=false",
+  "-c", "model_providers.workjet.supports_standalone_web_search=true",
+];
+const providerArguments = (resolved, launch, candidate) => {
+  const arguments_ = [...resolved.arguments];
+  if (launch.harnessID !== "codex-cli" || launch.webResearch !== true || candidate.kind !== "gatewayPool") return arguments_;
+  const execIndex = arguments_.indexOf("exec");
+  if (execIndex < 0) throw new Error("Codex CLI Web Research benötigt den exec-Aufruf");
+  arguments_.splice(execIndex, 0, ...workjetCodexProviderArguments(candidate.endpoint));
+  return arguments_;
 };
 const retryableProviderFailure = diagnostic => ["401", "403", "429", "unauthorized", "authentication", "invalid api key", "api key", "token expired", "rate limit", "rate-limit", "quota"].some(marker => diagnostic.toLowerCase().includes(marker));
 const redactSecrets = (value, secrets) => secrets.reduce((text, secret) => secret ? text.split(secret).join("[REDACTED]") : text, String(value ?? ""));
@@ -1328,13 +1456,14 @@ const monitor = async runID => {
   let finalIdentity = null;
   for (let index = 0; index < providerExecution.candidates.length; index += 1) {
     const candidate = providerExecution.candidates[index];
-    const childCWD = launch.harnessID === "pi-code" ? release : launch.hostWorkspace?.path;
-    if (launch.harnessID !== "pi-code" && (!safeOwnedDirectory(childCWD, worktreesRoot) || path.basename(childCWD) !== runID)) {
+    const healthProbe = launch.healthProbe === true;
+    const childCWD = launch.harnessID === "pi-code" || healthProbe ? release : launch.hostWorkspace?.path;
+    if (launch.harnessID !== "pi-code" && !healthProbe && (!safeOwnedDirectory(childCWD, worktreesRoot) || path.basename(childCWD) !== runID)) {
       appendEvent(directory, {kind: "error", text: "workspace path is unavailable for this run"});
       setState(directory, "error", {error: "workspace path is unavailable for this run"});
       process.exit(1);
     }
-    const child = spawn(resolved.command, resolved.arguments, {cwd: childCWD, env: providerEnvironment(launch.harnessID, launch, candidate, candidate.secret), stdio: ["pipe", "pipe", "pipe"], detached: true});
+    const child = spawn(resolved.command, providerArguments(resolved, launch, candidate), {cwd: childCWD, env: providerEnvironment(launch.harnessID, launch, candidate, candidate.secret), stdio: ["pipe", "pipe", "pipe"], detached: true});
     const pidIdentity = processIdentity(child.pid);
     if (!pidIdentity) {
       try { signalProcessGroup(child.pid, "SIGKILL"); } catch {}
@@ -1601,7 +1730,7 @@ if (![1, PROTOCOL].includes(request.protocolVersion)) reject("incompatible proto
 cleanupRetainedRuns();
 
 if (request.operation === "probe") {
-  const capabilities = ["start", "provider-execution-v1", "gateway-relay-v1", "relay-loss-v1", "events-after-exclusive-cursor", "bounded-events", "recoverable-cursor-gap", "child-heartbeat", "pid-start-identity", "term-kill-stop", "list", "adopt", "run-metadata-v1", "run-retention-v1", "harness-lifecycle-v2", "managed-skill-lifecycle-v1", "pi-code"];
+  const capabilities = ["start", "provider-execution-v1", "gateway-relay-v1", "relay-loss-v1", "health-probe-v1", "events-after-exclusive-cursor", "bounded-events", "recoverable-cursor-gap", "child-heartbeat", "pid-start-identity", "term-kill-stop", "list", "adopt", "run-metadata-v1", "run-retention-v1", "harness-lifecycle-v2", "managed-skill-lifecycle-v1", "pi-code"];
   if (executableAt(harnessDefinitions["claude-code"].candidates)) capabilities.push("claude-code");
   if (executableAt(harnessDefinitions["codex-cli"].candidates)) capabilities.push("codex-cli");
   if (executableAt(harnessDefinitions.opencode.candidates)) capabilities.push("opencode");
@@ -1630,7 +1759,7 @@ if (request.operation === "probe") {
   if (request.workerName !== undefined && (!workerID || typeof request.workerName !== "string" || request.workerName.trim().length < 1 || Buffer.byteLength(request.workerName) > 256)) reject("invalid worker identity");
   const runID = `run-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2, 10)}`;
   let hostWorkspace;
-  if (request.launch.harnessID !== "pi-code") {
+  if (request.launch.harnessID !== "pi-code" && request.launch.healthProbe !== true) {
     try { hostWorkspace = {path: createRunWorkspace(request.launch.workspace, runID)}; }
     catch (error) { reject(error.message); }
   }

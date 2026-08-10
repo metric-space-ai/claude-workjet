@@ -3,6 +3,49 @@ import XCTest
 
 @MainActor
 final class ProviderRuntimeTruthTests: XCTestCase {
+    func testOnlyRealWorkerProbeCanTurnProviderPoolGreen() async {
+        let provider = Provider(
+            name: "Z.ai",
+            kind: .directAPI,
+            endpoint: "https://api.z.ai/api/anthropic",
+            authentication: .none,
+            modelProvider: .zAI
+        )
+        let worker = Worker(
+            name: "Prototype C",
+            harness: .claudeCode,
+            model: "glm-5.2",
+            computerID: WorkjetDefaults.localID,
+            providerPool: .zAI,
+            invocation: WorkerInvocation(executable: "/usr/bin/true")
+        )
+        let service = ProviderRuntimeService()
+        service.healthResults = [WorkjetCLIWorkerHealth(
+            workerID: worker.id,
+            workerName: worker.name,
+            model: worker.model,
+            computerName: "Local",
+            providerRoute: "Z.ai",
+            status: "ready",
+            latencyMilliseconds: 42,
+            runID: "health-1",
+            responseTokenObserved: true,
+            error: nil,
+            message: nil
+        )]
+        let model = WorkjetViewModel(
+            configuration: configuration(worker: worker, providers: [provider]),
+            service: service,
+            persistenceDelay: 60
+        )
+
+        XCTAssertEqual(model.providerPoolPresentation(for: .zAI).tone, .neutral)
+        await model.probeAllWorkersNow()
+        XCTAssertEqual(model.providerPoolPresentation(for: .zAI).tone, .connected)
+        XCTAssertEqual(model.providerPoolPresentation(for: .zAI).state, "Nutzbar · 42 ms")
+        XCTAssertEqual(model.workerHealth[worker.id]?.responseTokenObserved, true)
+    }
+
     func testManagedPromptRendersDeterministicPoolAndUnavailableFallbackTruth() throws {
         let later = Provider(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000902")!,
@@ -407,7 +450,7 @@ final class ProviderRuntimeTruthTests: XCTestCase {
 
         guard case let .deletedWithWarning(warning) = result else { return XCTFail("Expected cleanup warning") }
         XCTAssertTrue(warning.contains("wurde gelöscht"))
-        XCTAssertTrue(warning.contains("Schlüsselbundverwaltung"))
+        XCTAssertTrue(warning.contains("~/.config/workjet/credentials/"))
         XCTAssertTrue(model.providers.isEmpty)
         XCTAssertFalse(model.providerAccessStored.contains(account.id))
         XCTAssertTrue(service.saved.last?.providers.isEmpty == true)
@@ -436,7 +479,7 @@ final class ProviderRuntimeTruthTests: XCTestCase {
         await model.refreshProvidersNow()
 
         XCTAssertEqual(service.inspectedIDs, [measured.id])
-        XCTAssertEqual(model.providers[0].status, .connected)
+        XCTAssertEqual(model.providers[0].status, .unverified)
         XCTAssertEqual(model.providers[0].modelIDs, ["k3[1m]"])
         XCTAssertNil(model.providers[0].capacity.fraction)
         XCTAssertEqual(model.providers[0].capacity.reason, "Für diesen Zugang sind keine Nutzungsdaten verfügbar.")
@@ -508,9 +551,51 @@ final class ProviderRuntimeTruthTests: XCTestCase {
         await model.reauthenticateProvider(id: account.id)
 
         XCTAssertEqual(service.authenticatedProviders, [.openAI])
-        XCTAssertEqual(model.providers[0].status, .connected)
-        XCTAssertEqual(model.providers[0].statusDetail, "Verbunden.")
+        XCTAssertEqual(model.providers[0].status, .unverified)
+        XCTAssertTrue(model.providers[0].statusDetail.contains("nicht separat prüfbar"))
         XCTAssertNil(model.providers[0].capacity.fraction)
+    }
+
+    func testSuccessfulReauthenticationImmediatelyRefreshesAffectedWorkerEvidence() async {
+        let account = Provider(
+            name: "xAI",
+            kind: .cliProxyAPI,
+            endpoint: "http://127.0.0.1:8317",
+            modelProvider: .xAI
+        )
+        let worker = Worker(
+            name: "Remote prototype",
+            harness: .claudeCode,
+            model: "grok-4.5",
+            computerID: WorkjetDefaults.localID,
+            providerPool: .xAI,
+            invocation: WorkerInvocation(executable: "/usr/bin/true")
+        )
+        let service = ProviderRuntimeService()
+        service.probes[account.id] = ProviderProbeResult(status: .connected, detail: "Gateway verbunden")
+        service.healthResults = [WorkjetCLIWorkerHealth(
+            workerID: worker.id,
+            workerName: worker.name,
+            model: worker.model,
+            computerName: "Local",
+            providerRoute: "xAI Gateway-Pool",
+            status: "ready",
+            latencyMilliseconds: 37,
+            runID: "health-after-login",
+            responseTokenObserved: true,
+            error: nil,
+            message: nil
+        )]
+        let model = WorkjetViewModel(
+            configuration: configuration(worker: worker, providers: [account]),
+            service: service,
+            persistenceDelay: 60
+        )
+
+        await model.reauthenticateProvider(id: account.id)
+
+        XCTAssertEqual(model.workerHealth[worker.id]?.status, "ready")
+        XCTAssertNil(model.workerHealthProbeError)
     }
 
     private func configuration(worker: Worker?, providers: [Provider]) -> WorkjetConfiguration {
@@ -534,6 +619,7 @@ private final class ProviderRuntimeService: WorkjetService, @unchecked Sendable 
     var failNextSave = false
     var deleteCredentialError: Error?
     var events: [String] = []
+    var healthResults: [WorkjetCLIWorkerHealth] = []
 
     func save(_ configuration: WorkjetConfiguration, handwrittenRulesChanged: Bool) throws {
         if failNextSave {
@@ -551,6 +637,9 @@ private final class ProviderRuntimeService: WorkjetService, @unchecked Sendable 
     func inspectProvider(_ provider: Provider) async -> ProviderProbeResult {
         inspectedIDs.append(provider.id)
         return probes[provider.id] ?? ProviderProbeResult(status: .unverified, detail: "Keine Probe")
+    }
+    func probeConfiguredWorkers(timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth] {
+        healthResults
     }
     func authenticateCLIProxyAccount(_ provider: ModelProvider, credentialReference: String) async throws -> CLIProxyAuthenticatedAccount {
         authenticatedProviders.append(provider)

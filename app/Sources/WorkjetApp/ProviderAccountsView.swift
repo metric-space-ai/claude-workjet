@@ -233,9 +233,10 @@ struct ProviderAccountsView: View {
 
             ForEach(accounts) { account in
                 let selectableRoute: ProviderRoute = .account(account.id)
+                let usesGatewayLogin = provider.usesWebLogin && account.kind.isLocalGateway
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
-                        if provider.usesWebLogin {
+                        if usesGatewayLogin {
                             accountIdentity(account)
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("\(account.name), \(accountIdentityAndSummary(account))")
@@ -250,18 +251,23 @@ struct ProviderAccountsView: View {
                             .accessibilityAddTraits(selectedRoute == selectableRoute ? .isSelected : [])
                         }
                         Spacer()
-                        if !provider.usesWebLogin, selectedRoute == selectableRoute {
+                        if !usesGatewayLogin, selectedRoute == selectableRoute {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 10, weight: .bold))
                                 .foregroundStyle(WJTheme.accent)
                                 .accessibilityIdentifier("provider.account.selected.\(account.id.uuidString.uppercased())")
                         }
-                        Button { toggleEditor(for: account) } label: {
-                            Image(systemName: "pencil")
+                        Button(usesGatewayLogin ? "Neu anmelden" : "Schlüssel") {
+                            if usesGatewayLogin { reauthenticate(account) }
+                            else { toggleEditor(for: account) }
                         }
-                        .buttonStyle(WJIconButtonStyle())
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
                         .disabled(busyAccountID != nil || disconnectingAccountID != nil)
-                        .accessibilityLabel("\(account.name) bearbeiten")
+                        .accessibilityLabel(usesGatewayLogin
+                                            ? "Anmeldung für \(account.name) erneuern"
+                                            : "Schlüssel für \(account.name) ersetzen")
+                        .accessibilityIdentifier("provider.account.renew.\(account.id.uuidString.uppercased())")
                         Button("Trennen", role: .destructive) { requestDisconnect(account) }
                             .buttonStyle(.bordered)
                             .controlSize(.mini)
@@ -272,6 +278,26 @@ struct ProviderAccountsView: View {
                     if let draft = accountDraft, draft.id == account.id { accountEditor(draft) }
                 }
                 .padding(.leading, 33)
+            }
+
+            if !accounts.isEmpty {
+                let runtime = model.providerPoolPresentation(for: provider)
+                HStack(alignment: .top, spacing: 7) {
+                    Circle()
+                        .fill(runtimeToneColor(runtime.tone))
+                        .frame(width: 7, height: 7)
+                        .padding(.top, 3)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(runtime.state)
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(runtime.detail)
+                            .font(.system(size: 9))
+                            .foregroundStyle(WJTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.leading, 33)
+                .accessibilityIdentifier("provider.pool.health.\(provider.id)")
             }
 
             if accounts.count > 1 || (provider.usesWebLogin && onSelect != nil && !accounts.isEmpty) {
@@ -437,6 +463,15 @@ struct ProviderAccountsView: View {
 
     private func accountStatusColor(_ account: Provider) -> Color {
         switch model.providerPresentation(for: account).tone {
+        case .connected: return WJTheme.quotaOK
+        case .warning: return WJTheme.quotaWarning
+        case .critical: return WJTheme.quotaCritical
+        case .neutral: return WJTheme.secondaryText
+        }
+    }
+
+    private func runtimeToneColor(_ tone: ProviderPresentationTone) -> Color {
+        switch tone {
         case .connected: return WJTheme.quotaOK
         case .warning: return WJTheme.quotaWarning
         case .critical: return WJTheme.quotaCritical

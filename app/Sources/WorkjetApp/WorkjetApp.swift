@@ -45,6 +45,9 @@ final class WorkjetAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
                 paths: paths,
                 harnessLifecycle: HarnessLifecycleCoordinator(remoteClient: { _ in
                     WorkjetUITestRemoteHostClient()
+                }),
+                remoteProvisioning: RemoteWorkerProvisioningCoordinator(remoteClient: { _ in
+                    WorkjetUITestRemoteHostClient()
                 })
             )
             model = WorkjetViewModel(
@@ -70,7 +73,7 @@ final class WorkjetAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
 
     #if DEBUG
     /// Seeds only the isolated home supplied by the UI-test process. The
-    /// production home and Keychain are never read or written by this fixture.
+    /// production home and credential storage are never read or written by this fixture.
     private static func seedUITestConfiguration(at fileURL: URL) {
         var configuration = WorkjetDefaults.configuration()
         let providerID = UUID(uuidString: "00000000-0000-0000-0000-000000000101")!
@@ -84,10 +87,12 @@ final class WorkjetAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
                 transport: .ssh,
                 host: "ready.example.invalid",
                 user: "workjet-ui-test",
+                sandboxEnabled: true,
                 deploymentStatus: .installed,
                 deploymentDetail: "Deterministische installierte UI-Test-Fixture.",
-                installedContentHash: "ui-test-content-hash",
-                installedSidecarVersion: PiSidecarRuntime.version
+                installedContentHash: String(repeating: "a", count: 64),
+                installedSidecarVersion: PiSidecarRuntime.version,
+                bubblewrapExecutablePath: "/usr/bin/bwrap"
             ),
             Computer(
                 id: failedComputerID,
@@ -141,6 +146,8 @@ final class WorkjetAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelega
         popover.delegate = self
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.autosaveName = "dev.workjet.menubar.status-item"
+        item.isVisible = true
         statusItem = item
         guard let button = item.button else { return }
         button.target = self
@@ -303,12 +310,31 @@ private struct WorkjetUITestRemoteHostClient: RemoteHostCalling {
             return RemoteHostResponse(
                 ok: true,
                 hostVersion: "ui-test",
-                capabilities: ["harness-lifecycle-v2"]
+                capabilities: ["harness-lifecycle-v2", "managed-skill-lifecycle-v1", "claude-code", "greppy"]
+            )
+        }
+        if let skillID = request.skillID {
+            let action: RemoteManagedSkillMaintenanceAction
+            switch request.operation {
+            case .managedSkillInspect: action = .inspect
+            case .managedSkillInstall: action = .install
+            default:
+                throw RemoteHostProtocolError.rejected("Die UI-Test-Fixture unterstützt diese Skill-Lifecycle-Anfrage nicht.")
+            }
+            return RemoteHostResponse(
+                ok: true,
+                hostVersion: "ui-test",
+                managedSkillResult: RemoteManagedSkillLifecycleResult(
+                    skillID: skillID,
+                    action: action,
+                    state: .installed,
+                    version: "ui-test"
+                )
             )
         }
         guard let harnessID = request.harnessID,
               let action = request.operation.harnessAction else {
-            throw RemoteHostProtocolError.rejected("Die UI-Test-Fixture unterstützt nur Harness-Lifecycle-Anfragen.")
+            throw RemoteHostProtocolError.rejected("Die UI-Test-Fixture unterstützt nur Komponenten-Lifecycle-Anfragen.")
         }
         return RemoteHostResponse(
             ok: true,

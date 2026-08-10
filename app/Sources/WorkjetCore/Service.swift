@@ -142,8 +142,14 @@ public struct RemoteWorkerProvisioningCoordinator: Sendable {
             }
 
             var seenHarnesses = Set<String>()
-            for worker in workers {
-                let harnessID = HarnessAdapterRegistry.descriptor(for: worker.harness).id
+            let requiredHarnessIDs = workers.flatMap { worker -> [String] in
+                var ids = [HarnessAdapterRegistry.descriptor(for: worker.harness).id]
+                if WorkerSkillCatalog.effectiveSkills(for: worker).contains(where: { $0.id == WorkerSkillCatalog.webResearchID }) {
+                    ids.append(HarnessAdapterRegistry.descriptor(for: .codexCLI).id)
+                }
+                return ids
+            }
+            for harnessID in requiredHarnessIDs {
                 guard seenHarnesses.insert(harnessID).inserted else { continue }
                 currentKind = .harness
                 currentID = harnessID
@@ -155,7 +161,7 @@ public struct RemoteWorkerProvisioningCoordinator: Sendable {
                 }
             }
 
-            let managedSkills = workers.flatMap(WorkerSkillCatalog.effectiveSkills(for:))
+            let managedSkills = workers.flatMap(WorkerSkillCatalog.effectiveSkills(for:)).filter(\.usesManagedRemoteBinary)
             var seenSkills = Set<String>()
             let uniqueSkills = managedSkills.filter { seenSkills.insert($0.id).inserted }
             if !uniqueSkills.isEmpty && !initialProbe.capabilities.contains("managed-skill-lifecycle-v1") {
@@ -206,7 +212,7 @@ public struct RemoteWorkerProvisioningCoordinator: Sendable {
 
     private func ensureManagedSkill(_ skillID: String, client: any RemoteHostCalling) async throws -> RemoteManagedSkillLifecycleResult {
         var result = try await managedSkill(skillID, action: .inspect, client: client)
-        if result.state == .missing {
+        if result.state == .missing || result.state == .broken {
             result = try await managedSkill(skillID, action: .install, client: client)
             guard result.state == .installed else { return result }
             result = try await managedSkill(skillID, action: .inspect, client: client)
@@ -431,6 +437,8 @@ public protocol WorkjetService: AnyObject, Sendable {
     func stop(_ run: ActiveRun) throws
     func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus
     func inspectProvider(_ provider: Provider) async -> ProviderProbeResult
+    func probeConfiguredWorkers(timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth]
+    func probeConfiguredWorkers(workerIDs: [UUID], timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth]
     func authenticateCLIProxyAccount(_ provider: ModelProvider, credentialReference: String) async throws -> CLIProxyAuthenticatedAccount
     func discoverTailscaleDevices() async throws -> [TailscaleDevice]
     func inspectWorkjetActivation(_ configuration: WorkjetConfiguration) async -> WorkjetActivationStatus
@@ -462,6 +470,13 @@ public protocol WorkjetService: AnyObject, Sendable {
 public extension WorkjetService {
     func inspectProvider(_ provider: Provider) async -> ProviderProbeResult {
         ProviderProbeResult(status: .unverified, detail: "Dieser Dienst prüft keine Anbieter.")
+    }
+    func probeConfiguredWorkers(timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth] {
+        throw WorkjetCLIError(code: "health_unavailable", message: "Dieser Dienst kann keine Worker prüfen.", exitCode: .unsupported)
+    }
+    func probeConfiguredWorkers(workerIDs: [UUID], timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth] {
+        let selected = Set(workerIDs)
+        return try await probeConfiguredWorkers(timeoutSeconds: timeoutSeconds).filter { selected.contains($0.workerID) }
     }
     func authenticateCLIProxyAccount(_ provider: ModelProvider, credentialReference: String) async throws -> CLIProxyAuthenticatedAccount { throw CLIProxyAccountError.executableUnavailable }
     func discoverTailscaleDevices() async throws -> [TailscaleDevice] { throw TailscaleDeviceError.unavailable }
@@ -578,7 +593,11 @@ private struct RemoteHostClientRequestBridge: @unchecked Sendable {
             model: launch.model,
             reasoningEffort: launch.reasoning.flatMap(ReasoningEffort.init(rawValue:)),
             computerID: computer.id,
-            invocation: WorkerInvocation(executable: launch.harnessID, options: launch.options)
+            invocation: WorkerInvocation(
+                executable: launch.harnessID,
+                arguments: launch.allowedTools.map { ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", $0.joined(separator: ",")] } ?? [],
+                options: launch.options
+            )
         )
         worker.invocation.options = launch.options
         if let ownerID {
@@ -661,7 +680,7 @@ public final class RemoteGatewayTunnelManager: RemoteGatewayTunnelManaging, @unc
         do { try process.run() }
         catch {
             stderr.fileHandleForReading.readabilityHandler = nil
-            throw RemoteGatewayTunnelError.startFailed
+            throw RemoteGatewayTunnelError.startFailed("OpenSSH konnte nicht gestartet werden.")
         }
 
         let deadline = Date().addingTimeInterval(12)
@@ -678,12 +697,32 @@ public final class RemoteGatewayTunnelManager: RemoteGatewayTunnelManaging, @unc
               let identity = processProbe.identity(for: process.processIdentifier) else {
             stderr.fileHandleForReading.readabilityHandler = nil
             if process.isRunning { process.terminate() }
-            throw RemoteGatewayTunnelError.allocationUnconfirmed
+            throw RemoteGatewayTunnelError.allocationUnconfirmed(Self.actionableTunnelDiagnostic(diagnostic.text()))
         }
         stderr.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
         let lease = RemoteGatewayTunnelLease(remotePort: remotePort, processIdentity: identity)
         lock.withLock { tunnels[lease.id] = ManagedTunnel(lease: lease, process: process, runID: nil) }
         return lease
+    }
+
+    private static func actionableTunnelDiagnostic(_ raw: String) -> String {
+        let lines = raw
+            .split(whereSeparator: { $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let actionableFragments = [
+            "permission denied", "remote port forwarding failed", "administratively prohibited",
+            "host key verification failed", "connection refused", "connection timed out",
+            "no route to host", "could not resolve hostname", "identity file"
+        ]
+        if let line = lines.reversed().first(where: { line in
+            let lower = line.lowercased()
+            return actionableFragments.contains(where: lower.contains)
+        }) {
+            let compact = line.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            return String(compact.prefix(320))
+        }
+        return "OpenSSH hat die dynamische Portfreigabe nicht bestätigt."
     }
 
     public func bind(_ lease: RemoteGatewayTunnelLease, to runID: String) {
@@ -751,9 +790,11 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     private let workspaceSnapshots: any WorkspaceSnapshotPreparing
     private let workspaceRuns: RemoteWorkspaceRunStore
     private let workspaceResultImporter: LocalWorkspaceResultImporter
+    private let commandRunner: any CommandRunning
+    private let workingDirectory: URL
     private let persistenceBlock: Error?
 
-    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, providerInspector: ProviderInspector? = nil, credentialStore: any CredentialStoring, tailscaleDiscovery: TailscaleDeviceDiscovery = TailscaleDeviceDiscovery(), remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), cliProxyAccounts: CLIProxyAccountAuthenticator? = nil, learningStore: AdHocLearningStore? = nil, workjetActivationStore: WorkjetActivationStore? = nil, harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator(), remoteProvisioning: RemoteWorkerProvisioningCoordinator = RemoteWorkerProvisioningCoordinator(), gatewayTunnels: any RemoteGatewayTunnelManaging = RemoteGatewayTunnelManager(), workspaceSnapshots: any WorkspaceSnapshotPreparing = GitWorkspaceSnapshotPreparer(), workspaceRuns: RemoteWorkspaceRunStore = RemoteWorkspaceRunStore(), workspaceResultImporter: LocalWorkspaceResultImporter = LocalWorkspaceResultImporter(), persistenceBlock: Error? = nil) {
+    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, providerInspector: ProviderInspector? = nil, credentialStore: any CredentialStoring, tailscaleDiscovery: TailscaleDeviceDiscovery = TailscaleDeviceDiscovery(), remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), cliProxyAccounts: CLIProxyAccountAuthenticator? = nil, learningStore: AdHocLearningStore? = nil, workjetActivationStore: WorkjetActivationStore? = nil, harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator(), remoteProvisioning: RemoteWorkerProvisioningCoordinator = RemoteWorkerProvisioningCoordinator(), gatewayTunnels: any RemoteGatewayTunnelManaging = RemoteGatewayTunnelManager(), workspaceSnapshots: any WorkspaceSnapshotPreparing = GitWorkspaceSnapshotPreparer(), workspaceRuns: RemoteWorkspaceRunStore = RemoteWorkspaceRunStore(), workspaceResultImporter: LocalWorkspaceResultImporter = LocalWorkspaceResultImporter(), commandRunner: any CommandRunning = ProcessCommandRunner(), workingDirectory: URL? = nil, persistenceBlock: Error? = nil) {
         self.configurationStore = configurationStore
         self.promptStore = promptStore
         self.telemetryStore = telemetryStore
@@ -772,6 +813,8 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
         self.workspaceSnapshots = workspaceSnapshots
         self.workspaceRuns = workspaceRuns
         self.workspaceResultImporter = workspaceResultImporter
+        self.commandRunner = commandRunner
+        self.workingDirectory = (workingDirectory ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)).standardizedFileURL
         self.persistenceBlock = persistenceBlock
     }
 
@@ -790,8 +833,79 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
         }
         return await providerInspector.inspect(provider)
     }
+    public func probeConfiguredWorkers(timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth] {
+        try await probeConfiguredWorkers(workerIDs: [], timeoutSeconds: timeoutSeconds)
+    }
+    public func probeConfiguredWorkers(workerIDs: [UUID], timeoutSeconds: Int) async throws -> [WorkjetCLIWorkerHealth] {
+        let executable = try workjetCLIExecutable()
+        let healthDirectory = try privateHealthProbeDirectory()
+        let workerArguments = workerIDs.flatMap { ["--worker", $0.uuidString] }
+        let result = try await commandRunner.run(CommandSpec(
+            executable: executable,
+            arguments: ["health", "--probe-workers"] + workerArguments + ["--timeout", String(min(max(timeoutSeconds, 5), 600)), "--json"],
+            currentDirectory: healthDirectory.path,
+            timeout: TimeInterval(min(max(timeoutSeconds, 5), 600) * 8 + 30),
+            stdoutLimit: 1_048_576,
+            stderrLimit: 65_536
+        ))
+        guard !result.stdoutTruncated,
+              let response = try? JSONDecoder().decode(WorkjetCLIResponse.self, from: result.standardOutput),
+              response.command == "health",
+              let health = response.health else {
+            throw WorkjetCLIError(code: "health_response_invalid", message: "Der Worker-Healthcheck hat keine gültige Antwort geliefert.", exitCode: .state)
+        }
+        return health
+    }
+
+    private func privateHealthProbeDirectory() throws -> URL {
+        let paths = workjetActivationStore.paths
+        let state = paths.stateDirectory.standardizedFileURL
+        let directory = paths.healthProbeDirectory.standardizedFileURL
+        guard directory.deletingLastPathComponent() == state,
+              state.path.hasPrefix("/"),
+              !state.path.contains("\0") else {
+            throw LocalStateError.insecurePath(directory.path)
+        }
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        for value in [state, directory] {
+            var info = stat()
+            guard lstat(value.path, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFDIR,
+                  info.st_uid == geteuid() else {
+                throw LocalStateError.insecurePath(value.path)
+            }
+            _ = chmod(value.path, 0o700)
+            guard lstat(value.path, &info) == 0, (info.st_mode & 0o077) == 0 else {
+                throw LocalStateError.insecurePath(value.path)
+            }
+        }
+        return directory
+    }
     public func authenticateCLIProxyAccount(_ provider: ModelProvider, credentialReference: String) async throws -> CLIProxyAuthenticatedAccount {
         try await cliProxyAccounts.authenticate(provider, credentialReference: credentialReference)
+    }
+
+    private func workjetCLIExecutable() throws -> String {
+        let bundleCandidate = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/MacOS/workjet", isDirectory: false)
+            .standardizedFileURL
+        let installedCandidate = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/bin/workjet", isDirectory: false)
+            .standardizedFileURL
+        for candidate in [bundleCandidate, installedCandidate] {
+            var info = stat()
+            if lstat(candidate.path, &info) == 0,
+               (info.st_mode & S_IFMT) == S_IFREG,
+               info.st_uid == geteuid(),
+               access(candidate.path, X_OK) == 0 {
+                return candidate.path
+            }
+        }
+        throw WorkjetCLIError(code: "health_executable_missing", message: "Die Workjet-CLI für den Worker-Healthcheck ist nicht installiert.", exitCode: .state)
     }
     public func discoverTailscaleDevices() async throws -> [TailscaleDevice] { try await tailscaleDiscovery.discover() }
     public func inspectWorkjetActivation(_ configuration: WorkjetConfiguration) async -> WorkjetActivationStatus {
@@ -831,13 +945,14 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     public func startRemoteWorker(_ worker: Worker, on computer: Computer, route: ResolvedProviderRuntimeRoute, input: Data, ownerID: String) async throws -> RemoteHostResponse {
         let technicalRules = try configurationStore.load()?.technicalRules ?? ""
         let snapshot: WorkspaceSnapshot?
-        if worker.harness == .piSidecar {
+        let healthProbe = worker.invocation.options["workjet.health-probe"] == "v1"
+        if worker.harness == .piSidecar || healthProbe {
             snapshot = nil // Pi keeps its explicit in-memory turn request contract.
         } else {
             guard [.claudeCode, .codexCLI, .openCode].contains(worker.harness) else {
                 throw RemoteHarnessAdapterError.unsupportedHarness(worker.harness.rawValue)
             }
-            snapshot = try await workspaceSnapshots.prepare(from: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+            snapshot = try await workspaceSnapshots.prepare(from: workingDirectory)
         }
 
         var execution = try remoteProviderExecution(route)
@@ -853,28 +968,44 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
             guard probe.capabilities.contains("provider-execution-v1") else {
                 throw RemoteHostProtocolError.missingCapability("provider-execution-v1")
             }
+            if healthProbe, !probe.capabilities.contains("health-probe-v1") {
+                throw RemoteHostProtocolError.missingCapability("health-probe-v1")
+            }
             if tunnel != nil, !probe.capabilities.contains("gateway-relay-v1") {
                 throw RemoteHostProtocolError.missingCapability("gateway-relay-v1")
             }
+            if !healthProbe,
+               WorkerSkillCatalog.effectiveSkills(for: worker).contains(where: { $0.id == WorkerSkillCatalog.greppyID }),
+               !WorkerSkillCatalog.availableSkillIDs(verifiedCapabilities: probe.capabilities).contains(WorkerSkillCatalog.greppyID) {
+                throw RemoteHostProtocolError.missingCapability(WorkerSkillCatalog.greppyCapability)
+            }
+            if !healthProbe,
+               WorkerSkillCatalog.effectiveSkills(for: worker).contains(where: { $0.id == WorkerSkillCatalog.webResearchID }) {
+                guard probe.capabilities.contains(WorkerSkillCatalog.webResearchCapability) else {
+                    throw RemoteHostProtocolError.missingCapability(WorkerSkillCatalog.webResearchCapability)
+                }
+                guard route.candidates.allSatisfy({ $0.kind == .gatewayPool }) else {
+                    throw RemoteHostProtocolError.rejected("Web Research benötigt auf Remote-Computern eine Workjet-Gateway-Route mit OpenAI-Zugang.")
+                }
+            }
             var workspace: RemoteWorkspaceDescriptor?
-            var launchInput = input
+            var systemPrompt: String?
             if let snapshot {
                 guard probe.capabilities.contains("workspace-git-v1") else {
                     throw RemoteHostProtocolError.missingCapability("workspace-git-v1")
                 }
                 workspace = try await client.importWorkspace(snapshot, verifiedCapabilities: probe.capabilities)
-                // Skill instructions describe repository tools, so they are
-                // injected only after this exact snapshot is safely present on
-                // the host and the verified probe confirmed each target tool.
-                launchInput = Self.preparedRemoteTaskInput(
+                // Skill instructions become a real harness system-prompt
+                // appendix only after this exact snapshot exists and the target
+                // reported the pinned skill binary. The user brief stays exact.
+                systemPrompt = Self.preparedRemoteSystemPrompt(
                     worker: worker,
-                    input: input,
                     workspaceImported: true,
                     verifiedCapabilities: probe.capabilities,
                     technicalRules: technicalRules
                 )
             }
-            let response = try await client.start(worker: worker, input: launchInput, providerExecution: execution, ownerID: ownerID, workspace: workspace, verifiedCapabilities: probe.capabilities)
+            let response = try await client.start(worker: worker, input: input, systemPrompt: systemPrompt, providerExecution: execution, ownerID: ownerID, workspace: workspace, verifiedCapabilities: probe.capabilities)
             guard let runID = response.runID else { throw RemoteHostProtocolError.malformedResponse }
             if let snapshot {
                 do {
@@ -896,16 +1027,15 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
         }
     }
 
-    static func preparedRemoteTaskInput(
+    static func preparedRemoteSystemPrompt(
         worker: Worker,
-        input: Data,
         workspaceImported: Bool,
         verifiedCapabilities: [String],
         technicalRules: String
-    ) -> Data {
-        WorkerSkillCatalog.taskInput(
+    ) -> String? {
+        guard worker.invocation.options["workjet.health-probe"] != "v1" else { return nil }
+        return WorkerSkillCatalog.systemPrompt(
             for: worker,
-            input: input,
             repositoryAvailable: workspaceImported,
             availableSkillIDs: WorkerSkillCatalog.availableSkillIDs(verifiedCapabilities: verifiedCapabilities),
             technicalRules: technicalRules
@@ -918,41 +1048,29 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     }
     public func listRemoteRuns(on computer: Computer, ownerID: String? = nil) async throws -> RemoteHostResponse {
         let client = RemoteHostClient(computer: computer)
-        var response = try await client.list(ownerID: ownerID)
-        for index in response.runs.indices {
-            let descriptor = response.runs[index]
+        let response = try await client.list(ownerID: ownerID)
+        for descriptor in response.runs {
             if descriptor.state.isTerminal {
-                gatewayTunnels.close(runID: descriptor.runID)
-            } else if descriptor.relayID != nil,
-                      (!gatewayTunnels.hasTunnel(for: descriptor.runID) || !gatewayTunnels.isAlive(runID: descriptor.runID)) {
-                let lost = try await client.relayLost(runID: descriptor.runID)
-                response.runs[index].state = lost.state
-                response.runs[index].cursor = lost.cursor
                 gatewayTunnels.close(runID: descriptor.runID)
             }
         }
+        // Listing is observational. Another Workjet CLI process may own the
+        // run-scoped tunnel, so absence from this process's in-memory manager
+        // is never evidence that the remote run lost its relay.
         return response
     }
     public func adoptRemoteRun(on computer: Computer, runID: String, ownerID: String) async throws -> RemoteHostResponse {
-        let client = RemoteHostClient(computer: computer)
-        let listed = try await client.list(ownerID: ownerID)
-        if let descriptor = listed.runs.first(where: { $0.runID == runID }),
-           descriptor.relayID != nil,
-           !gatewayTunnels.hasTunnel(for: runID) {
-            return try await client.relayLost(runID: runID)
-        }
-        return try await client.adopt(runID: runID, ownerID: ownerID)
+        // Tunnel ownership is process-local. The menu-bar app, a later CLI
+        // invocation, and the detached CLI supervisor can all observe the same
+        // run, but only one of them owns its SSH Process object. Absence from
+        // this instance is therefore never evidence of relay loss and must not
+        // be allowed to kill a healthy run owned by another Workjet process.
+        try await RemoteHostClient(computer: computer).adopt(runID: runID, ownerID: ownerID)
     }
     public func remoteEvents(on computer: Computer, runID: String, after sequence: UInt64) async throws -> RemoteHostResponse {
         let client = RemoteHostClient(computer: computer)
         let tunnelKnown = gatewayTunnels.hasTunnel(for: runID)
-        let relayRequired: Bool
-        if tunnelKnown {
-            relayRequired = true
-        } else {
-            relayRequired = try await client.list().runs.first(where: { $0.runID == runID })?.relayID != nil
-        }
-        if relayRequired, (!tunnelKnown || !gatewayTunnels.isAlive(runID: runID)) {
+        if tunnelKnown, !gatewayTunnels.isAlive(runID: runID) {
             let response = try await client.relayLost(runID: runID)
             gatewayTunnels.close(runID: runID)
             return response
@@ -1135,12 +1253,14 @@ public struct WorkjetBootstrap {
 
     public static func live(
         paths: WorkjetPaths = .live,
-        harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator()
+        harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator(),
+        remoteProvisioning: RemoteWorkerProvisioningCoordinator = RemoteWorkerProvisioningCoordinator(),
+        workingDirectory: URL? = nil
     ) -> WorkjetBootstrap {
         let configStore = JSONConfigurationStore(fileURL: paths.configurationFile)
         let promptStore = ManagedPromptStore(fileURL: paths.promptFile)
         let learningStore = AdHocLearningStore(fileURL: paths.learningsFile)
-        let credentials = KeychainCredentialStore()
+        let credentials = PrivateFileCredentialStore(homeDirectory: paths.homeDirectory)
         var messages: [String] = []
         var block: Error?
         var configuration: WorkjetConfiguration
@@ -1176,7 +1296,7 @@ public struct WorkjetBootstrap {
                 configuration = normalized
             }
         } catch { messages.append(error.localizedDescription) }
-        let service = LocalWorkjetService(configurationStore: configStore, promptStore: promptStore, telemetryStore: RunTelemetryStore(paths: paths), cliProxyInspector: CLIProxyInspector(credentials: credentials), credentialStore: credentials, learningStore: learningStore, workjetActivationStore: WorkjetActivationStore(paths: paths), harnessLifecycle: harnessLifecycle, workspaceRuns: RemoteWorkspaceRunStore(paths: paths), persistenceBlock: block)
+        let service = LocalWorkjetService(configurationStore: configStore, promptStore: promptStore, telemetryStore: RunTelemetryStore(paths: paths), cliProxyInspector: CLIProxyInspector(credentials: credentials), credentialStore: credentials, learningStore: learningStore, workjetActivationStore: WorkjetActivationStore(paths: paths), harnessLifecycle: harnessLifecycle, remoteProvisioning: remoteProvisioning, workspaceRuns: RemoteWorkspaceRunStore(paths: paths), workingDirectory: workingDirectory, persistenceBlock: block)
         let bootstrapMustPersist = isFirstLaunch
             || configurationWasMigrated
             || importedExternalIdentityChanged
@@ -1202,12 +1322,20 @@ public struct WorkjetBootstrap {
             value.skillRules = migration.generalRules
             prompts.merge(migration.modelPrompts) { _, migrated in migrated }
         }
+        value.skillRules = LegacyPromptMigration.correctingKnownSkillDefaults(in: value.skillRules)
         value.skillRules = LegacyPromptMigration.removingKnownProgressBoardDefault(from: value.skillRules)
         for worker in value.workers {
             let name = ModelPromptCatalog.canonicalName(for: worker.model)
             if prompts[name] == nil, let defaultPrompt = ModelPromptCatalog.defaults[name] {
                 prompts[name] = defaultPrompt
             }
+        }
+        let knownBrokenTerraPrompt = "Terra performs online research only. Permit WebSearch and WebFetch, forbid repository, file, shell, and code work, require current primary sources with direct links, and require facts, inference, conflicts, and unknowns to be separated."
+        let previousTerraPrompt = "Use Terra only for current online research through its verified Codex native live-web-search harness. Require primary sources, direct links, careful separation of confirmed and uncertain evidence, no subagents, and no repository editing or shell/code work."
+        if let terraPrompt = prompts["gpt-5.6-terra"],
+           [knownBrokenTerraPrompt, previousTerraPrompt].contains(terraPrompt),
+           let corrected = ModelPromptCatalog.defaults["gpt-5.6-terra"] {
+            prompts["gpt-5.6-terra"] = corrected
         }
         value.modelPrompts = prompts
         if value.progressBoardRules == nil { value.progressBoardRules = WorkjetDefaults.progressBoardRules }
@@ -1225,6 +1353,43 @@ public struct WorkjetBootstrap {
         )
         value.transparentWorkerPromptsMigrated = true
         value.workers = LegacyPromptMigration.removingKnownLegacyStandardCodingTask(from: value.workers)
+        // WorkerEditor versions before this contract persisted a Claude Code
+        // one-shot that could never grant tools in headless mode. Migrate only
+        // that exact generated default; never rewrite owner-custom invocations.
+        for index in value.workers.indices where value.workers[index].harness == .claudeCode {
+            if value.workers[index].invocation.arguments == ["-p", "<WORKJET_BRIEF>"] {
+                value.workers[index].invocation.arguments = [
+                    "--bare", "-p", "<WORKJET_BRIEF>",
+                    "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"
+                ]
+            }
+        }
+        // The old Terra default merely granted Claude-Code tool names that are
+        // absent from bare third-party-provider sessions. Migrate only that
+        // exact generated worker contract to Codex's empirically verified
+        // native web-search path; owner-defined research workers stay intact.
+        if let terraDefault = WorkjetDefaults.configuration().workers.first(where: { $0.name == "Web Research · Terra" }) {
+            for index in value.workers.indices {
+                let worker = value.workers[index]
+                let legacyArguments = ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "WebSearch,WebFetch"]
+                if worker.name == "Web Research · Terra",
+                   worker.model == "gpt-5.6-terra",
+                   worker.harness == .claudeCode,
+                   worker.invocation.arguments == legacyArguments {
+                    value.workers[index].harness = terraDefault.harness
+                    value.workers[index].instructions = terraDefault.instructions
+                    value.workers[index].invocation = terraDefault.invocation
+                    value.workers[index].skillOverrides[WorkerSkillCatalog.greppyID] = false
+                    value.workers[index].skillOverrides[WorkerSkillCatalog.webResearchID] = true
+                } else if worker.name == "Web Research · Terra",
+                          worker.model == "gpt-5.6-terra",
+                          worker.harness == terraDefault.harness,
+                          worker.invocation == terraDefault.invocation,
+                          worker.skillOverrides[WorkerSkillCatalog.webResearchID] == nil {
+                    value.workers[index].skillOverrides[WorkerSkillCatalog.webResearchID] = true
+                }
+            }
+        }
         // Workjet is a global Claude prompt extension. The persisted enum is
         // retained for version-1 decoding, but opt-in /workjet configurations
         // are migrated to the globally installed include.
@@ -1277,14 +1442,16 @@ public struct WorkjetBootstrap {
     }
 
     private static func migrateLegacySharedOAuthStatus(_ configuration: inout WorkjetConfiguration) {
-        let legacyDetail = "Verbunden. Dieser Zugang kann von mehreren Workern verwendet werden."
         for index in configuration.providers.indices {
             guard configuration.providers[index].kind.isLocalGateway,
                   configuration.providers[index].modelProvider?.usesWebLogin == true,
-                  configuration.providers[index].status == .degraded,
-                  configuration.providers[index].statusDetail == legacyDetail else { continue }
-            configuration.providers[index].status = .connected
-            configuration.providers[index].statusDetail = "Verbunden."
+                  configuration.providers[index].status != .offline else { continue }
+            // Persisted "connected" values from older builds were only a
+            // successful gateway metadata request, never proof for this OAuth
+            // identity. Normalize the fact on every load so prompts and UI do
+            // not resurrect that false claim.
+            configuration.providers[index].status = .unverified
+            configuration.providers[index].statusDetail = "Im Gateway registriert; der einzelne Account ist technisch nicht separat prüfbar. Nutze die Worker-Probe für den gemeinsamen Laufzeitpfad."
             configuration.providers[index].capacity = .unavailable(reason: "Für diesen Zugang sind keine Nutzungsdaten verfügbar.")
         }
     }
@@ -1471,6 +1638,8 @@ public struct WorkjetCLIError: LocalizedError, Equatable, Sendable {
 public enum WorkjetCLICommand: Equatable, Sendable {
     case workersList(json: Bool)
     case workerDescribe(identifier: String, json: Bool)
+    case computerSetup(identifier: String, json: Bool)
+    case healthProbeWorkers(identifiers: [String], timeoutSeconds: Int?, json: Bool)
     case run(identifier: String, brief: WorkjetCLIBrief, json: Bool)
     case events(runID: String, after: UInt64, json: Bool)
     case stop(runID: String, json: Bool)
@@ -1488,6 +1657,8 @@ public enum WorkjetCLIParser {
     Verwendung:
       workjet workers list --json
       workjet workers describe <uuid-oder-exakter-name> --json
+      workjet computers setup <uuid-oder-exakter-name> --json
+      workjet health --probe-workers [--worker <uuid-oder-exakter-name>] [--timeout <sekunden>] --json
       workjet run <uuid-oder-exakter-name> (--brief <text> | --brief-file <pfad>) --json
       workjet events <run-id> --after <exklusive-sequenz> --json
       workjet stop <run-id> --json
@@ -1533,6 +1704,46 @@ public enum WorkjetCLIParser {
             }
             guard let brief else { throw WorkjetCLIError.usage(usage) }
             return .run(identifier: identifier, brief: brief, json: json)
+        case "computers":
+            guard arguments.count >= 3, arguments[1] == "setup" else { throw WorkjetCLIError.usage(usage) }
+            try requireOnlyJSON(Array(arguments.dropFirst(3)))
+            return .computerSetup(identifier: arguments[2], json: arguments.contains("--json"))
+        case "health":
+            var probeWorkers = false
+            var identifiers: [String] = []
+            var timeoutSeconds: Int?
+            var json = false
+            var index = 1
+            while index < arguments.count {
+                switch arguments[index] {
+                case "--probe-workers":
+                    guard !probeWorkers else { throw WorkjetCLIError.usage(usage) }
+                    probeWorkers = true
+                    index += 1
+                case "--timeout":
+                    guard timeoutSeconds == nil, index + 1 < arguments.count,
+                          let value = Int(arguments[index + 1]), (5...600).contains(value) else {
+                        throw WorkjetCLIError.usage("--timeout erwartet 5 bis 600 Sekunden.\n\(usage)")
+                    }
+                    timeoutSeconds = value
+                    index += 2
+                case "--worker":
+                    guard index + 1 < arguments.count,
+                          !arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        throw WorkjetCLIError.usage("--worker erwartet eine UUID oder einen exakten Namen.\n\(usage)")
+                    }
+                    identifiers.append(arguments[index + 1])
+                    index += 2
+                case "--json":
+                    guard !json else { throw WorkjetCLIError.usage(usage) }
+                    json = true
+                    index += 1
+                default:
+                    throw WorkjetCLIError.usage("Unbekannte Option: \(arguments[index])\n\(usage)")
+                }
+            }
+            guard probeWorkers else { throw WorkjetCLIError.usage(usage) }
+            return .healthProbeWorkers(identifiers: identifiers, timeoutSeconds: timeoutSeconds, json: json)
         case "events":
             guard arguments.count >= 4 else { throw WorkjetCLIError.usage(usage) }
             let runID = arguments[1]
@@ -1589,6 +1800,15 @@ public struct WorkjetCLIWorker: Codable, Equatable, Sendable {
     public var instructions: String?
 }
 
+public struct WorkjetCLIComputer: Codable, Equatable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var state: String
+    public var detail: String?
+    public var sidecarVersion: String?
+    public var contentHash: String?
+}
+
 public struct WorkjetCLIEvent: Codable, Equatable, Sendable {
     public var sequence: UInt64
     public var timestamp: String
@@ -1597,28 +1817,48 @@ public struct WorkjetCLIEvent: Codable, Equatable, Sendable {
     public var exitCode: Int32?
 }
 
+public struct WorkjetCLIWorkerHealth: Codable, Equatable, Sendable {
+    public var workerID: UUID
+    public var workerName: String
+    public var model: String
+    public var computerName: String
+    public var providerRoute: String?
+    public var status: String
+    public var latencyMilliseconds: Int
+    public var runID: String?
+    public var responseTokenObserved: Bool
+    public var error: String?
+    public var message: String?
+}
+
 public struct WorkjetCLIResponse: Codable, Equatable, Sendable {
     public var ok: Bool
     public var command: String
     public var workers: [WorkjetCLIWorker]?
     public var worker: WorkjetCLIWorker?
+    public var computer: WorkjetCLIComputer?
     public var runID: String?
     public var state: String?
     public var cursor: UInt64?
     public var events: [WorkjetCLIEvent]?
+    public var health: [WorkjetCLIWorkerHealth]?
+    public var checkedAt: String?
     public var resultRef: String?
     public var resultOID: String?
     public var lifecycle: String?
 
-    public init(ok: Bool = true, command: String, workers: [WorkjetCLIWorker]? = nil, worker: WorkjetCLIWorker? = nil, runID: String? = nil, state: String? = nil, cursor: UInt64? = nil, events: [WorkjetCLIEvent]? = nil, resultRef: String? = nil, resultOID: String? = nil, lifecycle: String? = nil) {
+    public init(ok: Bool = true, command: String, workers: [WorkjetCLIWorker]? = nil, worker: WorkjetCLIWorker? = nil, computer: WorkjetCLIComputer? = nil, runID: String? = nil, state: String? = nil, cursor: UInt64? = nil, events: [WorkjetCLIEvent]? = nil, health: [WorkjetCLIWorkerHealth]? = nil, checkedAt: String? = nil, resultRef: String? = nil, resultOID: String? = nil, lifecycle: String? = nil) {
         self.ok = ok
         self.command = command
         self.workers = workers
         self.worker = worker
+        self.computer = computer
         self.runID = runID
         self.state = state
         self.cursor = cursor
         self.events = events
+        self.health = health
+        self.checkedAt = checkedAt
         self.resultRef = resultRef
         self.resultOID = resultOID
         self.lifecycle = lifecycle
@@ -1649,6 +1889,7 @@ public protocol WorkjetCLIBacking: Sendable {
     func stop(computer: Computer, runID: String) async throws -> RemoteHostResponse
     func importResult(runID: String) async throws -> WorkspaceResultImportReceipt
     func mark(runID: String, disposition: RemoteWorkspaceDisposition) async throws -> WorkspaceLifecycleReceipt
+    func setup(computer: Computer) async throws -> Computer
 }
 
 public extension WorkjetCLIBacking {
@@ -1665,16 +1906,44 @@ public extension WorkjetCLIBacking {
     func stopLocal(runID: String) async throws -> RemoteHostResponse? { nil }
     func importResult(runID: String) async throws -> WorkspaceResultImportReceipt { throw WorkspaceResultError.recordNotFound }
     func mark(runID: String, disposition: RemoteWorkspaceDisposition) async throws -> WorkspaceLifecycleReceipt { throw WorkspaceResultError.recordNotFound }
+    func setup(computer: Computer) async throws -> Computer {
+        throw WorkjetCLIError(code: "computer_setup_unsupported", message: "Dieser CLI-Dienst kann keine Computer einrichten.", exitCode: .unsupported)
+    }
 }
 
 public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
+    private struct RemoteSupervisorRequest: Codable {
+        var workerID: UUID
+        var computerID: UUID
+        var ownerID: String
+        var route: ResolvedProviderRuntimeRoute
+        var brief: Data
+        var workingDirectory: String
+    }
+
+    private struct RemoteSupervisorHandshake: Codable {
+        var ok: Bool
+        var runID: String?
+        var state: RemoteHostRunState?
+        var cursor: UInt64?
+        var error: String?
+    }
+
     public let configuration: WorkjetConfiguration
     private let service: any WorkjetService
     private let localRuns: LocalRunService
     private let workspaceRuns: RemoteWorkspaceRunStore
+    private let workingDirectory: URL
+    private let supervisorExecutable: URL
+    private let paths: WorkjetPaths
 
-    public init(paths: WorkjetPaths = .live) throws {
-        let bootstrap = WorkjetBootstrap.live(paths: paths)
+    public init(
+        paths: WorkjetPaths = .live,
+        workingDirectory: URL? = nil,
+        supervisorExecutable: URL? = nil
+    ) throws {
+        let directory = (workingDirectory ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)).standardizedFileURL
+        let bootstrap = WorkjetBootstrap.live(paths: paths, workingDirectory: directory)
         guard bootstrap.messages.isEmpty else {
             throw WorkjetCLIError(code: "state_load_failed", message: bootstrap.messages.joined(separator: " "), exitCode: .state)
         }
@@ -1682,6 +1951,31 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
         service = bootstrap.service
         localRuns = LocalRunService(paths: paths)
         workspaceRuns = RemoteWorkspaceRunStore(paths: paths)
+        self.paths = paths
+        self.workingDirectory = directory
+        self.supervisorExecutable = try (supervisorExecutable ?? Self.currentExecutableURL())
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+    }
+
+    /// A PATH launch may expose only `workjet` as argv[0]. Ask the kernel for
+    /// the image it actually loaded so the detached supervisor never becomes
+    /// `<current-directory>/workjet` by accident.
+    static func currentExecutableURL() throws -> URL {
+        var capacity: UInt32 = 1_024
+        while capacity <= 1_048_576 {
+            var buffer = [CChar](repeating: 0, count: Int(capacity))
+            var required = capacity
+            if _NSGetExecutablePath(&buffer, &required) == 0 {
+                let path = String(cString: buffer)
+                guard path.hasPrefix("/") else {
+                    throw WorkjetCLIError(code: "supervisor_executable_invalid", message: "Die laufende Workjet-CLI konnte nicht eindeutig aufgelöst werden.", exitCode: .state)
+                }
+                return URL(fileURLWithPath: path, isDirectory: false)
+            }
+            capacity = max(required, capacity * 2)
+        }
+        throw WorkjetCLIError(code: "supervisor_executable_invalid", message: "Die laufende Workjet-CLI konnte nicht eindeutig aufgelöst werden.", exitCode: .state)
     }
 
     public func startLocal(worker: Worker, brief: Data) async throws -> RemoteHostResponse {
@@ -1689,31 +1983,67 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
         return try await startLocal(worker: worker, route: route, brief: brief)
     }
     public func startLocal(worker: Worker, route: ResolvedProviderRuntimeRoute, brief: Data) async throws -> RemoteHostResponse {
-        let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
-        let repositoryAvailable = await Self.repositoryAvailable(at: currentDirectory)
-        let availableSkillIDs = repositoryAvailable
-            ? await Self.availableLocalSkillIDs(at: currentDirectory)
-            : []
-        let taskInput = Self.preparedLocalTaskInput(
+        let repositoryAvailable = await Self.repositoryAvailable(at: workingDirectory)
+        let availableSkillIDs = await Self.availableLocalSkillIDs(at: workingDirectory, route: route)
+        if worker.invocation.options["workjet.health-probe"] != "v1",
+           Self.requiresGreppy(worker) {
+            guard repositoryAvailable else {
+                throw WorkjetCLIError(
+                    code: "skill_workspace_required",
+                    message: "Greppy 0.3.1 ist für diesen Worker aktiviert. Starte Workjet aus einem Git-Repository oder deaktiviere Greppy für diesen Worker.",
+                    exitCode: .state
+                )
+            }
+            guard availableSkillIDs.contains(WorkerSkillCatalog.greppyID) else {
+                throw WorkjetCLIError(
+                    code: "skill_runtime_unavailable",
+                    message: "Greppy 0.3.1 ist für diesen Worker aktiviert, aber die erwartete Binary und Befehlsoberfläche wurden auf diesem Computer nicht bestätigt.",
+                    exitCode: .state
+                )
+            }
+        }
+        if worker.invocation.options["workjet.health-probe"] != "v1",
+           Self.requiresWebResearch(worker),
+           !availableSkillIDs.contains(WorkerSkillCatalog.webResearchID) {
+            throw WorkjetCLIError(
+                code: "skill_runtime_unavailable",
+                message: "Web Research ist aktiviert, aber weder Codex Live Search über eine Workjet-Gateway-Route noch ein lokaler Antigravity-Research-Helper wurde bestätigt.",
+                exitCode: .state
+            )
+        }
+        let systemPrompt = Self.preparedLocalSystemPrompt(
             worker: worker,
-            brief: brief,
             repositoryAvailable: repositoryAvailable,
             availableSkillIDs: availableSkillIDs,
             technicalRules: configuration.technicalRules ?? ""
         )
-        return try localRuns.start(worker: worker, route: route, brief: taskInput, supervisorExecutable: URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL)
+        return try localRuns.start(
+            worker: worker,
+            route: route,
+            brief: brief,
+            systemPrompt: systemPrompt,
+            skillIDs: availableSkillIDs.intersection(Set(WorkerSkillCatalog.effectiveSkills(for: worker).map(\.id))),
+            supervisorExecutable: supervisorExecutable
+        )
     }
 
-    static func preparedLocalTaskInput(
+    static func requiresGreppy(_ worker: Worker) -> Bool {
+        WorkerSkillCatalog.effectiveSkills(for: worker).contains { $0.id == WorkerSkillCatalog.greppyID }
+    }
+
+    static func requiresWebResearch(_ worker: Worker) -> Bool {
+        WorkerSkillCatalog.effectiveSkills(for: worker).contains { $0.id == WorkerSkillCatalog.webResearchID }
+    }
+
+    static func preparedLocalSystemPrompt(
         worker: Worker,
-        brief: Data,
         repositoryAvailable: Bool,
         availableSkillIDs: Set<String>,
         technicalRules: String
-    ) -> Data {
-        WorkerSkillCatalog.taskInput(
+    ) -> String? {
+        guard worker.invocation.options["workjet.health-probe"] != "v1" else { return nil }
+        return WorkerSkillCatalog.systemPrompt(
             for: worker,
-            input: brief,
             repositoryAvailable: repositoryAvailable,
             availableSkillIDs: availableSkillIDs,
             technicalRules: technicalRules
@@ -1722,16 +2052,14 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
 
     static func availableLocalSkillIDs(
         at directory: URL,
+        route: ResolvedProviderRuntimeRoute? = nil,
         runner: any CommandRunning = ProcessCommandRunner(),
         sourceEnvironment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> Set<String> {
         let environment = localSkillProbeEnvironment(sourceEnvironment)
-        guard let executable = resolvedExecutable(
-            named: WorkerSkillCatalog.greppyID,
-            environment: environment,
-            currentDirectory: directory
-        ) else { return [] }
-        do {
+        var available: Set<String> = []
+        if let executable = resolvedExecutable(named: WorkerSkillCatalog.greppyID, environment: environment, currentDirectory: directory) {
+          do {
             let result = try await runner.run(CommandSpec(
                 executable: executable,
                 arguments: ["--version"],
@@ -1741,10 +2069,62 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
                 stdoutLimit: 4_096,
                 stderrLimit: 4_096
             ))
-            guard result.exitCode == 0, !result.stdoutTruncated, !result.stderrTruncated else { return [] }
-            return [WorkerSkillCatalog.greppyID]
+            let output = String(decoding: result.standardOutput + result.standardError, as: UTF8.self)
+            guard result.exitCode == 0,
+                  !result.stdoutTruncated,
+                  !result.stderrTruncated,
+                  output.range(of: #"(?:^|[^0-9])v?0\.3\.1(?:[^0-9]|$)"#, options: .regularExpression) != nil else { throw LocalSkillProbeFailure.unavailable }
+            let surface = try await runner.run(CommandSpec(
+                executable: executable,
+                arguments: ["--help"],
+                currentDirectory: directory.path,
+                environment: environment,
+                timeout: 10,
+                stdoutLimit: 65_536,
+                stderrLimit: 4_096
+            ))
+            let surfaceOutput = String(decoding: surface.standardOutput + surface.standardError, as: UTF8.self)
+            guard surface.exitCode == 0,
+                  !surface.stdoutTruncated,
+                  !surface.stderrTruncated,
+                  ["who-calls", "search-symbol", "bash-smart"].allSatisfy(surfaceOutput.contains) else { throw LocalSkillProbeFailure.unavailable }
+            available.insert(WorkerSkillCatalog.greppyID)
+          } catch {}
+        }
+        let gatewayAvailable = route?.candidates.contains(where: { $0.kind == .gatewayPool }) ?? true
+        if gatewayAvailable,
+           let codex = resolvedExecutable(named: "codex", environment: environment, currentDirectory: directory),
+           await executableResponds(codex, arguments: ["--version"], in: directory, environment: environment, runner: runner) {
+            available.insert(WorkerSkillCatalog.webResearchID)
+        } else if let antigravity = resolvedExecutable(named: "agy", environment: environment, currentDirectory: directory),
+                  await executableResponds(antigravity, arguments: ["--version"], in: directory, environment: environment, runner: runner) {
+            available.insert(WorkerSkillCatalog.webResearchID)
+        }
+        return available
+    }
+
+    private enum LocalSkillProbeFailure: Error { case unavailable }
+
+    private static func executableResponds(
+        _ executable: String,
+        arguments: [String],
+        in directory: URL,
+        environment: [String: String],
+        runner: any CommandRunning
+    ) async -> Bool {
+        do {
+            let result = try await runner.run(CommandSpec(
+                executable: executable,
+                arguments: arguments,
+                currentDirectory: directory.path,
+                environment: environment,
+                timeout: 10,
+                stdoutLimit: 4_096,
+                stderrLimit: 4_096
+            ))
+            return result.exitCode == 0 && !result.stdoutTruncated && !result.stderrTruncated
         } catch {
-            return []
+            return false
         }
     }
 
@@ -1819,7 +2199,152 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
         try await service.startRemoteWorker(worker, on: computer, input: brief, ownerID: ownerID)
     }
     public func start(worker: Worker, computer: Computer, route: ResolvedProviderRuntimeRoute, brief: Data, ownerID: String) async throws -> RemoteHostResponse {
-        try await service.startRemoteWorker(worker, on: computer, route: route, input: brief, ownerID: ownerID)
+        if worker.invocation.options["workjet.health-probe"] == "v1" {
+            // Health waits for its result in this process, so the in-memory
+            // tunnel owner remains alive for the complete probe.
+            return try await service.startRemoteWorker(worker, on: computer, route: route, input: brief, ownerID: ownerID)
+        }
+        return try await startRemoteSupervised(worker: worker, computer: computer, route: route, brief: brief, ownerID: ownerID)
+    }
+
+    private func startRemoteSupervised(
+        worker: Worker,
+        computer: Computer,
+        route: ResolvedProviderRuntimeRoute,
+        brief: Data,
+        ownerID: String
+    ) async throws -> RemoteHostResponse {
+        let root = paths.stateDirectory.appendingPathComponent("remote-supervisors", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let directory = root.appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        let requestURL = directory.appendingPathComponent("request.json")
+        let responseURL = directory.appendingPathComponent("response.json")
+        let request = RemoteSupervisorRequest(
+            workerID: worker.id,
+            computerID: computer.id,
+            ownerID: ownerID,
+            route: route,
+            brief: brief,
+            workingDirectory: workingDirectory.path
+        )
+        let requestData = try JSONEncoder().encode(request)
+        try requestData.write(to: requestURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: requestURL.path)
+
+        let process = Process()
+        process.executableURL = supervisorExecutable
+        process.arguments = ["__remote-supervise", directory.path]
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = paths.homeDirectory.path
+        environment["PATH"] = environment["PATH"] ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() }
+        catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw WorkjetCLIError(code: "remote_supervisor_start_failed", message: "Der dauerhafte Remote-Supervisor konnte nicht gestartet werden.", exitCode: .transport)
+        }
+
+        let deadline = Date().addingTimeInterval(90)
+        while Date() < deadline {
+            if let data = try? Data(contentsOf: responseURL),
+               let handshake = try? JSONDecoder().decode(RemoteSupervisorHandshake.self, from: data) {
+                try? FileManager.default.removeItem(at: directory)
+                guard handshake.ok,
+                      let runID = handshake.runID,
+                      let state = handshake.state else {
+                    throw WorkjetCLIError(code: "remote_start_failed", message: handshake.error ?? "Der Remote-Supervisor konnte den Worker nicht starten.", exitCode: .transport)
+                }
+                return RemoteHostResponse(ok: true, runID: runID, state: state, cursor: handshake.cursor ?? 0)
+            }
+            if !process.isRunning {
+                try? FileManager.default.removeItem(at: directory)
+                throw WorkjetCLIError(code: "remote_supervisor_failed", message: "Der Remote-Supervisor endete vor der Startbestätigung.", exitCode: .transport)
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        process.terminate()
+        try? FileManager.default.removeItem(at: directory)
+        throw WorkjetCLIError(code: "remote_supervisor_timeout", message: "Der Remote-Supervisor hat den Start nicht rechtzeitig bestätigt.", exitCode: .transport)
+    }
+
+    /// Hidden CLI entry point. This process owns the in-memory gateway tunnel
+    /// for the complete remote run instead of letting `workjet run` tear it
+    /// down immediately after printing the run ID.
+    public static func superviseRemote(requestDirectory: URL, paths: WorkjetPaths) async throws {
+        let requestURL = requestDirectory.appendingPathComponent("request.json")
+        let responseURL = requestDirectory.appendingPathComponent("response.json")
+        let request = try JSONDecoder().decode(RemoteSupervisorRequest.self, from: Data(contentsOf: requestURL))
+        let backing = try LiveWorkjetCLIBacking(
+            paths: paths,
+            workingDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true)
+        )
+        guard let worker = backing.configuration.workers.first(where: { $0.id == request.workerID }),
+              let computer = backing.configuration.computers.first(where: { $0.id == request.computerID }),
+              worker.computerID == computer.id,
+              !computer.isLocal else {
+            try writeRemoteSupervisorHandshake(
+                RemoteSupervisorHandshake(ok: false, error: "Worker oder Remote-Computer ist nicht mehr konfiguriert."),
+                to: responseURL
+            )
+            return
+        }
+        let response: RemoteHostResponse
+        do {
+            response = try await backing.service.startRemoteWorker(
+                worker,
+                on: computer,
+                route: request.route,
+                input: request.brief,
+                ownerID: request.ownerID
+            )
+        } catch {
+            try writeRemoteSupervisorHandshake(
+                RemoteSupervisorHandshake(ok: false, error: error.localizedDescription),
+                to: responseURL
+            )
+            return
+        }
+        guard let runID = response.runID else {
+            try writeRemoteSupervisorHandshake(
+                RemoteSupervisorHandshake(ok: false, error: "Der Remote-Host lieferte keine Run-ID."),
+                to: responseURL
+            )
+            return
+        }
+        try writeRemoteSupervisorHandshake(
+            RemoteSupervisorHandshake(ok: true, runID: runID, state: response.state, cursor: response.cursor),
+            to: responseURL
+        )
+
+        var cursor = response.cursor
+        var state = response.state
+        var consecutiveObservationFailures = 0
+        while !state.isTerminal {
+            try await Task.sleep(for: .milliseconds(500))
+            do {
+                let observed = try await backing.service.remoteEvents(on: computer, runID: runID, after: cursor)
+                cursor = observed.cursor
+                state = observed.state
+                consecutiveObservationFailures = 0
+            } catch {
+                // The supervisor's primary duty is to keep the run-scoped
+                // provider relay alive. A transient observational SSH failure
+                // must not tear that relay down and kill a healthy worker.
+                consecutiveObservationFailures += 1
+                if consecutiveObservationFailures >= 120 { throw error }
+                try await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private static func writeRemoteSupervisorHandshake(_ handshake: RemoteSupervisorHandshake, to url: URL) throws {
+        let data = try JSONEncoder().encode(handshake)
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     public func list(computer: Computer, ownerID: String) async throws -> RemoteHostResponse {
         try await service.listRemoteRuns(on: computer, ownerID: ownerID)
@@ -1840,6 +2365,22 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
         guard let computer = configuration.computers.first(where: { $0.id == record.computerID }), !computer.isLocal else { throw WorkspaceResultError.identityMismatch }
         return try await service.markRemoteWorkspace(on: computer, runID: runID, disposition: disposition)
     }
+    public func setup(computer: Computer) async throws -> Computer {
+        guard !computer.isLocal else {
+            throw WorkjetCLIError(code: "computer_setup_local", message: "Der lokale Computer benötigt keine Remote-Einrichtung.", exitCode: .usage)
+        }
+        let deployed = await service.bootstrapRemotePi(computer)
+        guard deployed.deploymentStatus == .installed else {
+            throw WorkjetCLIError(code: "computer_setup_failed", message: deployed.deploymentDetail, exitCode: .transport)
+        }
+        var updated = configuration
+        guard let index = updated.computers.firstIndex(where: { $0.id == computer.id }) else {
+            throw WorkjetCLIError(code: "computer_not_found", message: "Der Computer ist nicht mehr konfiguriert.", exitCode: .state)
+        }
+        updated.computers[index] = deployed
+        try service.save(updated, handwrittenRulesChanged: false)
+        return deployed
+    }
 }
 
 public struct WorkjetCLIEngine: Sendable {
@@ -1858,14 +2399,31 @@ public struct WorkjetCLIEngine: Sendable {
         case let .workerDescribe(identifier, _):
             let worker = try resolveWorker(identifier)
             return WorkjetCLIResponse(command: "workers.describe", worker: presentation(worker))
+        case let .computerSetup(identifier, _):
+            let computer = try resolveComputer(identifier)
+            let deployed = try await backing.setup(computer: computer)
+            return WorkjetCLIResponse(command: "computers.setup", computer: WorkjetCLIComputer(
+                id: deployed.id,
+                name: deployed.name,
+                state: deployed.deploymentStatus.rawValue,
+                detail: deployed.deploymentDetail,
+                sidecarVersion: deployed.installedSidecarVersion,
+                contentHash: deployed.installedContentHash
+            ))
+        case let .healthProbeWorkers(identifiers, timeoutSeconds, _):
+            let timeout = timeoutSeconds ?? backing.configuration.probeTimeoutSeconds
+            let selectedWorkers = try identifiers.isEmpty
+                ? backing.configuration.workers
+                : identifiers.map(resolveWorker)
+            let results = await probeWorkers(selectedWorkers, timeoutSeconds: timeout)
+            return WorkjetCLIResponse(
+                ok: results.allSatisfy { $0.status == "ready" },
+                command: "health",
+                health: results,
+                checkedAt: ISO8601DateFormatter().string(from: Date())
+            )
         case let .run(identifier, brief, _):
             let worker = try resolveWorker(identifier)
-            guard let computer = backing.configuration.computers.first(where: { $0.id == worker.computerID }) else {
-                throw WorkjetCLIError(code: "computer_not_found", message: "Der Ziel-Computer des Workers ist nicht konfiguriert.", exitCode: .state)
-            }
-            guard computer.isLocal || (computer.deploymentStatus == .installed && computer.installedSidecarVersion == PiSidecarRuntime.version) else {
-                throw WorkjetCLIError(code: "computer_not_ready", message: "Der Ziel-Computer ist nicht vollständig eingerichtet.", exitCode: .state)
-            }
             let input: Data
             switch brief {
             case let .inline(value): input = Data(value.utf8)
@@ -1874,16 +2432,7 @@ public struct WorkjetCLIEngine: Sendable {
                 catch { throw WorkjetCLIError(code: "brief_unreadable", message: "Die Brief-Datei konnte nicht gelesen werden.", exitCode: .state) }
             }
             guard !input.isEmpty else { throw WorkjetCLIError.usage("Der Brief darf nicht leer sein.") }
-            let response: RemoteHostResponse
-            if computer.isLocal {
-                let route = try resolveProviderRoute(worker: worker, target: .local)
-                response = try await translateLocalErrors { try await backing.startLocal(worker: worker, route: route, brief: input) }
-            } else {
-                let route = try resolveProviderRoute(worker: worker, target: .remote)
-                response = try await translateRemoteErrors {
-                    try await backing.start(worker: worker, computer: computer, route: route, brief: input, ownerID: ownerID(worker.id))
-                }
-            }
+            let (_, response, _) = try await start(worker: worker, input: input)
             guard let runID = response.runID, !runID.isEmpty else {
                 throw WorkjetCLIError(code: "missing_run_id", message: "Der Startdienst hat keine Run-ID geliefert.", exitCode: .rejected)
             }
@@ -1919,6 +2468,166 @@ public struct WorkjetCLIEngine: Sendable {
         }
     }
 
+    private static let healthToken = "WORKJET_HEALTH_OK"
+    private static let healthPrompt = """
+    WORKJET HEALTH PROBE V1. This is a real user health ping: hi. Do not inspect or edit files. Do not use tools. Do not spawn subagents. Reply exactly WORKJET_HEALTH_OK and exit.
+    """
+
+    private func probeWorkers(_ workers: [Worker], timeoutSeconds: Int) async -> [WorkjetCLIWorkerHealth] {
+        let limit = min(max(backing.configuration.providerSlots, 1), max(workers.count, 1))
+        return await withTaskGroup(of: (Int, WorkjetCLIWorkerHealth).self, returning: [WorkjetCLIWorkerHealth].self) { group in
+            var next = 0
+            var results: [(Int, WorkjetCLIWorkerHealth)] = []
+            while next < min(limit, workers.count) {
+                let index = next
+                group.addTask { (index, await probe(worker: workers[index], timeoutSeconds: timeoutSeconds)) }
+                next += 1
+            }
+            while let result = await group.next() {
+                results.append(result)
+                if next < workers.count {
+                    let index = next
+                    group.addTask { (index, await probe(worker: workers[index], timeoutSeconds: timeoutSeconds)) }
+                    next += 1
+                }
+            }
+            return results.sorted { $0.0 < $1.0 }.map(\.1)
+        }
+    }
+
+    private func probe(worker: Worker, timeoutSeconds: Int) async -> WorkjetCLIWorkerHealth {
+        let startedAt = Date()
+        var runID: String?
+        // Resolve presentation facts before starting the run. A launch error
+        // must not erase a computer that is plainly present in configuration.
+        var computerName = backing.configuration.computers
+            .first(where: { $0.id == worker.computerID })?.name
+            ?? "Nicht konfiguriert"
+        var routeName: String?
+        do {
+            var probeWorker = worker
+            probeWorker.invocation.options["workjet.health-probe"] = "v1"
+            let (computer, response, resolvedRoute) = try await start(worker: probeWorker, input: Data(Self.healthPrompt.utf8))
+            computerName = computer.name
+            routeName = resolvedRoute.displayName
+            guard let value = response.runID, !value.isEmpty else {
+                throw WorkjetCLIError(code: "missing_run_id", message: "Der Startdienst hat keine Run-ID geliefert.", exitCode: .rejected)
+            }
+            runID = value
+            var cursor = response.cursor
+            var tokenObserved = false
+            var failureDiagnostic: String?
+            let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
+            while Date() < deadline {
+                let current: RemoteHostResponse?
+                if computer.isLocal {
+                    current = try await translateLocalErrors { try await backing.localEvents(runID: value, after: cursor) }
+                } else {
+                    current = try await translateRemoteErrors {
+                        try await backing.events(computer: computer, runID: value, after: cursor)
+                    }
+                }
+                guard let current else {
+                    throw WorkjetCLIError(code: "health_run_missing", message: "Der Healthcheck-Run ist nicht mehr auffindbar.", exitCode: .state)
+                }
+                tokenObserved = tokenObserved || current.events.contains {
+                    $0.kind == "stdout" && ($0.text?.contains(Self.healthToken) == true)
+                }
+                for event in current.events where event.text?.contains(Self.healthToken) != true {
+                    guard event.kind != "started", event.kind != "stopped" else { continue }
+                    guard let text = Self.healthDiagnostic(event.text) else { continue }
+                    if event.kind == "stdout" || event.kind == "provider-error" || failureDiagnostic == nil {
+                        failureDiagnostic = text
+                    }
+                }
+                cursor = max(cursor, current.cursor)
+                if current.state.isTerminal {
+                    let ready = current.state == .completed && tokenObserved
+                    let providerFailure = failureDiagnostic.map(Self.isProviderDiagnostic) == true
+                    return healthResult(
+                        worker: worker,
+                        computerName: computerName,
+                        providerRoute: routeName,
+                        status: ready ? "ready" : "failed",
+                        startedAt: startedAt,
+                        runID: value,
+                        tokenObserved: tokenObserved,
+                        error: ready ? nil : (providerFailure ? "provider_unavailable" : "health_response_invalid"),
+                        message: ready ? nil : (failureDiagnostic ?? "Der Worker endete mit \(current.state.rawValue), ohne das erwartete Antworttoken zu bestätigen.")
+                    )
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            if computer.isLocal {
+                _ = try? await backing.stopLocal(runID: value)
+            } else {
+                _ = try? await backing.stop(computer: computer, runID: value)
+            }
+            return healthResult(worker: worker, computerName: computerName, providerRoute: routeName, status: "timeout", startedAt: startedAt, runID: value, tokenObserved: tokenObserved, error: "health_timeout", message: "Der Worker antwortete nicht innerhalb von \(timeoutSeconds) Sekunden.")
+        } catch let error as WorkjetCLIError {
+            return healthResult(worker: worker, computerName: computerName, providerRoute: routeName, status: "failed", startedAt: startedAt, runID: runID, tokenObserved: false, error: error.code, message: error.message)
+        } catch {
+            return healthResult(worker: worker, computerName: computerName, providerRoute: routeName, status: "failed", startedAt: startedAt, runID: runID, tokenObserved: false, error: "health_internal_error", message: error.localizedDescription)
+        }
+    }
+
+    private static func healthDiagnostic(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let compact = raw.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        guard !compact.isEmpty else { return nil }
+        return String(compact.prefix(512))
+    }
+
+    private static func isProviderDiagnostic(_ message: String) -> Bool {
+        let value = message.lowercased()
+        return ["http 401", "http 403", "authenticate", "authentication", "usage limit", "quota", "billing cycle", "rate limit"].contains { value.contains($0) }
+    }
+
+    private func healthResult(
+        worker: Worker,
+        computerName: String,
+        providerRoute: String?,
+        status: String,
+        startedAt: Date,
+        runID: String?,
+        tokenObserved: Bool,
+        error: String?,
+        message: String?
+    ) -> WorkjetCLIWorkerHealth {
+        WorkjetCLIWorkerHealth(
+            workerID: worker.id,
+            workerName: worker.name,
+            model: worker.model,
+            computerName: computerName,
+            providerRoute: providerRoute,
+            status: status,
+            latencyMilliseconds: max(0, Int(Date().timeIntervalSince(startedAt) * 1_000)),
+            runID: runID,
+            responseTokenObserved: tokenObserved,
+            error: error,
+            message: message
+        )
+    }
+
+    private func start(worker: Worker, input: Data) async throws -> (Computer, RemoteHostResponse, ResolvedProviderRuntimeRoute) {
+        guard let computer = backing.configuration.computers.first(where: { $0.id == worker.computerID }) else {
+            throw WorkjetCLIError(code: "computer_not_found", message: "Der Ziel-Computer des Workers ist nicht konfiguriert.", exitCode: .state)
+        }
+        guard computer.isLocal || (computer.deploymentStatus == .installed && computer.installedSidecarVersion == PiSidecarRuntime.version) else {
+            throw WorkjetCLIError(code: "computer_not_ready", message: "Der Ziel-Computer ist nicht vollständig eingerichtet.", exitCode: .state)
+        }
+        if computer.isLocal {
+            let route = try resolveProviderRoute(worker: worker, target: .local)
+            let response = try await translateLocalErrors { try await backing.startLocal(worker: worker, route: route, brief: input) }
+            return (computer, response, route)
+        }
+        let route = try resolveProviderRoute(worker: worker, target: .remote)
+        let response = try await translateRemoteErrors {
+            try await backing.start(worker: worker, computer: computer, route: route, brief: input, ownerID: ownerID(worker.id))
+        }
+        return (computer, response, route)
+    }
+
     private func resolveWorker(_ identifier: String) throws -> Worker {
         if let id = UUID(uuidString: identifier), let worker = backing.configuration.workers.first(where: { $0.id == id }) { return worker }
         let matches = backing.configuration.workers.filter { $0.name == identifier }
@@ -1927,6 +2636,18 @@ public struct WorkjetCLIEngine: Sendable {
         }
         guard matches.count == 1 else {
             throw WorkjetCLIError(code: "worker_ambiguous", message: "Mehrere Worker haben diesen exakten Namen; verwende die UUID.", exitCode: .ambiguous)
+        }
+        return matches[0]
+    }
+
+    private func resolveComputer(_ identifier: String) throws -> Computer {
+        if let id = UUID(uuidString: identifier), let computer = backing.configuration.computers.first(where: { $0.id == id }) { return computer }
+        let matches = backing.configuration.computers.filter { $0.name == identifier }
+        guard !matches.isEmpty else {
+            throw WorkjetCLIError(code: "computer_not_found", message: "Kein Computer mit dieser UUID oder diesem exakten Namen gefunden.", exitCode: .notFound)
+        }
+        guard matches.count == 1 else {
+            throw WorkjetCLIError(code: "computer_ambiguous", message: "Mehrere Computer haben diesen exakten Namen; verwende die UUID.", exitCode: .ambiguous)
         }
         return matches[0]
     }
@@ -2032,6 +2753,8 @@ public struct LocalRunService: Sendable {
         var speed: String
         var harness: Harness
         var route: ResolvedProviderRuntimeRoute
+        var systemPrompt: String?
+        var skillIDs: [String]
     }
 
     private struct Snapshot: Codable {
@@ -2054,28 +2777,35 @@ public struct LocalRunService: Sendable {
     public let paths: WorkjetPaths
     public let processProbe: any ProcessProbing
     public let credentials: any CredentialStoring
+    public let gatewayCredentials: any CredentialStoring
 
-    public init(paths: WorkjetPaths, processProbe: any ProcessProbing = SystemProcessProbe(), credentials: any CredentialStoring = KeychainCredentialStore()) {
+    public init(
+        paths: WorkjetPaths,
+        processProbe: any ProcessProbing = SystemProcessProbe(),
+        credentials: any CredentialStoring = PrivateFileCredentialStore(),
+        gatewayCredentials: any CredentialStoring = CLIProxyGatewayCredentialStore()
+    ) {
         self.paths = paths
         self.processProbe = processProbe
         self.credentials = credentials
+        self.gatewayCredentials = gatewayCredentials
     }
 
     public func start(worker: Worker, brief: Data, supervisorExecutable: URL) throws -> RemoteHostResponse {
         let route = ResolvedProviderRuntimeRoute(displayName: "Ohne Anbieter", candidates: [
             ProviderRuntimeCandidate(kind: .directAccount, providerID: nil, modelProvider: nil, displayName: "Ohne Anbieter", endpoint: "http://127.0.0.1", authentication: .none, credentialReference: nil)
         ])
-        return try start(worker: worker, route: route, brief: brief, supervisorExecutable: supervisorExecutable)
+        return try start(worker: worker, route: route, brief: brief, systemPrompt: nil, skillIDs: [], supervisorExecutable: supervisorExecutable)
     }
 
-    public func start(worker: Worker, route: ResolvedProviderRuntimeRoute, brief: Data, supervisorExecutable: URL) throws -> RemoteHostResponse {
+    public func start(worker: Worker, route: ResolvedProviderRuntimeRoute, brief: Data, systemPrompt: String? = nil, skillIDs: Set<String> = [], supervisorExecutable: URL) throws -> RemoteHostResponse {
         guard let briefText = String(data: brief, encoding: .utf8), !briefText.isEmpty else {
             throw WorkjetCLIError(code: "brief_invalid", message: "Der lokale Brief muss gültiger, nicht leerer UTF-8-Text sein.", exitCode: .usage)
         }
         guard HarnessAdapterRegistry.supportsLocalExecution(worker.harness) else {
             throw WorkjetCLIError(code: "harness_unsupported", message: "Dieses Harness besitzt noch keine verifizierte lokale One-Shot-Schnittstelle.", exitCode: .state)
         }
-        let executable = try validatedExecutable(worker.invocation.executable)
+        let executable = try validatedExecutable(worker.invocation.executable, purpose: "Worker-Harness")
         let placeholders = worker.invocation.arguments.indices.filter { worker.invocation.arguments[$0] == "<WORKJET_BRIEF>" }
         guard placeholders.count == 1 else {
             throw WorkjetCLIError(code: "brief_contract_invalid", message: "Der lokale Worker muss genau einen eigenen <WORKJET_BRIEF>-Argumentplatzhalter besitzen.", exitCode: .state)
@@ -2083,9 +2813,28 @@ public struct LocalRunService: Sendable {
         if let issue = HarnessAdapterRegistry.localInvocationIssue(harness: worker.harness, invocation: worker.invocation) {
             throw WorkjetCLIError(code: "harness_contract_invalid", message: issue, exitCode: .state)
         }
+        if let systemPrompt {
+            guard worker.harness == .claudeCode,
+                  !systemPrompt.isEmpty,
+                  systemPrompt.utf8.count <= 65_536,
+                  !systemPrompt.contains("\0") else {
+                throw WorkjetCLIError(code: "system_prompt_invalid", message: "Der Harness-System-Prompt ist für diesen Worker ungültig oder nicht unterstützt.", exitCode: .state)
+            }
+            guard HarnessAdapterRegistry.allowedTools(in: worker.invocation)?.contains("Bash") == true else {
+                throw WorkjetCLIError(code: "skill_tool_missing", message: "Ein aktivierter Workjet-Skill benötigt Bash, aber das Claude-Code-Tool Bash ist für diesen Worker nicht freigegeben.", exitCode: .state)
+            }
+        }
         var arguments = worker.invocation.arguments
         arguments[placeholders[0]] = briefText
-        let supervisor = try validatedExecutable(supervisorExecutable.path)
+        let supervisor = try validatedExecutable(supervisorExecutable.path, purpose: "Workjet-Supervisor")
+        var supervisorEnvironment: [String: String] = [:]
+        for (index, candidate) in route.candidates.enumerated() {
+            guard let reference = candidate.credentialReference else { continue }
+            guard let secret = try credentialData(reference: reference), !secret.isEmpty else {
+                throw WorkjetCLIError(code: "provider_credential_missing", message: ProviderRuntimeRouteError.credentialMissing(candidate.displayName).localizedDescription, exitCode: .state)
+            }
+            supervisorEnvironment[Self.supervisorSecretKey(index)] = secret.base64EncodedString()
+        }
         let runID = "local-\(ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: ""))-\(UUID().uuidString.lowercased())"
         let directory = paths.runsDirectory.appendingPathComponent(runID, isDirectory: true)
         try createPrivateDirectory(paths.runsDirectory)
@@ -2100,13 +2849,15 @@ public struct LocalRunService: Sendable {
             reasoning: worker.reasoningEffort?.rawValue,
             speed: worker.invocation.options["fastMode"] == "true" ? RunSpeed.fast.rawValue : RunSpeed.normal.rawValue,
             harness: worker.harness,
-            route: route
+            route: route,
+            systemPrompt: systemPrompt,
+            skillIDs: skillIDs.sorted()
         )
         try AtomicFile.write(try JSONEncoder().encode(spec), to: directory.appendingPathComponent("launch.json"), directoryMode: 0o700, fileMode: 0o600)
         try AtomicFile.write(Data((worker.id.uuidString.lowercased() + "\n").utf8), to: directory.appendingPathComponent("worker-id"), directoryMode: 0o700, fileMode: 0o600)
         try AtomicFile.write(Data((executable.path + "\n").utf8), to: directory.appendingPathComponent("worker"), directoryMode: 0o700, fileMode: 0o600)
         try AtomicFile.write(Data((directory.path + "\n").utf8), to: paths.runIndexDirectory.appendingPathComponent(runID), directoryMode: 0o700, fileMode: 0o600)
-        try spawnDetached(executable: supervisor.path, arguments: ["__local-supervise", directory.path])
+        try spawnDetached(executable: supervisor.path, arguments: ["__local-supervise", directory.path], additionalEnvironment: supervisorEnvironment)
 
         // Detached supervisors can be delayed by a busy host even though the
         // launch is healthy. Keep the handshake bounded, but allow enough time
@@ -2116,7 +2867,11 @@ public struct LocalRunService: Sendable {
             if FileManager.default.fileExists(atPath: directory.appendingPathComponent("pid").path) {
                 return RemoteHostResponse(ok: true, runID: runID, state: .running, cursor: 1)
             }
-            if FileManager.default.fileExists(atPath: directory.appendingPathComponent("rc").path) { break }
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent("rc").path) {
+                let detail = (try? readEvents(directory).last(where: { $0.kind == "provider-error" })?.text)
+                    ?? "Der lokale Worker konnte nicht sicher gestartet werden."
+                throw WorkjetCLIError(code: "provider_runtime_unavailable", message: detail, exitCode: .state)
+            }
             Thread.sleep(forTimeInterval: 0.025)
         }
         throw WorkjetCLIError(code: "local_start_failed", message: "Der lokale Worker konnte nicht sicher gestartet werden.", exitCode: .state)
@@ -2148,7 +2903,7 @@ public struct LocalRunService: Sendable {
         let specData = try SecureFile.readRegularOwnedFile(at: directory.appendingPathComponent("launch.json"), maximumBytes: 1_048_576)
         let spec = try JSONDecoder().decode(LaunchSpec.self, from: specData)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("launch.json"))
-        let executable = try validatedExecutable(spec.executable)
+        let executable = try validatedExecutable(spec.executable, purpose: "Worker-Harness")
         guard !spec.arguments.contains("<WORKJET_BRIEF>") else {
             throw WorkjetCLIError(code: "brief_contract_invalid", message: "Der Brief-Platzhalter wurde nicht ersetzt.", exitCode: .state)
         }
@@ -2158,13 +2913,25 @@ public struct LocalRunService: Sendable {
         for (candidateIndex, candidate) in spec.route.candidates.enumerated() {
             let environment: [String: String]
             do {
-                environment = try runtimeEnvironment(candidate: candidate, spec: spec)
+                environment = try runtimeEnvironment(candidate: candidate, candidateIndex: candidateIndex, spec: spec)
             } catch {
                 finalExitCode = 78
+                sequence += 1
+                try appendEvent(RemoteHostEvent(
+                    sequence: sequence,
+                    timestamp: ISO8601DateFormatter().string(from: Date()),
+                    kind: "provider-error",
+                    text: "\(candidate.displayName): \(error.localizedDescription)",
+                    exitCode: finalExitCode
+                ), directory: directory)
                 if candidateIndex + 1 < spec.route.candidates.count { continue }
                 break
             }
-            let spawned = try spawnSuspended(executable: executable.path, arguments: effectiveArguments(spec), environment: environment)
+            let spawned = try spawnSuspended(
+                executable: executable.path,
+                arguments: effectiveArguments(spec, candidate: candidate),
+                environment: environment
+            )
             let pid = spawned.pid
         let deadline = Date().addingTimeInterval(2)
         var identity: ProcessIdentity?
@@ -2188,16 +2955,28 @@ public struct LocalRunService: Sendable {
         try AtomicFile.write(Data("\(pid)\n".utf8), to: directory.appendingPathComponent("pid"), directoryMode: 0o700, fileMode: 0o600)
         guard kill(pid, SIGCONT) == 0 else { throw LocalStateError.io("Der lokale Worker konnte nicht fortgesetzt werden.") }
         var waitStatus: Int32 = 0
+        var output = Data()
         var diagnostic = Data()
         while waitpid(pid, &waitStatus, WNOHANG) == 0 {
+            drain(spawned.stdout, into: &output)
             drain(spawned.stderr, into: &diagnostic)
             try writeSnapshot(Snapshot(sequence: sequence, state: "running", heartbeatAt: ISO8601DateFormatter().string(from: Date()), model: spec.model, reasoning: spec.reasoning, speed: spec.speed, providerRoute: candidate.displayName), directory: directory)
             Thread.sleep(forTimeInterval: 0.25)
         }
+        drain(spawned.stdout, into: &output)
         drain(spawned.stderr, into: &diagnostic)
+        close(spawned.stdout)
         close(spawned.stderr)
         let exitCode: Int32 = (waitStatus & 0x7f) == 0 ? ((waitStatus >> 8) & 0xff) : 128 + (waitStatus & 0x7f)
         finalExitCode = exitCode
+        if !output.isEmpty {
+            sequence += 1
+            try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "stdout", text: String(decoding: output, as: UTF8.self)), directory: directory)
+        }
+        if exitCode != 0, !diagnostic.isEmpty {
+            sequence += 1
+            try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "stderr", text: String(decoding: diagnostic, as: UTF8.self), exitCode: exitCode), directory: directory)
+        }
         if exitCode != 0, candidateIndex + 1 < spec.route.candidates.count,
            ProviderRuntimeFailureClass.classify(exitCode: exitCode, diagnostic: String(decoding: diagnostic, as: UTF8.self)) == .retryable {
             continue
@@ -2211,25 +2990,41 @@ public struct LocalRunService: Sendable {
         try writeSnapshot(Snapshot(sequence: sequence, state: finalState, heartbeatAt: ISO8601DateFormatter().string(from: Date()), model: spec.model, reasoning: spec.reasoning, speed: spec.speed, providerRoute: spec.route.displayName), directory: directory)
     }
 
-    private func validatedExecutable(_ rawPath: String) throws -> URL {
+    private func validatedExecutable(_ rawPath: String, purpose: String) throws -> URL {
         let expanded = (rawPath as NSString).expandingTildeInPath
         guard expanded.hasPrefix("/") else {
-            throw WorkjetCLIError(code: "executable_invalid", message: "Die lokale ausführbare Datei muss als absoluter Pfad konfiguriert sein.", exitCode: .state)
+            throw WorkjetCLIError(code: "executable_invalid", message: "\(purpose): Der Pfad muss absolut sein (konfiguriert: \(rawPath)).", exitCode: .state)
         }
-        let url = URL(fileURLWithPath: expanded).standardizedFileURL
+        // Homebrew and most harness installers expose stable symlinks in bin/.
+        // Validate and launch the canonical target so a legitimate symlink is
+        // neither rejected nor ambiguously reported as a non-regular file.
+        let url = URL(fileURLWithPath: expanded)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
         var info = stat()
         let forbidden = ["sh", "bash", "zsh", "dash", "fish", "eval"]
-        guard stat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG, access(url.path, X_OK) == 0,
-              !forbidden.contains(url.lastPathComponent) else {
-            throw WorkjetCLIError(code: "executable_invalid", message: "Die lokale ausführbare Datei fehlt, ist nicht regulär oder nicht ausführbar.", exitCode: .state)
+        guard stat(url.path, &info) == 0 else {
+            throw WorkjetCLIError(code: "executable_invalid", message: "\(purpose): Ausführbare Datei nicht gefunden (\(url.path)).", exitCode: .state)
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            throw WorkjetCLIError(code: "executable_invalid", message: "\(purpose): Ziel ist keine reguläre Datei (\(url.path)).", exitCode: .state)
+        }
+        guard access(url.path, X_OK) == 0 else {
+            throw WorkjetCLIError(code: "executable_invalid", message: "\(purpose): Datei ist nicht ausführbar (\(url.path)).", exitCode: .state)
+        }
+        guard !forbidden.contains(url.lastPathComponent) else {
+            throw WorkjetCLIError(code: "executable_invalid", message: "\(purpose): Eine Shell darf nicht direkt als Harness konfiguriert werden (\(url.path)).", exitCode: .state)
         }
         return url
     }
 
-    private func effectiveArguments(_ spec: LaunchSpec) -> [String] {
+    private func effectiveArguments(_ spec: LaunchSpec, candidate: ProviderRuntimeCandidate) -> [String] {
         var arguments = spec.arguments
         switch spec.harness {
         case .claudeCode:
+            if let systemPrompt = spec.systemPrompt {
+                arguments += ["--append-system-prompt", systemPrompt]
+            }
             if !containsOption("--model", in: arguments) { arguments += ["--model", spec.model] }
             if let reasoning = spec.reasoning, !containsOption("--effort", in: arguments) {
                 arguments += ["--effort", reasoning]
@@ -2241,6 +3036,13 @@ public struct LocalRunService: Sendable {
                 arguments += ["--settings", #"{"fastMode":true,"fastModePerSessionOptIn":true}"#]
             }
         case .codexCLI:
+            if spec.skillIDs.contains(WorkerSkillCatalog.webResearchID), !arguments.contains("--search") {
+                arguments.insert("--search", at: 0)
+            }
+            if spec.skillIDs.contains(WorkerSkillCatalog.webResearchID), candidate.kind == .gatewayPool,
+               let execIndex = arguments.firstIndex(of: "exec") {
+                arguments.insert(contentsOf: Self.workjetCodexProviderArguments(endpoint: candidate.endpoint), at: execIndex)
+            }
             if !containsOption("--model", short: "-m", in: arguments) { arguments += ["--model", spec.model] }
             if let reasoning = spec.reasoning, ["low", "medium", "high", "xhigh"].contains(reasoning) {
                 arguments += ["-c", "model_reasoning_effort=\"\(reasoning)\""]
@@ -2256,13 +3058,34 @@ public struct LocalRunService: Sendable {
         return arguments
     }
 
+    private static func workjetCodexProviderArguments(endpoint: String) -> [String] {
+        let endpoint = webResearchBaseURL(endpoint)
+        return [
+            "-c", #"model_provider="workjet""#,
+            "-c", #"model_providers.workjet.name="Workjet Web Research""#,
+            "-c", #"model_providers.workjet.base_url="\#(endpoint)""#,
+            "-c", #"model_providers.workjet.env_key="WORKJET_WEB_RESEARCH_API_KEY""#,
+            "-c", #"model_providers.workjet.wire_api="responses""#,
+            "-c", "model_providers.workjet.requires_openai_auth=false",
+            "-c", "model_providers.workjet.supports_websockets=false",
+            "-c", "model_providers.workjet.supports_standalone_web_search=true",
+        ]
+    }
+
+    private static func webResearchBaseURL(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw) else { return raw }
+        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if path.isEmpty { components.path = "/v1" }
+        return components.url?.absoluteString ?? raw
+    }
+
     private func containsOption(_ long: String, short: String? = nil, in arguments: [String]) -> Bool {
         arguments.contains(long)
             || arguments.contains(where: { $0.hasPrefix(long + "=") })
             || short.map { arguments.contains($0) } == true
     }
 
-    private func runtimeEnvironment(candidate: ProviderRuntimeCandidate, spec: LaunchSpec) throws -> [String: String] {
+    private func runtimeEnvironment(candidate: ProviderRuntimeCandidate, candidateIndex: Int, spec: LaunchSpec) throws -> [String: String] {
         var result = baseEnvironment()
         result["WORKJET_MODEL"] = spec.model
         result["WORKJET_REASONING"] = spec.reasoning ?? "automatic"
@@ -2271,7 +3094,10 @@ public struct LocalRunService: Sendable {
         result["WORKJET_PROVIDER_ENDPOINT"] = candidate.endpoint
         let secret: String?
         if let reference = candidate.credentialReference {
-            guard let data = try credentials.read(reference: reference),
+            let prefetched = ProcessInfo.processInfo.environment[Self.supervisorSecretKey(candidateIndex)]
+                .flatMap { Data(base64Encoded: $0) }
+            let resolvedData = try prefetched ?? credentialData(reference: reference)
+            guard let data = resolvedData,
                   let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !value.isEmpty else {
                 throw ProviderRuntimeRouteError.credentialMissing(candidate.displayName)
@@ -2292,7 +3118,37 @@ public struct LocalRunService: Sendable {
             result["XAI_BASE_URL"] = candidate.endpoint
             if candidate.authentication != .none { result["XAI_API_KEY"] = secret }
         }
+        if spec.skillIDs.contains(WorkerSkillCatalog.webResearchID) {
+            if candidate.kind == .gatewayPool {
+                result["WORKJET_WEB_RESEARCH_BASE_URL"] = Self.webResearchBaseURL(candidate.endpoint)
+                if candidate.authentication != .none { result["WORKJET_WEB_RESEARCH_API_KEY"] = secret }
+                result["WORKJET_WEB_RESEARCH_BACKEND"] = "codex"
+            } else if Self.localExecutable(named: "agy", environment: result) != nil {
+                result["WORKJET_WEB_RESEARCH_BACKEND"] = "antigravity"
+            } else {
+                throw WorkjetCLIError(code: "skill_runtime_unavailable", message: "Für Web Research ist kein verifizierter Laufzeit-Backend verfügbar.", exitCode: .state)
+            }
+        }
+        if spec.skillIDs.contains(WorkerSkillCatalog.greppyID) {
+            result["GREPPY_STORE_DIR"] = paths.stateDirectory.appendingPathComponent("greppy", isDirectory: true).path
+        }
         return result
+    }
+
+    private static func localExecutable(named command: String, environment: [String: String]) -> String? {
+        let current = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        return LiveWorkjetCLIBacking.resolvedExecutable(named: command, environment: environment, currentDirectory: current)
+    }
+
+    func credentialData(reference: String) throws -> Data? {
+        let credentialStore: any CredentialStoring = reference == CLIProxyGatewayCredentialStore.reference
+            ? gatewayCredentials
+            : credentials
+        return try credentialStore.read(reference: reference)
+    }
+
+    private static func supervisorSecretKey(_ candidateIndex: Int) -> String {
+        "WORKJET_SUPERVISOR_SECRET_\(candidateIndex)"
     }
 
     private func baseEnvironment() -> [String: String] {
@@ -2305,7 +3161,7 @@ public struct LocalRunService: Sendable {
         return result
     }
 
-    private func spawnDetached(executable: String, arguments: [String]) throws {
+    private func spawnDetached(executable: String, arguments: [String], additionalEnvironment: [String: String] = [:]) throws {
         var attributes: posix_spawnattr_t?
         guard posix_spawnattr_init(&attributes) == 0 else { throw LocalStateError.io("Startattribute konnten nicht erstellt werden.") }
         defer { posix_spawnattr_destroy(&attributes) }
@@ -2317,7 +3173,9 @@ public struct LocalRunService: Sendable {
             posix_spawn_file_actions_addopen(&actions, descriptor, "/dev/null", descriptor == STDIN_FILENO ? O_RDONLY : O_WRONLY, 0)
         }
         let argv = [executable] + arguments
-        let environment = baseEnvironment().map { "\($0.key)=\($0.value)" }.sorted()
+        let environment = baseEnvironment().merging(additionalEnvironment) { _, provided in provided }
+            .map { "\($0.key)=\($0.value)" }
+            .sorted()
         let result = argv.withCStringArray { pointers in
             environment.withCStringArray { environmentPointers in
                 var pid: pid_t = 0
@@ -2329,6 +3187,7 @@ public struct LocalRunService: Sendable {
 
     private struct SpawnedProcess {
         var pid: pid_t
+        var stdout: Int32
         var stderr: Int32
     }
 
@@ -2340,12 +3199,19 @@ public struct LocalRunService: Sendable {
         var actions: posix_spawn_file_actions_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw LocalStateError.io("Startkanäle konnten nicht erstellt werden.") }
         defer { posix_spawn_file_actions_destroy(&actions) }
+        var stdoutPipe: [Int32] = [0, 0]
+        guard pipe(&stdoutPipe) == 0 else { throw LocalStateError.io("Ausgabekanal konnte nicht erstellt werden.") }
         var stderrPipe: [Int32] = [0, 0]
-        guard pipe(&stderrPipe) == 0 else { throw LocalStateError.io("Fehlerkanal konnte nicht erstellt werden.") }
-        defer { close(stderrPipe[1]) }
+        guard pipe(&stderrPipe) == 0 else {
+            close(stdoutPipe[0]); close(stdoutPipe[1])
+            throw LocalStateError.io("Fehlerkanal konnte nicht erstellt werden.")
+        }
+        defer { close(stdoutPipe[1]); close(stderrPipe[1]) }
         posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0)
-        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/dev/null", O_WRONLY, 0)
+        posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], STDOUT_FILENO)
         posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], STDERR_FILENO)
+        posix_spawn_file_actions_addclose(&actions, stdoutPipe[0])
+        posix_spawn_file_actions_addclose(&actions, stdoutPipe[1])
         posix_spawn_file_actions_addclose(&actions, stderrPipe[0])
         posix_spawn_file_actions_addclose(&actions, stderrPipe[1])
         let argv = [executable] + arguments
@@ -2357,11 +3223,13 @@ public struct LocalRunService: Sendable {
             }
         }
         guard result == 0 else {
+            close(stdoutPipe[0])
             close(stderrPipe[0])
             throw LocalStateError.io(String(cString: strerror(result)))
         }
+        _ = fcntl(stdoutPipe[0], F_SETFL, O_NONBLOCK)
         _ = fcntl(stderrPipe[0], F_SETFL, O_NONBLOCK)
-        return SpawnedProcess(pid: child, stderr: stderrPipe[0])
+        return SpawnedProcess(pid: child, stdout: stdoutPipe[0], stderr: stderrPipe[0])
     }
 
     private func drain(_ descriptor: Int32, into data: inout Data) {

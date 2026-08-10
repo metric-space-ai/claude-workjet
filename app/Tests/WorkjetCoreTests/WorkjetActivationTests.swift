@@ -52,7 +52,7 @@ final class WorkjetActivationTests: XCTestCase {
         guard case .synchronized = status.promptStatus else {
             return XCTFail("Successful save must leave the prompt synchronized")
         }
-        XCTAssertTrue(status.detail.contains("nicht live aktualisiert"))
+        XCTAssertTrue(status.detail.contains("bereits laufender Sitzungen kann Workjet nicht beobachten"))
     }
 
     func testFailedActivationRollsBackConfigurationAndPromptToExactPreviousBytes() throws {

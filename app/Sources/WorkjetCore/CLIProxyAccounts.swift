@@ -67,7 +67,7 @@ public struct CLIProxyAccountAuthenticator: Sendable {
 
     public init(
         runner: any CommandRunning = ProcessCommandRunner(),
-        credentials: any CredentialStoring = KeychainCredentialStore(),
+        credentials: any CredentialStoring = PrivateFileCredentialStore(),
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         executableCandidates: [String] = ["/opt/homebrew/bin/cliproxyapi", "/usr/local/bin/cliproxyapi"]
     ) {

@@ -24,6 +24,7 @@ final class PromptRuntimeTruthTests: XCTestCase {
         let advertised = [
             "`workjet workers list --json`",
             "`workjet workers describe <uuid-oder-exakter-name> --json`",
+            "`workjet health --probe-workers --json`",
             "`workjet run <uuid-oder-exakter-name> --brief-file <pfad> --json`",
             "`workjet events <run-id> --after <exklusive-sequenz> --json`",
             "`workjet stop <run-id> --json`",
@@ -35,6 +36,7 @@ final class PromptRuntimeTruthTests: XCTestCase {
 
         XCTAssertEqual(try WorkjetCLIParser.parse(["workers", "list", "--json"]), .workersList(json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["workers", "describe", "Reviewer", "--json"]), .workerDescribe(identifier: "Reviewer", json: true))
+        XCTAssertEqual(try WorkjetCLIParser.parse(["health", "--probe-workers", "--json"]), .healthProbeWorkers(identifiers: [], timeoutSeconds: nil, json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["run", "Reviewer", "--brief-file", "/tmp/brief.md", "--json"]), .run(identifier: "Reviewer", brief: .file("/tmp/brief.md"), json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["events", "run-1", "--after", "7", "--json"]), .events(runID: "run-1", after: 7, json: true))
         XCTAssertEqual(try WorkjetCLIParser.parse(["stop", "run-1", "--json"]), .stop(runID: "run-1", json: true))
@@ -45,6 +47,11 @@ final class PromptRuntimeTruthTests: XCTestCase {
         XCTAssertTrue(prompt.contains("This is polling, never streaming."))
         XCTAssertTrue(prompt.contains("exclusive sequence cursor"))
         XCTAssertTrue(prompt.contains("Self-review may proceed, and explicitly defer independent review."))
+        XCTAssertTrue(prompt.contains("Do not inspect or diagnose the native `Claude Code-credentials` keychain entry"))
+        XCTAssertTrue(prompt.contains("do not ask the user to run `claude /login`"))
+        XCTAssertTrue(prompt.contains("Read health failures literally"))
+        XCTAssertTrue(prompt.contains("require the JSON `checkedAt` value"))
+        XCTAssertTrue(prompt.contains("Do not replace mixed results with a blanket summary"))
         XCTAssertTrue(prompt.contains("App-Fakt; nicht direkt ausführen"))
         XCTAssertFalse(prompt.contains("Fable erzeugt den aktuellen `CtoxTurnRequest`"))
         XCTAssertFalse(prompt.contains("/usr/bin/ssh"))
@@ -180,8 +187,9 @@ final class PromptRuntimeTruthTests: XCTestCase {
             "Existing frontend adaptation and frontend-to-backend wiring default to Sol",
             "disjoint, counted, fixed-schema repetitive slices",
             "independently sample its output",
-            "Terra only current online research requiring primary sources and direct links",
-            "Terra never receives local repository, file, shell, or code work",
+            "Use Terra as the default for standalone current online research requiring primary sources and direct links",
+            "Terra never receives repository editing or shell/code work",
+            "A different worker with an effective Web Research toggle may use bounded live search and page opening inside its normal assignment",
             "hard file whitelist",
             "forbidden files and non-goals",
             "exact acceptance commands",
@@ -198,15 +206,30 @@ final class PromptRuntimeTruthTests: XCTestCase {
         for modelName in try XCTUnwrap(configuration.modelPrompts).keys {
             XCTAssertTrue(prompt.contains("#### Modellregeln · \(modelName)"), "Missing visible model prompt: \(modelName)")
         }
-        XCTAssertTrue(prompt.contains("- Argumente: [`--bare`, `-p`, `<WORKJET_BRIEF>`, `--allowedTools`, `WebSearch,WebFetch`]"))
+        XCTAssertTrue(prompt.contains("- Harness: Codex CLI"))
+        XCTAssertTrue(prompt.contains("- Argumente: [`--search`, `-a`, `never`, `-s`, `read-only`, `exec`, `--ignore-user-config`, `--skip-git-repo-check`, `--ephemeral`, `<WORKJET_BRIEF>`]"))
         XCTAssertTrue(prompt.contains("Greppy: deaktiviert (Worker-Override)"))
         XCTAssertFalse(prompt.localizedCaseInsensitiveContains("objectively the best"))
+    }
+
+    func testLegacyTerraOnlyRoutingMigratesToTheAdditivePerWorkerWebContract() {
+        let legacy = "Owner text. Give Terra only current online research requiring primary sources and direct links through its verified Codex native-web-search harness; Terra never receives repository editing or shell/code work. More owner text."
+        let migrated = LegacyPromptMigration.correctingKnownSkillDefaults(in: legacy)
+
+        XCTAssertTrue(migrated.contains("Owner text."))
+        XCTAssertTrue(migrated.contains("More owner text."))
+        XCTAssertTrue(migrated.contains("A different worker with an effective Web Research toggle"))
+        XCTAssertFalse(migrated.contains("Give Terra only current online research"))
+
+        let numbered = LegacyPromptMigration.correctingKnownSkillDefaults(in: "7. Use `Web Research · Terra` only for current online research. Require primary sources and direct links; it must never touch local files or code.")
+        XCTAssertTrue(numbered.contains("A normal worker whose Web Research toggle is effective may also search and open pages"))
     }
 
     func testDefaultTechnicalRulesContainNoDirectInvocationOrAutomaticWorkerDegradation() {
         let rules = WorkjetDefaults.configuration().technicalRules ?? ""
         XCTAssertTrue(rules.contains("workjet run <uuid-oder-exakter-name> --brief-file <pfad> --json"))
         XCTAssertTrue(rules.contains("never silently substitute another worker"))
+        XCTAssertTrue(rules.contains("only that Workjet health output as the authority"))
         XCTAssertFalse(rules.contains("~/.local/bin/claude-"))
         XCTAssertFalse(rules.contains("/usr/bin/ssh"))
         XCTAssertFalse(rules.contains("Fable erzeugt"))

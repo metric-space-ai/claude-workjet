@@ -36,11 +36,12 @@ final class DefaultsAndLogicTests: XCTestCase {
             "glm-5.2",
             "gpt-5.6-terra"
         ])
-        XCTAssertTrue(config.workers.allSatisfy { $0.harness == .claudeCode })
+        XCTAssertTrue(config.workers.dropLast().allSatisfy { $0.harness == .claudeCode })
+        XCTAssertEqual(config.workers.last?.harness, .codexCLI)
         XCTAssertTrue(config.workers.allSatisfy { $0.computerID == WorkjetDefaults.localID })
         let expectedClaudeExecutable = HarnessAdapterRegistry.defaultLocalInvocation(for: .claudeCode)?.executable
             ?? HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation.executable
-        XCTAssertTrue(config.workers.allSatisfy { $0.invocation.executable == expectedClaudeExecutable })
+        XCTAssertTrue(config.workers.dropLast().allSatisfy { $0.invocation.executable == expectedClaudeExecutable })
         if HarnessAdapterRegistry.defaultLocalInvocation(for: .claudeCode) != nil {
             XCTAssertTrue(expectedClaudeExecutable.hasPrefix("/"))
             XCTAssertTrue(FileManager.default.isExecutableFile(atPath: expectedClaudeExecutable))
@@ -58,21 +59,22 @@ final class DefaultsAndLogicTests: XCTestCase {
             "Read,Write,Grep,Glob,Bash",
             "Read,Write,Edit,Grep,Glob,Bash",
             "Read,Write,Edit,Grep,Glob,Bash",
-            "Read,Write,Edit,Grep,Glob,Bash",
-            "WebSearch,WebFetch"
+            "Read,Write,Edit,Grep,Glob,Bash"
         ]
-        for (worker, tools) in zip(config.workers, expectedTools) {
+        for (worker, tools) in zip(config.workers.dropLast(), expectedTools) {
             XCTAssertEqual(worker.invocation.arguments, ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", tools])
             XCTAssertEqual(worker.invocation.arguments.filter { $0 == "--bare" }.count, 1)
             XCTAssertEqual(worker.invocation.arguments.filter { $0 == "-p" }.count, 1)
         }
+        XCTAssertEqual(config.workers.last?.invocation.arguments, ["--search", "-a", "never", "-s", "read-only", "exec", "--ignore-user-config", "--skip-git-repo-check", "--ephemeral", "<WORKJET_BRIEF>"])
+        XCTAssertNil(HarnessAdapterRegistry.localInvocationIssue(harness: .codexCLI, invocation: try XCTUnwrap(config.workers.last?.invocation)))
         XCTAssertEqual(config.workers.map { $0.invocation.options["fastMode"] }, [
             "false", "false", "false", "false", "true", "true", "true", "false"
         ])
         XCTAssertTrue(config.workers.dropLast().allSatisfy { $0.skillOverrides.isEmpty })
-        XCTAssertEqual(config.workers.last?.skillOverrides, ["greppy": false])
+        XCTAssertEqual(config.workers.last?.skillOverrides, ["greppy": false, "web-research": true])
         XCTAssertTrue(config.workers.last?.invocation.capabilities.contains(where: { $0.contains("Primary-source") }) == true)
-        XCTAssertTrue(config.workers.last?.invocation.capabilities.contains(where: { $0.contains("No local repository") }) == true)
+        XCTAssertTrue(config.workers.last?.invocation.capabilities.contains(where: { $0.contains("no repository edits") }) == true)
 
         let prototypes = Array(config.workers[4...6])
         XCTAssertEqual(Set(prototypes.map(\.instructions)), [ModelPromptCatalog.prototypeDiscoveryPrompt])
@@ -132,6 +134,28 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertNil(normalized.modelPrompts?["gpt-5.6-terra"])
     }
 
+    func testKnownBrokenClaudeTerraDefaultMigratesToVerifiedCodexWebSearch() throws {
+        var configuration = WorkjetDefaults.configuration()
+        let index = try XCTUnwrap(configuration.workers.firstIndex(where: { $0.name == "Web Research · Terra" }))
+        configuration.workers[index].harness = .claudeCode
+        configuration.workers[index].instructions = "legacy generated Terra prompt"
+        configuration.workers[index].invocation = WorkerInvocation(
+            executable: "/opt/homebrew/bin/claude",
+            arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "WebSearch,WebFetch"]
+        )
+        configuration.modelPrompts?["gpt-5.6-terra"] = "Terra performs online research only. Permit WebSearch and WebFetch, forbid repository, file, shell, and code work, require current primary sources with direct links, and require facts, inference, conflicts, and unknowns to be separated."
+
+        let normalized = WorkjetBootstrap.normalized(configuration)
+        let migrated = normalized.workers[index]
+        XCTAssertEqual(migrated.harness, .codexCLI)
+        XCTAssertEqual(migrated.invocation.arguments.first, "--search")
+        XCTAssertTrue(migrated.invocation.arguments.contains("exec"))
+        XCTAssertTrue(migrated.instructions.contains("native live web search"))
+        XCTAssertEqual(migrated.skillOverrides[WorkerSkillCatalog.greppyID], false)
+        XCTAssertEqual(migrated.skillOverrides[WorkerSkillCatalog.webResearchID], true)
+        XCTAssertTrue(normalized.modelPrompts?["gpt-5.6-terra"]?.contains("dedicated read-only research worker") == true)
+    }
+
     func testCapacityAndPureLogic() {
         XCTAssertEqual(CapacityStatus.measured(used: 25, limit: 100, unit: "requests", rateLimited: false).fraction, 0.25)
         XCTAssertNil(CapacityStatus.measured(used: 110, limit: 100, unit: "requests", rateLimited: false).fraction)
@@ -144,9 +168,9 @@ final class DefaultsAndLogicTests: XCTestCase {
         let providerID = UUID()
         var draft = WorkerDraft(); draft.name = "Reviewer"; draft.model = "k3[1m]"; draft.computerID = WorkjetDefaults.localID; draft.providerID = providerID
         XCTAssertTrue(draft.isValid)
-        draft.executable = "~/.local/bin/claude-kimi"; draft.arguments = "-p\n<WORKJET_BRIEF>"; draft.capabilities = "Review\nTests"
+        draft.executable = "~/.local/bin/claude-kimi"; draft.arguments = "--bare\n-p\n<WORKJET_BRIEF>\n--allowedTools\nRead,Write,Edit,Grep,Glob,Bash"; draft.capabilities = "Review\nTests"
         let worker = draft.applied(to: nil)
-        XCTAssertEqual(worker?.invocation.arguments, ["-p", "<WORKJET_BRIEF>"])
+        XCTAssertEqual(worker?.invocation.arguments, ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
         XCTAssertEqual(worker?.invocation.capabilities, ["Review", "Tests"])
         XCTAssertEqual(WorkerDraft(worker: worker).providerID, providerID)
         draft.selectHarness(.piSidecar)
@@ -154,7 +178,7 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertTrue(draft.arguments.isEmpty)
         draft.selectHarness(.claudeCode)
         XCTAssertEqual(draft.executable, "~/.local/bin/claude-kimi")
-        XCTAssertEqual(draft.arguments, "-p\n<WORKJET_BRIEF>")
+        XCTAssertEqual(draft.arguments, "--bare\n-p\n<WORKJET_BRIEF>\n--allowedTools\nRead,Write,Edit,Grep,Glob,Bash")
 
         draft.arguments = "--custom-flag"
         draft.selectHarness(.piSidecar)
@@ -171,7 +195,7 @@ final class DefaultsAndLogicTests: XCTestCase {
         let adapters = HarnessAdapterRegistry.all
         XCTAssertEqual(Set(adapters.map(\.id)).count, adapters.count)
         XCTAssertEqual(Set(adapters.map(\.harness)), Set(Harness.allCases))
-        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation, WorkerInvocation(executable: "claude", arguments: ["-p", "<WORKJET_BRIEF>"]))
+        XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation, WorkerInvocation(executable: "claude", arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"]))
         XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .piSidecar).defaultInvocation, WorkerInvocation(executable: "node"))
         XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .codexCLI).defaultInvocation, WorkerInvocation(executable: "codex", arguments: ["exec", "--json", "<WORKJET_BRIEF>"]))
         XCTAssertEqual(HarnessAdapterRegistry.descriptor(for: .cursorAgent).defaultInvocation, WorkerInvocation(executable: "cursor-agent", arguments: ["acp"]))
@@ -322,7 +346,7 @@ final class DefaultsAndLogicTests: XCTestCase {
         let stale = """
         OWNER BEFORE
         \(greppyBegin)
-        stale greppy command: greppy who-calls
+        STALE GREPPY PROMPT THAT MUST BE REPLACED
         \(greppyEnd)
         OWNER BETWEEN ONE
         \(receiptBegin)
@@ -343,7 +367,7 @@ final class DefaultsAndLogicTests: XCTestCase {
         for ownerText in ["OWNER BEFORE", "OWNER BETWEEN ONE", "OWNER BETWEEN TWO", "OWNER AFTER"] {
             XCTAssertTrue(technical.contains(ownerText), "Owner text changed: \(ownerText)")
         }
-        XCTAssertFalse(technical.contains("greppy who-calls"))
+        XCTAssertFalse(technical.contains("STALE GREPPY PROMPT THAT MUST BE REPLACED"))
         XCTAssertFalse(technical.contains("stale receipt"))
         XCTAssertFalse(technical.contains("events stream forever"))
         XCTAssertFalse(technical.contains("WORKJET TRANSPARENT RUNTIME PROMPTS V2"))
@@ -491,7 +515,8 @@ final class ManagedPromptTests: XCTestCase {
         XCTAssertTrue(text.contains("#### Modellregeln · Kimi K3"))
         XCTAssertEqual(text.components(separatedBy: "#### Modellregeln · Kimi K3").count - 1, 1)
         XCTAssertTrue(text.contains("Use Kimi UI/UX for greenfield or explicitly assigned visual implementation."))
-        XCTAssertTrue(text.contains(config.technicalRules!))
+        XCTAssertTrue(text.contains("Workjet CLI execution contract (machine-owned):"))
+        XCTAssertFalse(text.contains(WorkerSkillCatalog.promptSourceBeginMarker(for: WorkerSkillCatalog.greppyID)), "Worker-only skill prompt sources must not leak into the orchestrator prompt")
         for worker in config.workers { XCTAssertTrue(text.contains(worker.id.uuidString.lowercased())); XCTAssertTrue(text.contains(worker.invocation.executable)); XCTAssertTrue(text.contains(worker.model)) }
         var hostile = config; hostile.workers[0].instructions = ManagedPrompt.endMarker
         XCTAssertNoThrow(try ManagedPrompt.parse(ManagedPrompt.block(body: ManagedPrompt.workerBody(configuration: hostile))))
@@ -662,9 +687,10 @@ final class ManagedPromptTests: XCTestCase {
 
 final class RunTelemetryTests: XCTestCase {
     private final class Probe: ProcessProbing, @unchecked Sendable {
-        var identities: [Int32: ProcessIdentity] = [:]; var terminated: [Int32] = []
+        var identities: [Int32: ProcessIdentity] = [:]; var terminated: [Int32] = []; var killed: [Int32] = []; var ignoresTERM = false
         func identity(for pid: Int32) -> ProcessIdentity? { identities[pid] }
-        func sendTERM(to pid: Int32) throws { terminated.append(pid); identities[pid] = nil }
+        func sendTERM(to pid: Int32) throws { terminated.append(pid); if !ignoresTERM { identities[pid] = nil } }
+        func sendKILL(to pid: Int32) throws { killed.append(pid); identities[pid] = nil }
     }
     private final class Fixture {
         let root: URL; let index: URL; let runs: URL; let probe = Probe(); lazy var store = RunTelemetryStore(paths: WorkjetPaths(homeDirectory: root, stateDirectory: root), processProbe: probe)
@@ -692,6 +718,20 @@ final class RunTelemetryTests: XCTestCase {
         _ = try f.make("stop", 105, "claude"); f.probe.identities[105] = identity(105); let active = try XCTUnwrap(f.store.scan(workers: WorkjetDefaults.configuration().workers).first { $0.sourceRunID == "stop" }?.activeRun)
         f.probe.identities[105] = ProcessIdentity(pid: 105, executablePath: "/other", startToken: "reused"); XCTAssertThrowsError(try f.store.stop(active)) { XCTAssertEqual($0 as? StopError, .pidMismatch) }; XCTAssertTrue(f.probe.terminated.isEmpty)
         f.probe.identities[105] = identity(105); try f.store.stop(active); XCTAssertEqual(f.probe.terminated, [105])
+    }
+
+    func testStopEscalatesToKILLWhenConfirmedWorkerIgnoresTERM() throws {
+        let f = try Fixture()
+        _ = try f.make("stubborn", 106, "/usr/bin/worker")
+        f.probe.identities[106] = identity(106)
+        f.probe.ignoresTERM = true
+        let active = try XCTUnwrap(f.store.scan(workers: []).first?.activeRun)
+
+        try f.store.stop(active)
+
+        XCTAssertEqual(f.probe.terminated, [106])
+        XCTAssertEqual(f.probe.killed, [106])
+        XCTAssertNil(f.probe.identities[106])
     }
 
     func testProtocolHarnessesDoNotClaimClaudeOrPiTelemetry() throws {
@@ -1224,9 +1264,10 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(service.saves.first?.0.skillRules, "new rules")
         XCTAssertEqual(service.saves.first?.0.providers.count, 2)
         guard case .synchronized = model.promptSyncStatus else { return XCTFail("Expected synchronized prompt") }
-        XCTAssertTrue(model.claudeRestartRequired)
+        XCTAssertFalse(model.claudeRestartRequired)
         XCTAssertEqual(model.runtimeStatus, .attention)
-        XCTAssertEqual(model.runtimeSubtitle, "Claude neu starten, um Änderungen zu laden")
+        XCTAssertEqual(model.runtimeSubtitle, "Computer nicht vollständig eingerichtet")
+        XCTAssertNotEqual(model.runtimeSubtitle, "Claude neu starten, um Änderungen zu laden")
     }
 
     func testPromptSyncFailureIsPersistentHealthStateAndFlushReportsFailure() async {
@@ -1319,7 +1360,7 @@ final class ProcessCommandRunnerTests: XCTestCase {
         guard case .synchronized = model.promptSyncStatus else {
             return XCTFail("Ad-hoc learning must finish as a synchronized prompt change")
         }
-        XCTAssertTrue(model.claudeRestartRequired)
+        XCTAssertFalse(model.claudeRestartRequired)
     }
 
     func testRemovingRemoteComputerMovesItsWorkersToLocal() async {
@@ -1595,7 +1636,7 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(updated.modelIDs, ["gateway-model"])
         XCTAssertEqual(service.credentials[Provider.credentialReference(for: provider.id)], Data("secret".utf8))
         XCTAssertTrue(model.providerAccessStored.contains(provider.id))
-        XCTAssertEqual(model.providerPresentation(for: updated).tone, .connected)
+        XCTAssertEqual(model.providerPresentation(for: updated).tone, .neutral)
         XCTAssertEqual(WorkerModelSuggestions.values(providerID: provider.id, providers: model.providers).first, "gateway-model")
         let deletion = await model.deleteProviderDurably(id: provider.id)
         XCTAssertEqual(deletion, .deleted)
@@ -1625,7 +1666,7 @@ final class ProcessCommandRunnerTests: XCTestCase {
         XCTAssertEqual(provider.status, .unverified)
         let model = WorkjetViewModel(configuration: WorkjetDefaults.configuration(), service: Service(), persistenceDelay: 60)
         let presentation = model.providerPresentation(for: provider)
-        XCTAssertEqual(presentation.state, ProviderStatus.unverified.rawValue)
+        XCTAssertEqual(presentation.state, "Zugang fehlt")
         XCTAssertEqual(presentation.tone, .neutral)
         XCTAssertNil(presentation.capacity.fraction)
     }

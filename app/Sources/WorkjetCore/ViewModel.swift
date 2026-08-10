@@ -70,12 +70,16 @@ public final class WorkjetViewModel: ObservableObject {
     @Published public private(set) var statusMessages: [String]
     @Published public private(set) var promptSyncStatus: PromptSyncStatus
     @Published public private(set) var workjetActivationStatus: WorkjetActivationStatus
-    /// Becomes true after this Workjet process has changed the generated
-    /// global prompt. Claude has already loaded the previous prompt in any
-    /// running session, so only a fresh Claude process can consume the change.
+    /// Retained for source compatibility. Workjet cannot observe which Claude
+    /// sessions have reloaded a prompt, so it must never claim that a restart
+    /// is still required after the prompt is durably current on disk.
     @Published public private(set) var claudeRestartRequired = false
     @Published public private(set) var harnessStatuses: [UUID: [Harness: HarnessComputerStatus]] = [:]
     @Published public private(set) var workerProvisioningFailures: [UUID: RemoteProvisioningFailure] = [:]
+    @Published public private(set) var workerHealth: [UUID: WorkjetCLIWorkerHealth] = [:]
+    @Published public private(set) var workerHealthCheckedAt: Date?
+    @Published public private(set) var workerHealthProbeInFlight = false
+    @Published public private(set) var workerHealthProbeError: String?
 
     @Published public var skillRules: String { didSet { persistIfReady(handwrittenRulesChanged: true) } }
     @Published public var skillLoaderInstructions: String { didSet { persistIfReady() } }
@@ -124,8 +128,6 @@ public final class WorkjetViewModel: ObservableObject {
     private var applyingExternalLearnings = false
     private var applyingProviderObservation = false
     private var providerSavesInFlight: Set<UUID> = []
-    private var pendingClaudeRestart = false
-    private var promptDocumentAtLaunch = Data()
     private var harnessOperationGenerations: [HarnessStatusKey: Int] = [:]
 
     private struct HarnessStatusKey: Hashable {
@@ -168,8 +170,8 @@ public final class WorkjetViewModel: ObservableObject {
         computers = value.computers
         providers = value.providers
         // A credential reference is non-secret configuration metadata. Do not
-        // read Keychain entries while constructing the UI: an ad-hoc signed
-        // build may otherwise trigger one authorization dialog per provider.
+        // read credential files while constructing the UI; validation belongs
+        // to an explicit provider test or execution action.
         providerAccessStored = Set(value.providers.compactMap { provider in
             provider.credentialReference == nil ? nil : provider.id
         })
@@ -195,7 +197,6 @@ public final class WorkjetViewModel: ObservableObject {
         promptSyncStatus = messages.isEmpty ? .pending : .failed(messages.last ?? "Prompt konnte nicht synchronisiert werden.")
         workjetActivationStatus = .checking
         ready = true
-        promptDocumentAtLaunch = Self.promptDocument(configuration)
         seedRemoteRunForUITestingIfRequested()
         refreshWorkjetActivationStatus()
     }
@@ -225,7 +226,6 @@ public final class WorkjetViewModel: ObservableObject {
     public var runtimeStatus: WorkjetRuntimeStatus {
         if case .failed = promptSyncStatus { return .attention }
         if [.missing, .outOfDate, .failed].contains(workjetActivationStatus.state) { return .attention }
-        if claudeRestartRequired { return .attention }
         if !statusMessages.isEmpty || !runtimeHealthIssues.isEmpty { return .attention }
         let remoteCount = remoteRuns.values.filter { !$0.state.isTerminal }.count
         if !activeRuns.isEmpty || remoteCount > 0 { return .active(count: activeRuns.count + remoteCount) }
@@ -240,16 +240,13 @@ public final class WorkjetViewModel: ObservableObject {
         case .synchronized:
             break
         }
-        if claudeRestartRequired {
-            return "Claude neu starten, um Änderungen zu laden"
-        }
         if let issue = runtimeHealthIssues.first { return issue }
         let remoteCount = remoteRuns.values.filter { !$0.state.isTerminal }.count
         if !activeRuns.isEmpty || remoteCount > 0 {
             let count = activeRuns.count + remoteCount
             return count == 1 ? "1 Ausführung aktiv" : "\(count) Ausführungen aktiv"
         }
-        return "Prompt gespeichert · neue Claude-Sitzung übernimmt Änderungen"
+        return "Prompt aktuell"
     }
 
     public var runtimeHealthIssues: [String] {
@@ -265,10 +262,9 @@ public final class WorkjetViewModel: ObservableObject {
         let unavailableRoutes = relevantWorkers.filter { worker in
             switch worker.providerRoute {
             case let .account(providerID):
-                guard let provider = providers.first(where: { $0.id == providerID }) else { return true }
-                return !providerIsOperationallyReady(provider)
+                return !providers.contains(where: { $0.id == providerID })
             case let .pool(modelProvider):
-                return providerPool(for: modelProvider).accounts.allSatisfy { !providerIsOperationallyReady($0) }
+                return providerPool(for: modelProvider).accounts.isEmpty
             case nil:
                 return true
             }
@@ -465,21 +461,104 @@ public final class WorkjetViewModel: ObservableObject {
     }
 
     public func providerPresentation(for provider: Provider) -> ProviderPresentation {
-        let tone: ProviderPresentationTone
-        let state: String
-        if providerIsOperationallyReady(provider) {
-            tone = .connected
-            state = ProviderStatus.connected.rawValue
-        } else {
-            state = provider.status.rawValue
-            switch provider.status {
-            case .unverified: tone = .neutral
-            case .connected: tone = .connected
-            case .degraded: tone = .warning
-            case .offline: tone = .critical
+        if provider.kind.isLocalGateway, provider.modelProvider?.usesWebLogin == true {
+            return ProviderPresentation(
+                state: "Im Gateway registriert",
+                detail: "Die Account-Identität ist registriert. CLIProxy kann diesen einzelnen Account nicht für eine Probe pinnen; nur der gemeinsame Workerpfad ist prüfbar.",
+                tone: .neutral,
+                capacity: provider.capacity
+            )
+        }
+        let evidence = workerHealthEvidence(for: provider)
+        return runtimePresentation(
+            evidence: evidence,
+            uncheckedState: providerAccessStored.contains(provider.id) || provider.authentication == .none
+                ? "Konfiguriert · nicht per Worker geprüft"
+                : "Zugang fehlt",
+            uncheckedDetail: "Grün erscheint erst nach einer erfolgreichen Worker-Probe mit echter Modellantwort.",
+            capacity: provider.capacity
+        )
+    }
+
+    public func providerPoolPresentation(for modelProvider: ModelProvider) -> ProviderPresentation {
+        let accounts = providerAccounts(for: modelProvider)
+        guard !accounts.isEmpty else {
+            return ProviderPresentation(state: "Kein Zugang", detail: "Für diesen Anbieter ist kein Zugang registriert.", tone: .critical, capacity: .unavailable(reason: "Kein Zugang registriert."))
+        }
+        let ids = Set(accounts.map(\.id))
+        let evidence = workers.compactMap { worker -> WorkjetCLIWorkerHealth? in
+            switch worker.providerRoute {
+            case let .pool(provider) where provider == modelProvider:
+                return workerHealth[worker.id]
+            case let .account(id) where ids.contains(id):
+                return workerHealth[worker.id]
+            default:
+                return nil
             }
         }
-        return ProviderPresentation(state: state, detail: provider.statusDetail, tone: tone, capacity: provider.capacity)
+        return runtimePresentation(
+            evidence: evidence,
+            uncheckedState: "Workerpfad nicht geprüft",
+            uncheckedDetail: "Starte „Alle Worker prüfen“, um einen echten kurzen Modellturn auszuführen.",
+            capacity: providerPool(for: modelProvider).capacity
+        )
+    }
+
+    public var workerHealthFreshnessText: String {
+        guard let checkedAt = workerHealthCheckedAt else { return "Noch keine echte Worker-Probe ausgeführt" }
+        let age = max(0, Int(Date().timeIntervalSince(checkedAt)))
+        if age < 60 { return "Zuletzt geprüft vor \(age) s" }
+        return "Zuletzt geprüft vor \(age / 60) min"
+    }
+
+    public func probeAllWorkersNow() async {
+        await probeWorkersNow(workerIDs: nil)
+    }
+
+    private func probeWorkersNow(workerIDs: [UUID]?) async {
+        guard !workerHealthProbeInFlight else { return }
+        workerHealthProbeInFlight = true
+        workerHealthProbeError = nil
+        defer { workerHealthProbeInFlight = false }
+        do {
+            let results: [WorkjetCLIWorkerHealth]
+            if let workerIDs {
+                // An authorization change invalidates the previous runtime
+                // evidence. Keep no unrelated result artificially fresh.
+                workerHealth = [:]
+                results = try await service.probeConfiguredWorkers(
+                    workerIDs: workerIDs,
+                    timeoutSeconds: probeTimeoutSeconds
+                )
+            } else {
+                results = try await service.probeConfiguredWorkers(timeoutSeconds: probeTimeoutSeconds)
+            }
+            workerHealth = Dictionary(uniqueKeysWithValues: results.map { ($0.workerID, $0) })
+            workerHealthCheckedAt = Date()
+            refreshRuns()
+        } catch {
+            workerHealth = [:]
+            workerHealthCheckedAt = Date()
+            workerHealthProbeError = error.localizedDescription
+        }
+    }
+
+    private func workerIDsAffectedByAuthorization(
+        providerID: UUID,
+        modelProvider: ModelProvider
+    ) -> [UUID] {
+        workers.compactMap { worker in
+            switch worker.providerRoute {
+            case let .account(id):
+                guard id == providerID
+                        || providers.first(where: { $0.id == id })?.modelProvider == modelProvider else { return nil }
+                return worker.id
+            case let .pool(provider):
+                return provider == modelProvider ? worker.id : nil
+            case nil:
+                return nil
+            }
+        }
     }
 
     public func effectiveCapacity(for worker: Worker) -> CapacityStatus {
@@ -564,51 +643,45 @@ public final class WorkjetViewModel: ObservableObject {
             return WorkerOperationalStatus(state: .unavailable, label: "Anbieter fehlt", detail: "Wähle einen Zugang oder „Alle Zugänge“.")
         }
 
-        if routeProviders.contains(where: providerIsOperationallyReady) {
-            let lifecycle = harnessStatus(worker.harness, on: computer.id)
-            guard lifecycle.state == .installed else {
-                let label: String
-                switch lifecycle.state {
-                case .unknown: label = "Harness nicht geprüft"
-                case .checking: label = "Harness wird geprüft"
-                case .missing: label = "Harness fehlt"
-                case .broken: label = "Harness fehlerhaft"
-                case .installed: label = "Harness installiert"
-                }
-                return WorkerOperationalStatus(state: .unavailable, label: label, detail: lifecycle.detail)
+        let lifecycle = harnessStatus(worker.harness, on: computer.id)
+        guard lifecycle.state == .installed else {
+            let label: String
+            switch lifecycle.state {
+            case .unknown: label = "Harness nicht geprüft"
+            case .checking: label = "Harness wird geprüft"
+            case .missing: label = "Harness fehlt"
+            case .broken: label = "Harness fehlerhaft"
+            case .installed: label = "Harness installiert"
             }
-            let requiredSkills = WorkerSkillCatalog.effectiveSkills(for: worker)
-            if !computer.isLocal, !requiredSkills.isEmpty {
-                guard let probe = remoteHostProbes[computer.id] else {
-                    return WorkerOperationalStatus(
-                        state: .unavailable,
-                        label: "Skills nicht geprüft",
-                        detail: "Die verwalteten Skills wurden auf diesem Computer noch nicht bestätigt."
-                    )
-                }
-                for skill in requiredSkills where !probe.capabilities.contains(skill.id) {
-                    return WorkerOperationalStatus(
-                        state: .unavailable,
-                        label: "Skill fehlt",
-                        detail: "Skill \(skill.id): Die verwaltete Installation wurde auf diesem Computer nicht als bereit bestätigt."
-                    )
-                }
+            return WorkerOperationalStatus(state: lifecycle.state == .checking || lifecycle.state == .unknown ? .unverified : .unavailable, label: label, detail: lifecycle.detail)
+        }
+        let requiredSkills = WorkerSkillCatalog.effectiveSkills(for: worker)
+        if !computer.isLocal, !requiredSkills.isEmpty {
+            guard let probe = remoteHostProbes[computer.id] else {
+                return WorkerOperationalStatus(state: .unverified, label: "Skills nicht geprüft", detail: "Die verwalteten Skills wurden auf diesem Computer noch nicht bestätigt.")
             }
+            for skill in requiredSkills where !probe.capabilities.contains(skill.id) {
+                return WorkerOperationalStatus(state: .unavailable, label: "Skill fehlt", detail: "Skill \(skill.id): Die verwaltete Installation wurde auf diesem Computer nicht als bereit bestätigt.")
+            }
+        }
+        guard workerHealthIsFresh else {
             return WorkerOperationalStatus(
-                state: .ready,
-                label: "Bereit",
-                detail: "Dieser Worker kann gestartet werden."
+                state: .unverified,
+                label: workerHealthCheckedAt == nil ? "Nicht geprüft" : "Prüfung veraltet",
+                detail: "„Alle Worker prüfen“ startet einen echten kurzen Modellturn. Erst dessen Antwort darf diesen Worker grün markieren."
             )
         }
-        if routeProviders.contains(where: { $0.status == .degraded }) {
-            let detail = routeProviders.first(where: { $0.status == .degraded })?.statusDetail ?? "Der Zugang muss erneut geprüft werden."
-            return WorkerOperationalStatus(state: .unavailable, label: "Nicht bereit", detail: detail)
+        guard let health = workerHealth[worker.id] else {
+            return WorkerOperationalStatus(state: .unverified, label: "Nicht geprüft", detail: "Für diesen Worker liegt aus der letzten Probe kein Ergebnis vor.")
         }
-        if routeProviders.allSatisfy({ $0.status == .unverified }) {
-            return WorkerOperationalStatus(state: .unverified, label: "Nicht geprüft", detail: "Die Anbieterroute wurde noch nicht erfolgreich geprüft.")
+        if health.status == "ready", health.responseTokenObserved {
+            return WorkerOperationalStatus(state: .ready, label: "Geprüft", detail: "Echte Modellantwort in \(health.latencyMilliseconds) ms über \(health.providerRoute ?? "die konfigurierte Route").")
         }
-        let detail = routeProviders.first(where: { $0.status == .offline })?.statusDetail ?? "Keine Anbieterroute ist erreichbar."
-        return WorkerOperationalStatus(state: .unavailable, label: "Anbieter offline", detail: detail)
+        return WorkerOperationalStatus(
+            state: .unavailable,
+            label: health.status == "timeout" ? "Zeitüberschreitung" : "Probe fehlgeschlagen",
+            detail: health.message ?? "Der Worker hat die erwartete Health-Antwort nicht geliefert."
+        )
     }
 
     public func providerRecovery(for worker: Worker) -> WorkerProviderRecovery? {
@@ -625,14 +698,18 @@ public final class WorkjetViewModel: ObservableObject {
                 guard let inferredProvider else { return .configure(nil) }
                 return inferredProvider.usesWebLogin ? .connect(inferredProvider) : .configure(inferredProvider)
             }
-            guard !providerIsOperationallyReady(account) else { return nil }
+            let observedFailure = workerHealthIsFresh
+                && workerHealth[worker.id].map { $0.status != "ready" } == true
+            guard account.status == .offline || observedFailure else { return nil }
             guard let provider = account.modelProvider else { return .configure(inferredProvider) }
             return provider.usesWebLogin
                 ? .reauthenticate(accountID: accountID, provider: provider)
                 : .configure(provider)
         case let .pool(provider):
             let accounts = providerAccounts(for: provider)
-            guard !accounts.contains(where: providerIsOperationallyReady) else { return nil }
+            let observedFailure = workerHealthIsFresh
+                && workerHealth[worker.id].map { $0.status != "ready" } == true
+            guard accounts.allSatisfy({ $0.status == .offline }) || observedFailure else { return nil }
             if provider.usesWebLogin, let existing = accounts.first {
                 return .reauthenticate(accountID: existing.id, provider: provider)
             }
@@ -913,16 +990,16 @@ public final class WorkjetViewModel: ObservableObject {
             try service.deleteCredential(reference: reference)
             return .deleted
         } catch {
-            let warning = "„\(provider.name)“ wurde gelöscht, aber der nicht mehr verwendete Zugangsschlüssel konnte nicht entfernt werden. Entferne ihn in der Schlüsselbundverwaltung oder versuche die Bereinigung später erneut. \(error.localizedDescription)"
+            let warning = "„\(provider.name)“ wurde gelöscht, aber der nicht mehr verwendete Zugangsschlüssel konnte nicht entfernt werden. Prüfe `~/.config/workjet/credentials/` oder versuche die Bereinigung später erneut. \(error.localizedDescription)"
             if !statusMessages.contains(warning) { statusMessages.append(warning) }
             return .deletedWithWarning(warning)
         }
     }
 
     public func refreshProviderCredentialStatus() {
-        // This status is deliberately metadata-only. Verifying a secret would
-        // access the macOS Keychain and must happen only after an explicit user
-        // action such as “Speichern & prüfen” or “Verbindung prüfen”.
+        // This status is deliberately metadata-only. Verifying a secret must
+        // happen only after an explicit user action such as “Speichern &
+        // prüfen” or “Verbindung prüfen”.
         providerAccessStored = Set(providers.compactMap { provider in
             provider.credentialReference == nil ? nil : provider.id
         })
@@ -974,10 +1051,15 @@ public final class WorkjetViewModel: ObservableObject {
             updateOrAppend(provider)
             assignUnboundWorkers(to: modelProvider)
             refreshProviderCredentialStatus()
-            providerLoginStates[modelProvider] = provider.status == .connected || provider.status == .degraded
-                ? .connected(modelCount: provider.modelIDs.count)
-                : .failed(provider.statusDetail)
-            await flushPersistence()
+            providerLoginStates[modelProvider] = .connected(modelCount: provider.modelIDs.count)
+            guard await flushPersistence() else { return }
+            let affectedWorkerIDs = workerIDsAffectedByAuthorization(
+                providerID: provider.id,
+                modelProvider: modelProvider
+            )
+            if !affectedWorkerIDs.isEmpty {
+                await probeWorkersNow(workerIDs: affectedWorkerIDs)
+            }
         } catch {
             provider.status = .offline
             provider.statusDetail = error.localizedDescription
@@ -1028,9 +1110,7 @@ public final class WorkjetViewModel: ObservableObject {
                     updateOrAppend(existingAccount)
                     assignUnboundWorkers(to: modelProvider)
                     refreshProviderCredentialStatus()
-                    providerLoginStates[modelProvider] = existingAccount.status == .connected || existingAccount.status == .degraded
-                        ? .connected(modelCount: existingAccount.modelIDs.count)
-                        : .failed(existingAccount.statusDetail)
+                    providerLoginStates[modelProvider] = .connected(modelCount: existingAccount.modelIDs.count)
                     await flushPersistence()
                     return existingAccount
                 }
@@ -1048,9 +1128,7 @@ public final class WorkjetViewModel: ObservableObject {
             providers.append(provider)
             assignUnboundWorkers(to: modelProvider)
             refreshProviderCredentialStatus()
-            providerLoginStates[modelProvider] = provider.status == .connected || provider.status == .degraded
-                ? .connected(modelCount: provider.modelIDs.count)
-                : .failed(provider.statusDetail)
+            providerLoginStates[modelProvider] = .connected(modelCount: provider.modelIDs.count)
             await flushPersistence()
             return provider
         } catch {
@@ -1100,10 +1178,15 @@ public final class WorkjetViewModel: ObservableObject {
             updateOrAppend(provider)
             assignUnboundWorkers(to: modelProvider)
             refreshProviderCredentialStatus()
-            providerLoginStates[modelProvider] = provider.status == .connected || provider.status == .degraded
-                ? .connected(modelCount: provider.modelIDs.count)
-                : .failed(provider.statusDetail)
-            await flushPersistence()
+            providerLoginStates[modelProvider] = .connected(modelCount: provider.modelIDs.count)
+            guard await flushPersistence() else { return }
+            let affectedWorkerIDs = workerIDsAffectedByAuthorization(
+                providerID: provider.id,
+                modelProvider: modelProvider
+            )
+            if !affectedWorkerIDs.isEmpty {
+                await probeWorkersNow(workerIDs: affectedWorkerIDs)
+            }
         } catch {
             provider.status = .offline
             provider.statusDetail = error.localizedDescription
@@ -1157,17 +1240,57 @@ public final class WorkjetViewModel: ObservableObject {
 
     private func markOAuthAccountRoutingUnavailable(_ provider: inout Provider, modelProvider: ModelProvider) {
         guard modelProvider.usesWebLogin, provider.kind.isLocalGateway else { return }
-        guard provider.status == .connected || provider.status == .degraded else { return }
-        // CLIProxy owns account selection and failover. Missing per-account
-        // measurements are not a degraded connection.
-        provider.status = .connected
-        provider.statusDetail = "Verbunden."
+        guard provider.status != .offline else { return }
+        // CLIProxy owns account selection and failover. A gateway model-list
+        // response cannot prove that this specific OAuth identity can answer.
+        provider.status = .unverified
+        provider.statusDetail = "Im Gateway registriert; der einzelne Account ist technisch nicht separat prüfbar. Nutze die Worker-Probe für den gemeinsamen Laufzeitpfad."
         provider.capacity = .unavailable(reason: "Für diesen Zugang sind keine Nutzungsdaten verfügbar.")
     }
 
-    /// Worker readiness is binary. Capacity availability is reported separately.
-    private func providerIsOperationallyReady(_ provider: Provider) -> Bool {
-        provider.status == .connected
+    private var workerHealthIsFresh: Bool {
+        guard let checkedAt = workerHealthCheckedAt else { return false }
+        return Date().timeIntervalSince(checkedAt) <= 15 * 60
+    }
+
+    private func workerHealthEvidence(for provider: Provider) -> [WorkjetCLIWorkerHealth] {
+        workers.compactMap { worker in
+            guard case let .account(providerID) = worker.providerRoute, providerID == provider.id else { return nil }
+            return workerHealth[worker.id]
+        }
+    }
+
+    private func runtimePresentation(
+        evidence: [WorkjetCLIWorkerHealth],
+        uncheckedState: String,
+        uncheckedDetail: String,
+        capacity: CapacityStatus
+    ) -> ProviderPresentation {
+        guard workerHealthIsFresh else {
+            return ProviderPresentation(
+                state: workerHealthCheckedAt == nil ? uncheckedState : "Prüfung veraltet",
+                detail: uncheckedDetail,
+                tone: .neutral,
+                capacity: capacity
+            )
+        }
+        if let ready = evidence.first(where: { $0.status == "ready" && $0.responseTokenObserved }) {
+            return ProviderPresentation(
+                state: "Nutzbar · \(ready.latencyMilliseconds) ms",
+                detail: "Durch eine echte Worker-Antwort über \(ready.providerRoute ?? "die konfigurierte Route") bestätigt.",
+                tone: .connected,
+                capacity: capacity
+            )
+        }
+        if let failed = evidence.first {
+            return ProviderPresentation(
+                state: failed.status == "timeout" ? "Zeitüberschreitung" : "Probe fehlgeschlagen",
+                detail: failed.message ?? "Der Workerpfad hat keine gültige Modellantwort geliefert.",
+                tone: .critical,
+                capacity: capacity
+            )
+        }
+        return ProviderPresentation(state: uncheckedState, detail: uncheckedDetail, tone: .neutral, capacity: capacity)
     }
 
     public func refreshTailscaleDevices() {
@@ -1672,7 +1795,7 @@ public final class WorkjetViewModel: ObservableObject {
         do {
             try service.deleteCredential(reference: reference)
         } catch {
-            let message = "Ein nicht mehr verwendeter Zugangsschlüssel konnte nach dem Anbieter-Speichern nicht entfernt werden. Entferne „\(reference)“ in der Schlüsselbundverwaltung. \(error.localizedDescription)"
+            let message = "Ein nicht mehr verwendeter Zugangsschlüssel konnte nach dem Anbieter-Speichern nicht entfernt werden. Prüfe „\(reference)“ unter `~/.config/workjet/credentials/`. \(error.localizedDescription)"
             if !statusMessages.contains(message) { statusMessages.append(message) }
         }
     }
@@ -1736,7 +1859,6 @@ public final class WorkjetViewModel: ObservableObject {
     private func persistIfReady(handwrittenRulesChanged: Bool = false) {
         guard ready, !applyingProviderObservation else { return }
         promptSyncStatus = .pending
-        pendingClaudeRestart = pendingClaudeRestart || Self.promptDocument(configuration) != promptDocumentAtLaunch
         persistence.schedule(configuration, handwrittenChanged: handwrittenRulesChanged)
     }
 
@@ -1747,7 +1869,6 @@ public final class WorkjetViewModel: ObservableObject {
         let service = self.service
         let value = adHocLearnings
         let configuration = self.configuration
-        let requiresRestart = Self.promptDocument(configuration) != promptDocumentAtLaunch
         learningPersistenceTask = Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
@@ -1756,7 +1877,6 @@ public final class WorkjetViewModel: ObservableObject {
                     try service.saveAdHocLearnings(value, configuration: configuration)
                 }.value
                 self?.promptSyncStatus = .synchronized(Date())
-                if requiresRestart { self?.claudeRestartRequired = true }
                 self?.refreshWorkjetActivationStatus()
             } catch {
                 self?.applyPersistenceOutcome(.failed(error.localizedDescription))
@@ -1770,24 +1890,14 @@ public final class WorkjetViewModel: ObservableObject {
         if !statusMessages.contains(message) { statusMessages.append(message) }
     }
 
-    private static func promptDocument(_ configuration: WorkjetConfiguration) -> Data {
-        var value = Data(configuration.skillRules.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
-        value.append(0)
-        value.append(ManagedPrompt.workerBody(configuration: configuration))
-        return value
-    }
-
     private func applyPersistenceOutcome(_ outcome: PersistenceCoordinator.Outcome) {
         switch outcome {
         case .nothingPending:
             break
         case .synchronized:
             promptSyncStatus = .synchronized(Date())
-            if pendingClaudeRestart { claudeRestartRequired = true }
-            pendingClaudeRestart = false
             refreshWorkjetActivationStatus()
         case let .failed(message):
-            pendingClaudeRestart = false
             promptSyncStatus = .failed(message)
             if !statusMessages.contains(message) { statusMessages.append(message) }
         }

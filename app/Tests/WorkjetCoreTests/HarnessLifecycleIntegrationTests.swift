@@ -247,7 +247,8 @@ final class HarnessLifecycleIntegrationTests: XCTestCase {
         let worker = configuration.workers[0]
 
         await model.inspectHarness(.claudeCode, on: local)
-        XCTAssertEqual(model.operationalStatus(for: worker).state, .ready)
+        XCTAssertEqual(model.operationalStatus(for: worker).state, .unverified)
+        XCTAssertEqual(model.operationalStatus(for: worker).label, "Nicht geprüft")
 
         let inspection = Task { await model.inspectHarness(.claudeCode, on: local) }
         while await gate.callCount < 2 { await Task.yield() }
@@ -257,7 +258,8 @@ final class HarnessLifecycleIntegrationTests: XCTestCase {
         _ = await inspection.value
 
         XCTAssertEqual(model.harnessStatus(.claudeCode, on: local.id), installed)
-        XCTAssertEqual(model.operationalStatus(for: worker).state, .ready)
+        XCTAssertEqual(model.operationalStatus(for: worker).state, .unverified)
+        XCTAssertEqual(model.operationalStatus(for: worker).label, "Nicht geprüft")
         XCTAssertTrue(model.statusMessages.isEmpty)
     }
 
@@ -290,8 +292,8 @@ final class HarnessLifecycleIntegrationTests: XCTestCase {
         model.stopPolling()
 
         let inspectionCount = await gate.callCount
-        XCTAssertEqual(inspectionCount, 1, "Mehrere Worker mit derselben Abhängigkeit dürfen nur eine Startprüfung auslösen.")
-        XCTAssertTrue(model.workers.allSatisfy { model.operationalStatus(for: $0).state == .ready })
+        XCTAssertEqual(inspectionCount, Set(configuration.workers.map(\.harness)).count, "Jede konfigurierte Harness-Abhängigkeit darf genau eine Startprüfung auslösen.")
+        XCTAssertTrue(model.workers.allSatisfy { model.operationalStatus(for: $0).state == .unverified })
         XCTAssertTrue(model.statusMessages.isEmpty)
     }
 

@@ -24,6 +24,8 @@ final class ClickUserStoryContractTests: XCTestCase {
     func testAppOwnsExactlyOneAppKitStatusItemAndUITestWindowNeedsAllExplicitFlags() throws {
         let source = try sourceText("Sources/WorkjetApp/WorkjetApp.swift")
         XCTAssertEqual(source.components(separatedBy: "NSStatusBar.system.statusItem(").count - 1, 1)
+        XCTAssertTrue(source.contains(#"item.autosaveName = "dev.workjet.menubar.status-item""#))
+        XCTAssertTrue(source.contains("item.isVisible = true"))
         XCTAssertFalse(source.contains("MenuBarExtra"))
         XCTAssertTrue(source.contains("private let uiTestMode: Bool"))
         XCTAssertTrue(source.contains("environment[\"WORKJET_UI_TEST_WINDOW\"] == \"1\""))
@@ -289,12 +291,22 @@ final class ClickUserStoryContractTests: XCTestCase {
 
         XCTAssertTrue(settings.contains("private struct AccessSettingsSection: View"))
         XCTAssertTrue(settings.contains("ProviderAccountsView()"))
+        XCTAssertTrue(settings.contains("Alle Worker prüfen"))
+        XCTAssertTrue(settings.contains("await model.probeAllWorkersNow()"))
+        XCTAssertTrue(settings.contains("HarnessAdapterRegistry.local.map(\\.harness)"))
+        XCTAssertTrue(providersContainRenewalAndRuntimeTruth(accounts))
         for removed in [
             "editingProviderID", "providerSecret", "testingProviderID", "pendingProviderDeletion",
             "providerEditor(", "providerBinding(", "providerEndpointBinding(", "updateCurrent("
         ] {
             XCTAssertFalse(settings.contains(removed), "Dead Settings provider editor helper remains: \(removed)")
         }
+    }
+
+    private func providersContainRenewalAndRuntimeTruth(_ source: String) -> Bool {
+        source.contains("Neu anmelden")
+            && source.contains("providerPoolPresentation(for: provider)")
+            && source.contains("provider.pool.health.")
     }
 
     func testModelBlockShownForWorkerIsByteIdenticalToComposedPromptSource() throws {
@@ -435,7 +447,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         configuration.workers[1].providerRoute = nil
         let model = WorkjetViewModel(configuration: configuration, persistenceDelay: 60)
 
-        XCTAssertEqual(model.operationalStatus(for: configuration.workers[0]).state, .unavailable)
+        XCTAssertEqual(model.operationalStatus(for: configuration.workers[0]).state, .unverified)
         XCTAssertEqual(model.operationalStatus(for: configuration.workers[0]).label, "Harness nicht geprüft")
         XCTAssertEqual(model.operationalStatus(for: configuration.workers[1]).state, .unavailable)
         XCTAssertEqual(model.operationalStatus(for: configuration.workers[1]).label, "Anbieter fehlt")
@@ -523,7 +535,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(main.contains("minimumActive = min(72"))
         XCTAssertTrue(main.contains("activePaneHeight ?? activePaneIdealHeight"))
         XCTAssertTrue(main.contains("header.health-recovery"))
-        XCTAssertTrue(main.contains("Claude · Neustart erforderlich"))
+        XCTAssertFalse(main.contains("Claude · Neustart erforderlich"))
         XCTAssertTrue(main.contains("Claude · Workjet aktuell"))
         XCTAssertFalse(main.contains("Claude Code · Workjet aktiv"), "Ein laufender Prozess beweist nicht, dass seine bereits geladene Sitzung den aktuellen Prompt kennt.")
         XCTAssertTrue(root.contains("status-banner.open-recovery"))

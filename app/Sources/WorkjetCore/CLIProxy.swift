@@ -8,6 +8,47 @@ public protocol CredentialStoring: Sendable {
     func delete(reference: String) throws
 }
 
+/// Non-interactive provider credential storage for Workjet's headless runtime.
+/// Files are private to the current user (0700 directory, 0600 entries), just
+/// like the existing CLIProxy gateway key. This avoids macOS Keychain ACL
+/// prompts when locally built, ad-hoc-signed app and CLI binaries change hash.
+public struct PrivateFileCredentialStore: CredentialStoring, Sendable {
+    public let directory: URL
+
+    public init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser) {
+        directory = homeDirectory.appendingPathComponent(".config/workjet/credentials", isDirectory: true)
+    }
+
+    public func read(reference: String) throws -> Data? {
+        let file = try credentialFile(reference)
+        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        try SecureFile.checkPrivateRegularOwnedFile(at: file)
+        return try SecureFile.readRegularOwnedFile(at: file, maximumBytes: 64 * 1_024)
+    }
+
+    public func write(_ secret: Data, reference: String) throws {
+        guard !secret.isEmpty, secret.count <= 64 * 1_024 else { throw CredentialError.invalidSecret }
+        try AtomicFile.write(secret, to: try credentialFile(reference), directoryMode: 0o700, fileMode: 0o600)
+    }
+
+    public func delete(reference: String) throws {
+        let file = try credentialFile(reference)
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        try SecureFile.checkPrivateRegularOwnedFile(at: file)
+        try FileManager.default.removeItem(at: file)
+    }
+
+    private func credentialFile(_ reference: String) throws -> URL {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        guard !reference.isEmpty,
+              reference.count <= 128,
+              reference.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw CredentialError.emptyReference
+        }
+        return directory.appendingPathComponent(reference, isDirectory: false)
+    }
+}
+
 public struct KeychainCredentialStore: CredentialStoring, Sendable {
     public let service: String
     public init(service: String = "dev.workjet.app") { self.service = service }
@@ -40,6 +81,7 @@ public struct KeychainCredentialStore: CredentialStoring, Sendable {
             var insertion = base(reference)
             insertion[kSecValueData as String] = secret
             insertion[kSecUseAuthenticationContext as String] = context
+            insertion[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(insertion as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw CredentialError.keychain(addStatus) }
         } else if status != errSecSuccess { throw CredentialError.keychain(status) }
@@ -61,10 +103,12 @@ public struct KeychainCredentialStore: CredentialStoring, Sendable {
 
 public enum CredentialError: LocalizedError {
     case emptyReference
+    case invalidSecret
     case keychain(OSStatus)
     public var errorDescription: String? {
         switch self {
-        case .emptyReference: return "Keychain-Referenz darf nicht leer sein."
+        case .emptyReference: return "Die Zugangsdaten-Referenz ist ungültig."
+        case .invalidSecret: return "Der Anbieterzugang ist leer oder zu groß."
         case .keychain: return "Der Zugang konnte nicht aus dem Schlüsselbund gelesen werden. Öffne den Anbieter und verbinde ihn erneut."
         }
     }
@@ -153,7 +197,7 @@ public struct ProviderInspector: Sendable {
     public let client: any HTTPClient
     public let credentials: any CredentialStoring
 
-    public init(client: any HTTPClient = URLSessionHTTPClient(), credentials: any CredentialStoring = KeychainCredentialStore()) {
+    public init(client: any HTTPClient = URLSessionHTTPClient(), credentials: any CredentialStoring = PrivateFileCredentialStore()) {
         self.client = client
         self.credentials = credentials
     }
@@ -164,7 +208,13 @@ public struct ProviderInspector: Sendable {
             if case let .invalid(detail) = validation { return ProviderProbeResult(status: .offline, detail: detail) }
             return ProviderProbeResult(status: .offline, detail: "Endpunkt ist ungültig.")
         }
-        var request = URLRequest(url: ProviderEndpointValidator.modelsURL(baseURL: baseURL))
+        let modelsURL: URL
+        if provider.modelProvider == .zAI, baseURL.host?.lowercased() == "api.z.ai" {
+            modelsURL = URL(string: "https://api.z.ai/api/paas/v4/models")!
+        } else {
+            modelsURL = ProviderEndpointValidator.modelsURL(baseURL: baseURL)
+        }
+        var request = URLRequest(url: modelsURL)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         var accessToken: String?
@@ -321,7 +371,7 @@ public struct ProviderInspector: Sendable {
 public struct CLIProxyInspector: Sendable {
     public let client: any HTTPClient
     public let credentials: any CredentialStoring
-    public init(client: any HTTPClient = URLSessionHTTPClient(), credentials: any CredentialStoring = KeychainCredentialStore()) {
+    public init(client: any HTTPClient = URLSessionHTTPClient(), credentials: any CredentialStoring = PrivateFileCredentialStore()) {
         self.client = client
         self.credentials = credentials
     }

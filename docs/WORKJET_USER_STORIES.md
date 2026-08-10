@@ -268,7 +268,7 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 - **Persona / goal:** The user expects a saved worker/prompt change to affect the next delegation in a fresh Claude session.
 - **Preconditions:** Claude Code installed; global Workjet include installed.
 - **Steps:** Change a sentinel in app; save; inspect sync status; start a fresh Claude CLI/Desktop session and inspect the loaded Workjet configuration; repeat with app closed and reopened.
-- **Expected visible states:** While saving, the app shows that changes are being applied. After success it visibly switches to “Claude · Neustart erforderlich” and “Claude neu starten, um Änderungen zu laden”; a failed write shows an explicit error instead. No ambiguous silent delay and no claim that a running session is current.
+- **Expected visible states:** While saving, the app shows that changes are being applied. After success it reports only that the managed prompt is current on disk and globally installed. It does not claim to know whether an already-running Claude process reloaded that prompt. A failed write shows an explicit error instead.
 - **Persistence / prompt / runtime effect:** Durable config and `~/.claude/workjet/AGENTS.md` are synchronized before success. Every already-running Claude process retains its captured prompt; only a fully restarted CLI/Desktop session gets the new one.
 - **Errors / recovery:** Permission, malformed prompt, disk-full, or lock errors remain visible with retry and path; editor stays open and data remains.
 - **Automation:** Core integration + UI click + real fresh-session Claude CLI and Desktop smoke.

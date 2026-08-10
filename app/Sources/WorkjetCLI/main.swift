@@ -18,6 +18,15 @@ enum WorkjetCLI {
                 exit(WorkjetCLIExitCode.state.rawValue)
             }
         }
+        if arguments.first == "__remote-supervise", arguments.count == 2 {
+            do {
+                let requestDirectory = URL(fileURLWithPath: arguments[1], isDirectory: true).standardizedFileURL
+                try await LiveWorkjetCLIBacking.superviseRemote(requestDirectory: requestDirectory, paths: paths())
+                exit(WorkjetCLIExitCode.success.rawValue)
+            } catch {
+                exit(WorkjetCLIExitCode.state.rawValue)
+            }
+        }
         if arguments.first == "learn" {
             do {
                 try runLearn(arguments)
@@ -47,7 +56,7 @@ enum WorkjetCLI {
             } else {
                 writeHuman(response)
             }
-            exit(WorkjetCLIExitCode.success.rawValue)
+            exit(response.ok ? WorkjetCLIExitCode.success.rawValue : WorkjetCLIExitCode.state.rawValue)
         } catch let error as WorkjetCLIError {
             if jsonRequested {
                 try? writeJSON(WorkjetCLIErrorResponse(error: error.code, message: error.message))
@@ -75,10 +84,18 @@ enum WorkjetCLI {
     }
 
     private static func writeHuman(_ response: WorkjetCLIResponse) {
-        if let workers = response.workers {
+        if let health = response.health {
+            for item in health {
+                let latency = "\(item.latencyMilliseconds)ms"
+                let detail = item.message.map { " · \($0)" } ?? ""
+                print("\(item.status)\t\(item.workerName)\t\(item.model)\t\(item.computerName)\t\(latency)\(detail)")
+            }
+        } else if let workers = response.workers {
             for worker in workers { print("\(worker.id.uuidString)\t\(worker.name)\t\(worker.model)\t\(worker.computerName)") }
         } else if let worker = response.worker {
             print("\(worker.name) · \(worker.model) · \(worker.harness) · \(worker.computerName)")
+        } else if let computer = response.computer {
+            print("\(computer.name) · \(computer.state)\(computer.detail.map { " · \($0)" } ?? "")")
         } else if let runID = response.runID {
             print([runID, response.state, response.lifecycle, response.resultRef, response.resultOID].compactMap { $0 }.joined(separator: " · "))
             response.events?.forEach { print("\($0.sequence)\t\($0.kind)\t\($0.text ?? "")") }

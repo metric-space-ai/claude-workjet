@@ -5,6 +5,7 @@ import Foundation
 public protocol ProcessProbing: Sendable {
     func identity(for pid: Int32) -> ProcessIdentity?
     func sendTERM(to pid: Int32) throws
+    func sendKILL(to pid: Int32) throws
 }
 
 public struct SystemProcessProbe: ProcessProbing, Sendable {
@@ -25,6 +26,10 @@ public struct SystemProcessProbe: ProcessProbing, Sendable {
 
     public func sendTERM(to pid: Int32) throws {
         guard pid > 1, kill(pid, SIGTERM) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
+    }
+
+    public func sendKILL(to pid: Int32) throws {
+        guard pid > 1, kill(pid, SIGKILL) == 0 else { throw LocalStateError.io(String(cString: strerror(errno))) }
     }
 }
 
@@ -135,6 +140,20 @@ public struct RunTelemetryStore: RunTelemetryReading, Sendable {
             throw StopError.pidMismatch
         }
         try processProbe.sendTERM(to: run.pid)
+        let termDeadline = Date().addingTimeInterval(2)
+        while Date() < termDeadline {
+            guard processProbe.identity(for: run.pid) == run.processIdentity else { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        guard processProbe.identity(for: run.pid) == run.processIdentity else { return }
+        try processProbe.sendKILL(to: run.pid)
+        let killDeadline = Date().addingTimeInterval(2)
+        while Date() < killDeadline {
+            guard processProbe.identity(for: run.pid) == run.processIdentity else { return }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        guard processProbe.identity(for: run.pid) == run.processIdentity else { return }
+        throw LocalStateError.io("Der lokale Worker reagiert nicht auf das Stoppsignal.")
     }
 
     private func runCandidates() -> [(runID: String, directory: URL, indexFile: URL?)] {
