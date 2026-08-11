@@ -125,6 +125,7 @@ final class RemoteHostOnboardingTests: XCTestCase {
 
         XCTAssertEqual(command.executable, "/usr/bin/tailscale")
         XCTAssertEqual(command.arguments, ["ssh", "workjet@pi.tailnet.ts.net", "/bin/sh", "-s", "--"])
+        XCTAssertEqual(command.environment?["SHLVL"].flatMap { $0.isEmpty ? nil : $0 } != nil, true)
         XCTAssertFalse(command.arguments.contains("-i"))
         XCTAssertFalse(command.arguments.contains(where: { $0.contains("KnownHosts") }))
     }
@@ -181,6 +182,24 @@ final class RemoteHostOnboardingTests: XCTestCase {
         let commands = await runner.recordedCommands()
         XCTAssertEqual(commands.count, 1)
         XCTAssertEqual(commands[0].executable, "/usr/bin/tailscale")
+        XCTAssertEqual(commands[0].environment?["SHLVL"].flatMap { $0.isEmpty ? nil : $0 } != nil, true)
+    }
+
+    func testManagedTailscaleBootstrapDoesNotParseGUIBootstrapTextAsRemotePreflight() async {
+        let runner = Runner([
+            CommandResult(exitCode: 0, standardOutput: Data("The Tailscale GUI failed to start: CLIError 3".utf8))
+        ])
+        var target = managedTailscaleComputer
+        target.sidecarBundlePath = "/Applications/Workjet.app/Contents/Resources/ctox-pi-sidecar.mjs"
+
+        let result = await RemotePiBootstrap(
+            runner: runner,
+            files: Files(),
+            tailscaleLocator: Locator(path: "/usr/bin/tailscale")
+        ).deploy(target)
+
+        XCTAssertEqual(result.deploymentStatus, .failed)
+        XCTAssertEqual(result.deploymentDetail, "Workjet konnte die Tailscale-App nicht für die Remote-Verbindung erreichen. Öffne Tailscale und versuche es erneut.")
     }
 
     func testManagedTailscaleModePersistsInComputerJSON() throws {

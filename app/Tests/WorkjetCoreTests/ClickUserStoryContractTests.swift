@@ -247,7 +247,8 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.contains("if pendingHostKey == nil"))
         XCTAssertTrue(computer.contains("if usesManagedTailscaleSSH { deploy() }"))
         XCTAssertTrue(computer.contains("else { scanHostKey() }"))
-        XCTAssertTrue(computer.contains("return \"Über Tailscale einrichten\""))
+        XCTAssertTrue(computer.contains("\"Über Tailscale einrichten\""))
+        XCTAssertTrue(computer.contains("\"Erneut prüfen & einrichten\""))
         XCTAssertTrue(computer.contains("Button(\"Bestätigen & einrichten\") { confirmHostKey(pendingHostKey) }"))
         XCTAssertTrue(computer.contains("try model.confirmRemoteHostKey(candidate, for: target)"))
         XCTAssertTrue(computer.contains("deploymentDetail = \"Host-Key wurde bestätigt und privat gespeichert. Einrichtung wird erneut versucht.\"\n            deploy()"))
@@ -255,7 +256,8 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.contains("Button(persistenceOperationInFlight ? \"Wird gespeichert …\" : \"Für später speichern\") { saveConnectionForLater() }"))
         XCTAssertTrue(computer.contains("let template = preferredRemoteDefaults"))
         XCTAssertTrue(computer.contains("draft.identityFilePath = template.identityFilePath"))
-        XCTAssertTrue(computer.contains("Tailscale übernimmt Anmeldung und Geräteidentität"))
+        XCTAssertTrue(computer.contains("Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität"))
+        XCTAssertTrue(computer.contains("field(label: \"Linux-Konto\""))
         XCTAssertTrue(computer.contains("Button(\"Auf Tailscale SSH umstellen\")"))
     }
 

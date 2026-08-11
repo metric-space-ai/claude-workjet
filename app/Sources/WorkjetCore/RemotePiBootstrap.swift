@@ -230,6 +230,7 @@ public enum RemoteCommandBuilder {
                 executable: executable,
                 arguments: ["ssh", "\(computer.user)@\(computer.host)", remoteExecutable] + remoteArguments,
                 standardInput: standardInput,
+                environment: TailscaleCLIEnvironment.inherited(),
                 timeout: timeout,
                 stdoutLimit: stdoutLimit,
                 stderrLimit: 1 * 1_024 * 1_024
@@ -492,6 +493,11 @@ public struct RemotePiBootstrap: Sendable {
     private func execute(computer: Computer, tailscaleExecutable: String?, remoteExecutable: String, remoteArguments: [String], input: Data, timeout: TimeInterval) async throws -> CommandResult {
         let command = try RemoteCommandBuilder.command(for: computer, tailscaleExecutable: tailscaleExecutable, remoteExecutable: remoteExecutable, remoteArguments: remoteArguments, standardInput: input, timeout: timeout)
         let result = try await runner.run(command)
+        let stdout = String(decoding: result.standardOutput.prefix(2_048), as: UTF8.self)
+        if computer.usesManagedTailscaleSSH,
+           stdout.localizedCaseInsensitiveContains("The Tailscale GUI failed to start") {
+            throw RemotePiBootstrapError.commandFailed("Workjet konnte die Tailscale-App nicht für die Remote-Verbindung erreichen. Öffne Tailscale und versuche es erneut.")
+        }
         guard result.exitCode == 0 else {
             let stderr = String(decoding: result.standardError.prefix(2_048), as: UTF8.self)
             if computer.usesManagedTailscaleSSH {

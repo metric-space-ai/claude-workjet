@@ -1,5 +1,18 @@
 import Foundation
 
+enum TailscaleCLIEnvironment {
+    /// The macOS Tailscale app uses this marker to distinguish an intentional
+    /// CLI invocation from a GUI launch. launchd menu-bar apps do not inherit
+    /// it, so every Tailscale subprocess must add it explicitly.
+    static func inherited() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        if environment["SHLVL"]?.isEmpty != false {
+            environment["SHLVL"] = "1"
+        }
+        return environment
+    }
+}
+
 public struct TailscaleDevice: Identifiable, Equatable, Sendable {
     public var id: String
     public var hostname: String
@@ -129,16 +142,12 @@ public struct TailscaleDeviceDiscovery: Sendable {
         // launch the GUI and exits 0 with an English error on stdout instead
         // of returning status JSON. Preserve the app environment and add the
         // marker expected by Tailscale's supported CLI entry point.
-        var environment = ProcessInfo.processInfo.environment
-        if environment["SHLVL"]?.isEmpty != false {
-            environment["SHLVL"] = "1"
-        }
         let result: CommandResult
         do {
             result = try await runner.run(CommandSpec(
                 executable: executable,
                 arguments: ["status", "--json"],
-                environment: environment,
+                environment: TailscaleCLIEnvironment.inherited(),
                 timeout: 3,
                 stdoutLimit: 1_048_576,
                 stderrLimit: 16_384

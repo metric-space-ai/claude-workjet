@@ -399,8 +399,9 @@ final class WorkjetClickUITests: XCTestCase {
         addComputer.click()
 
         XCTAssertTrue(app.staticTexts["Computer einrichten"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Tailscale übernimmt Anmeldung und Geräteidentität. Auf diesem Mac ist kein SSH-Schlüssel erforderlich."].exists)
+        XCTAssertTrue(app.staticTexts["Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität. Workjet verwendet automatisch das hinterlegte Linux-Konto."].exists)
         XCTAssertTrue(app.buttons["computer.tailscale.setup"].exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "SSH-Benutzer")).count, 0)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "SSH-Schlüssel")).count, 0)
         XCTAssertEqual(app.buttons.matching(identifier: "computer.ssh-host-key.scan").count, 0)
     }
@@ -426,6 +427,46 @@ final class WorkjetClickUITests: XCTestCase {
             "Die launchd-ähnliche App-Sitzung muss das reale Tailscale-Ziel ohne geerbtes SHLVL auflisten."
         )
         XCTAssertFalse(app.staticTexts["Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut."].exists)
+    }
+
+    func testLiveTailscaleSetupNamesMissingTargetOptInInsteadOfGenericPreflight() throws {
+        let liveConfiguration = URL(fileURLWithPath: "/tmp/workjet-live-tailscale-ui-blocked")
+        guard let contents = try? String(contentsOf: liveConfiguration, encoding: .utf8) else {
+            throw XCTSkip("Live-Tailscale-Preflight ist nur mit explizitem Ziel aktiv.")
+        }
+        let values = contents.split(whereSeparator: \.isNewline).map(String.init)
+        guard let deviceName = values.first else {
+            XCTFail("Die Live-Tailscale-Preflight-Konfiguration braucht einen Gerätenamen.")
+            return
+        }
+
+        app.buttons["Computer hinzufügen"].click()
+        XCTAssertTrue(app.staticTexts["Computer einrichten"].waitForExistence(timeout: 3))
+        let device = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "\(deviceName),")
+        ).firstMatch
+        XCTAssertTrue(device.waitForExistence(timeout: 15))
+        device.click()
+        let setup = app.buttons["computer.tailscale.setup"]
+        scrollToHittable(setup)
+        XCTAssertTrue(setup.isHittable)
+        setup.click()
+
+        let detail = app.staticTexts["computer.deployment.detail"]
+        XCTAssertTrue(
+            detail.waitForExistence(timeout: 25),
+            "Die Einrichtung muss einen überprüfbaren Status anzeigen. UI: \(app.debugDescription)"
+        )
+        let detailText = [detail.label, detail.value as? String]
+            .compactMap { $0 }
+            .joined(separator: " ")
+        XCTAssertTrue(
+            detailText.contains("sudo tailscale set --ssh"),
+            "Die echte Einrichtung muss den fehlenden Ziel-Opt-in benennen statt einen ungültigen Preflight zu melden. Detail: \(detailText). UI: \(app.debugDescription)"
+        )
+        XCTAssertTrue(app.buttons["computer.tailscale.copy-activation-command"].exists)
+        XCTAssertEqual(app.buttons["computer.tailscale.setup"].label, "Erneut prüfen & einrichten")
+        XCTAssertFalse(app.staticTexts["Der Computer konnte nicht vollständig geprüft werden."].exists)
     }
 
     func testPencilTargetsExactWorkerAndEditorHasOneTaskSource() {
@@ -590,15 +631,13 @@ final class WorkjetClickUITests: XCTestCase {
     func testLiveTailscaleComputerSetupUsesManagedIdentityDeploysAndPersists() throws {
         let liveConfiguration = URL(fileURLWithPath: "/tmp/workjet-live-tailscale-ui-test")
         guard let contents = try? String(contentsOf: liveConfiguration, encoding: .utf8) else {
-            throw XCTSkip("Live-Tailscale-Abnahme ist nur mit explizitem Ziel und erlaubtem OS-Benutzer aktiv.")
+            throw XCTSkip("Live-Tailscale-Abnahme ist nur mit explizitem Ziel aktiv.")
         }
         let values = contents.split(whereSeparator: \.isNewline).map(String.init)
-        guard values.count == 2 else {
-            XCTFail("Die Live-Tailscale-Testkonfiguration muss Gerät und erlaubten OS-Benutzer enthalten.")
+        guard let deviceName = values.first else {
+            XCTFail("Die Live-Tailscale-Testkonfiguration muss einen Gerätenamen enthalten.")
             return
         }
-        let deviceName = values[0]
-        let sshUser = values[1]
 
         let addComputer = app.buttons["Computer hinzufügen"]
         XCTAssertTrue(addComputer.waitForExistence(timeout: 5))
@@ -613,10 +652,6 @@ final class WorkjetClickUITests: XCTestCase {
         device.click()
         XCTAssertTrue(device.isSelected)
 
-        let userField = app.textFields.firstMatch
-        XCTAssertTrue(userField.exists, "Der Tailscale-Editor muss genau das sichtbare SSH-Benutzerfeld anbieten.")
-        replaceText(in: userField, with: sshUser)
-
         let setup = app.buttons["computer.tailscale.setup"]
         scrollToHittable(setup)
         XCTAssertEqual(setup.label, "Über Tailscale einrichten")
@@ -630,9 +665,12 @@ final class WorkjetClickUITests: XCTestCase {
 
     private func configuredApplication(remoteRunFixture: Bool = false) -> XCUIApplication {
         let application = XCUIApplication()
+        let sidecarFixture = isolatedHome.appendingPathComponent("ctox-pi-sidecar.mjs")
+        try? Data("export default {};\n".utf8).write(to: sidecarFixture, options: .atomic)
         application.launchEnvironment["WORKJET_UI_TEST_WINDOW"] = "1"
         application.launchEnvironment["WORKJET_UI_TEST_HOME"] = isolatedHome.path
         application.launchEnvironment["WORKJET_UI_TEST_SEED"] = "1"
+        application.launchEnvironment["WORKJET_UI_TEST_SIDECAR_PATH"] = sidecarFixture.path
         application.launchEnvironment["SHLVL"] = ""
         if remoteRunFixture {
             application.launchEnvironment["WORKJET_UI_TEST_REMOTE_RUN"] = "1"

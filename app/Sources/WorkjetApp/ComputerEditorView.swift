@@ -120,16 +120,16 @@ struct ComputerEditorView: View {
                 field(label: "Name", placeholder: "z. B. devbox", text: $draft.name)
                 field(label: "Host", placeholder: "devbox.example.test", text: $draft.host)
             }
-            field(label: "SSH-Benutzer", placeholder: "z. B. workjet", text: $draft.user)
             if usesManagedTailscaleSSH {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "checkmark.shield")
                         .foregroundStyle(WJTheme.accent)
-                    Text("Tailscale übernimmt Anmeldung und Geräteidentität. Auf diesem Mac ist kein SSH-Schlüssel erforderlich.")
+                    Text("Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität. Workjet verwendet automatisch das hinterlegte Linux-Konto.")
                         .font(.system(size: 10))
                         .foregroundStyle(WJTheme.secondaryText)
                 }
             } else {
+                field(label: "SSH-Benutzer", placeholder: "z. B. workjet", text: $draft.user)
                 HStack(spacing: 8) {
                     Text("SSH-Schlüssel").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
                     Text(draft.identityFilePath.isEmpty ? "Automatisch" : URL(fileURLWithPath: draft.identityFilePath).lastPathComponent)
@@ -241,12 +241,14 @@ struct ComputerEditorView: View {
             if deploymentStatus != .notConfigured || isDeploying {
                 HStack(spacing: 7) {
                     Text(deploymentStatus.rawValue).font(.system(size: 11, weight: .semibold))
+                        .accessibilityIdentifier("computer.deployment.status")
                     if isDeploying { ProgressView().controlSize(.mini) }
                 }
                 if !deploymentDetail.isEmpty {
                     Text(deploymentDetail)
                         .font(.system(size: 10))
                         .foregroundStyle(deploymentStatus == .failed || deploymentStatus == .blocked ? WJTheme.quotaCritical : WJTheme.secondaryText)
+                        .accessibilityIdentifier("computer.deployment.detail")
                 }
             }
             if let validationMessage {
@@ -254,6 +256,15 @@ struct ComputerEditorView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(WJTheme.quotaCritical)
                     .accessibilityIdentifier("computer.editor.inline.error")
+            }
+            if let command = tailscaleSSHActivationCommand {
+                Button("Befehl für den Zielcomputer kopieren") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityIdentifier("computer.tailscale.copy-activation-command")
             }
             if !usesManagedTailscaleSSH && (draft.transport == .ssh || draft.transport == .tailscale) {
                 hostKeyOnboarding
@@ -317,6 +328,11 @@ struct ComputerEditorView: View {
                 if !usesManagedTailscaleSSH && (draft.transport == .ssh || draft.transport == .tailscale) {
                     field(label: "Known hosts", placeholder: "/Users/…/.ssh/workjet_known_hosts", text: $draft.knownHostsPath)
                     Text("Workjet akzeptiert nur den ausdrücklich bestätigten Schlüssel dieses Computers.")
+                        .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
+                }
+                if usesManagedTailscaleSSH {
+                    field(label: "Linux-Konto", placeholder: "z. B. workjet", text: $draft.user)
+                    Text("Tailscale authentifiziert die Verbindung. Das Konto muss auf dem Linux-Ziel bereits existieren; Workjet übernimmt es automatisch von deiner letzten Remote-Konfiguration.")
                         .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
                 }
                 Text("Pi Code \(PiSidecarRuntime.version) ist in Workjet enthalten.")
@@ -485,9 +501,14 @@ struct ComputerEditorView: View {
     private var bundledSidecarPath: String? {
         let bundled = Bundle.main.url(forResource: "ctox-pi-sidecar", withExtension: "mjs")
         #if DEBUG
-        let development = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/ctox/src/core/coding_agents/pi-sidecar/dist/ctox-pi-sidecar.mjs")
-        return [bundled, development]
+        // UI tests may inject a disposable fixture outside protected user
+        // folders. Production and normal debug runs only use the embedded
+        // release input and never probe ~/Documents for developer artifacts.
+        let environment = ProcessInfo.processInfo.environment
+        let uiTestFixture = environment["WORKJET_UI_TEST_WINDOW"] == "1"
+            ? environment["WORKJET_UI_TEST_SIDECAR_PATH"].map(URL.init(fileURLWithPath:))
+            : nil
+        return [bundled, uiTestFixture]
             .compactMap { $0 }
             .first { FileManager.default.isReadableFile(atPath: $0.path) }?
             .path
@@ -596,8 +617,19 @@ struct ComputerEditorView: View {
 
     private var primarySetupButtonTitle: String {
         if isDeploying { return "Einrichtung läuft …" }
-        if usesManagedTailscaleSSH { return "Über Tailscale einrichten" }
+        if usesManagedTailscaleSSH {
+            return deploymentStatus == .blocked || deploymentStatus == .failed
+                ? "Erneut prüfen & einrichten"
+                : "Über Tailscale einrichten"
+        }
         return isScanningHostKey ? "Verbindung wird geprüft …" : "Identität prüfen & einrichten"
+    }
+
+    private var tailscaleSSHActivationCommand: String? {
+        guard usesManagedTailscaleSSH,
+              deploymentStatus == .blocked,
+              deploymentDetail.contains("sudo tailscale set --ssh") else { return nil }
+        return "sudo tailscale set --ssh"
     }
 
     private func field(label: String, placeholder: String, text: Binding<String>) -> some View {
