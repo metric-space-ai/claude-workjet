@@ -291,10 +291,10 @@ The UI suite must provide deterministic fixtures containing: Local plus two remo
 
 - **Persona / goal:** The user wants to select an existing Tailscale machine and set it up without copying a hostname.
 - **Preconditions:** Tailscale is connected; online and offline Linux devices are returned.
-- **Steps:** Click top computer `+`; choose Tailscale; click an online device row; enter SSH user if absent; select the matching SSH key when automatic SSH authentication is insufficient; click “Identität prüfen & einrichten”; compare the host fingerprint and click “Bestätigen & einrichten”. Confirmation continues deployment and persistence automatically.
-- **Expected visible states:** Selected row gains checkmark/highlight; the reachable Tailscale IPv4 address populates internally even when Tailscale DNS naming is unavailable; offline rows are visibly disabled; the selected SSH-key filename is visible without revealing key contents; setup explains the next missing prerequisite. Successful computer becomes a top peer button.
-- **Persistence / prompt / runtime effect:** Computer UUID/transport/host/user, the local absolute identity-file path, and verified deployment facts persist; private-key contents and provider secrets are never stored in configuration or copied to remote.
-- **Errors / recovery:** Tailscale absent/disconnected shows plain-language install/connect/retry. Offline selection cannot proceed. Refresh preserves selection if device remains.
+- **Steps:** Click top computer `+`; choose Tailscale; click an online device row; enter the target OS user if absent; click “Über Tailscale einrichten”. Workjet uses Tailscale SSH and deploys the remote runtime without asking for a local SSH key or fingerprint confirmation.
+- **Expected visible states:** Selected row gains checkmark/highlight; the reachable Tailscale address populates internally; offline rows are visibly disabled; the UI states that Tailscale owns authentication and device identity. Successful setup becomes a top peer button.
+- **Persistence / prompt / runtime effect:** Computer UUID/transport/host/user, managed-Tailscale-SSH mode, and verified deployment facts persist; private-key contents and provider secrets are never stored in configuration or copied to remote.
+- **Errors / recovery:** Tailscale absent/disconnected shows plain-language install/connect/retry. A target that has not opted in shows the exact one-time `sudo tailscale set --ssh` action; a policy or OS-user denial is named separately. There is no silent key-based fallback.
 - **Automation:** Core integration + UI click + real Tailscale smoke.
 - **Done:** Actual row click - not manual host workaround - leads to successful probe/deployment and persisted button.
 

@@ -100,6 +100,16 @@ Workjet intentionally fails closed.
 
 Never bypass the error with `StrictHostKeyChecking=no`.
 
+## A Tailscale computer is visible but cannot be set up
+
+Device discovery and Tailscale SSH authorization are separate. On the target, enable the SSH service managed by Tailscale once:
+
+```sh
+sudo tailscale set --ssh
+```
+
+Then confirm that the tailnet SSH policy permits this source device to connect as the OS user selected in Workjet. Tailscale SSH works only on port 22. Workjet will not fall back to a local SSH key; choose the explicit SSH connection mode if that is the intended authentication method.
+
 ## A remote repository snapshot exceeds the limit
 
 Repository-backed remote Git bundles are capped at 64 MiB. Remove or ignore large generated files that should not be part of the task, then retry. Workjet includes non-ignored untracked files, so a large untracked artifact can exceed the cap even when it is not committed.

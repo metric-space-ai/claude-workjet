@@ -33,6 +33,15 @@ final class RemoteHostOnboardingTests: XCTestCase {
         }
     }
 
+    private struct Files: OwnedFileReading {
+        func readOwnedRegularFile(at url: URL, maximumBytes: Int) throws -> Data { Data("bundle".utf8) }
+    }
+
+    private struct Locator: TailscaleLocating {
+        var path: String?
+        func executablePath() -> String? { path }
+    }
+
     private final class BootstrapService: WorkjetService, @unchecked Sendable {
         var bootstrapResult: Computer
         var bootstrapInputs: [Computer] = []
@@ -86,6 +95,101 @@ final class RemoteHostOnboardingTests: XCTestCase {
         return value
     }
 
+    private var managedTailscaleComputer: Computer {
+        var value = tailscaleComputer
+        value.tailscaleSSHEnabled = true
+        value.identityFilePath = "/Users/test/.ssh/must-not-be-used"
+        value.knownHostsPath = ""
+        return value
+    }
+
+    func testNewTailscaleDraftUsesManagedTailscaleSSHWithoutMigratingLegacyComputersSilently() throws {
+        let fresh = ComputerDraft()
+        XCTAssertEqual(fresh.transport, .tailscale)
+        XCTAssertTrue(fresh.tailscaleSSHEnabled)
+
+        let legacy = ComputerDraft(computer: tailscaleComputer)
+        XCTAssertFalse(legacy.tailscaleSSHEnabled)
+        XCTAssertNil(try XCTUnwrap(legacy.applied(to: tailscaleComputer)).tailscaleSSHEnabled)
+    }
+
+    func testManagedTailscaleSSHUsesTailscaleIdentityAndNeverLocalSSHKeysOrWorkjetKnownHosts() throws {
+        let command = try RemoteCommandBuilder.command(
+            for: managedTailscaleComputer,
+            tailscaleExecutable: "/usr/bin/tailscale",
+            remoteExecutable: "/bin/sh",
+            remoteArguments: ["-s", "--"],
+            standardInput: Data("probe".utf8),
+            timeout: 20
+        )
+
+        XCTAssertEqual(command.executable, "/usr/bin/tailscale")
+        XCTAssertEqual(command.arguments, ["ssh", "workjet@pi.tailnet.ts.net", "/bin/sh", "-s", "--"])
+        XCTAssertFalse(command.arguments.contains("-i"))
+        XCTAssertFalse(command.arguments.contains(where: { $0.contains("KnownHosts") }))
+    }
+
+    func testManagedTailscaleSSHRejectsNonstandardPortAndSkipsManualHostKeyScan() async throws {
+        var wrongPort = managedTailscaleComputer
+        wrongPort.port = 2222
+        XCTAssertThrowsError(
+            try RemoteCommandBuilder.command(
+                for: wrongPort,
+                tailscaleExecutable: "/usr/bin/tailscale",
+                remoteExecutable: "/usr/bin/true",
+                remoteArguments: [],
+                standardInput: Data(),
+                timeout: 20
+            )
+        ) { error in
+            XCTAssertEqual(error as? RemotePiBootstrapError, .tailscaleSSHRequiresPort22)
+        }
+
+        do {
+            _ = try await RemotePiBootstrap(runner: Runner([])).scanHostKey(for: managedTailscaleComputer)
+            XCTFail("Tailscale-managed host keys must never enter the manual confirmation flow.")
+        } catch let error as RemotePiBootstrapError {
+            XCTAssertTrue(error.localizedDescription.contains("Tailscale verwaltet"))
+        }
+    }
+
+    func testManagedTailscaleGatewayTunnelUsesAdvertisedHostKeysAndNoIdentityFile() throws {
+        let command = try RemoteGatewayTunnelCommandBuilder.command(for: managedTailscaleComputer)
+        XCTAssertEqual(command.executable, "/usr/bin/ssh")
+        XCTAssertTrue(command.arguments.contains("StrictHostKeyChecking=yes"))
+        XCTAssertTrue(command.arguments.contains(try RemoteCommandBuilder.knownHostsOption(for: TailscaleSSHKnownHosts.path)))
+        XCTAssertFalse(command.arguments.contains("-i"))
+        XCTAssertFalse(command.arguments.contains("/Users/test/.ssh/must-not-be-used"))
+        XCTAssertTrue(command.arguments.contains("IdentityFile=none"))
+    }
+
+    func testManagedTailscaleBootstrapSkipsWorkjetKnownHostsAndNamesMissingTargetOptIn() async {
+        let runner = Runner([
+            CommandResult(exitCode: 255, standardError: Data("No ED25519 host key is known for pi.tailnet.ts.net".utf8))
+        ])
+        var target = managedTailscaleComputer
+        target.sidecarBundlePath = "/Applications/Workjet.app/Contents/Resources/ctox-pi-sidecar.mjs"
+
+        let result = await RemotePiBootstrap(
+            runner: runner,
+            files: Files(),
+            tailscaleLocator: Locator(path: "/usr/bin/tailscale")
+        ).deploy(target)
+
+        XCTAssertEqual(result.deploymentStatus, .blocked)
+        XCTAssertTrue(result.deploymentDetail.contains("sudo tailscale set --ssh"))
+        let commands = await runner.recordedCommands()
+        XCTAssertEqual(commands.count, 1)
+        XCTAssertEqual(commands[0].executable, "/usr/bin/tailscale")
+    }
+
+    func testManagedTailscaleModePersistsInComputerJSON() throws {
+        let encoded = try JSONEncoder().encode(managedTailscaleComputer)
+        let decoded = try JSONDecoder().decode(Computer.self, from: encoded)
+        XCTAssertEqual(decoded.tailscaleSSHEnabled, true)
+        XCTAssertTrue(decoded.usesManagedTailscaleSSH)
+    }
+
     func testScanDoesNotWriteBeforeExplicitConfirmationAndUsesFixedArgumentArray() async throws {
         let line = "[pi.example.test]:2222 ssh-ed25519 \(keyBlob)"
         let runner = Runner([CommandResult(exitCode: 0, standardOutput: Data((line + "\n").utf8))])
@@ -119,7 +223,7 @@ final class RemoteHostOnboardingTests: XCTestCase {
         XCTAssertEqual(writes[0].1.path, "/private/workjet/known_hosts")
     }
 
-    func testTailscaleUsesTheSameExplicitFingerprintConfirmationAndStrictOpenSSHTransport() async throws {
+    func testLegacyTailscaleRecordPreservesExplicitFingerprintAndStrictOpenSSHTransport() async throws {
         let line = "pi.tailnet.ts.net ssh-ed25519 \(keyBlob)"
         let runner = Runner([CommandResult(exitCode: 0, standardOutput: Data((line + "\n").utf8))])
         let store = Store()

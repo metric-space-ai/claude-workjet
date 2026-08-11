@@ -259,9 +259,18 @@ public enum RemoteGatewayTunnelError: LocalizedError, Equatable, Sendable {
 }
 
 public enum RemoteGatewayTunnelCommandBuilder {
+    public static func knownHostsPath(for computer: Computer) -> String {
+        computer.usesManagedTailscaleSSH
+            ? TailscaleSSHKnownHosts.path
+            : computer.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func command(for computer: Computer) throws -> CommandSpec {
         try RemoteCommandBuilder.validate(computer)
-        let knownHosts = computer.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if computer.usesManagedTailscaleSSH, computer.port != 22 {
+            throw RemotePiBootstrapError.tailscaleSSHRequiresPort22
+        }
+        let knownHosts = knownHostsPath(for: computer)
         guard knownHosts.hasPrefix("/") else { throw RemoteGatewayTunnelError.missingKnownHosts }
         var arguments = [
             "-v",
@@ -275,7 +284,11 @@ public enum RemoteGatewayTunnelCommandBuilder {
             "-o", "ServerAliveInterval=15",
             "-o", "ServerAliveCountMax=4"
         ]
-        arguments += try RemoteCommandBuilder.identityArguments(for: computer)
+        if computer.usesManagedTailscaleSSH {
+            arguments += ["-o", "IdentitiesOnly=yes", "-o", "IdentityFile=none"]
+        } else {
+            arguments += try RemoteCommandBuilder.identityArguments(for: computer)
+        }
         arguments += [
             "-p", String(computer.port),
             "-l", computer.user,

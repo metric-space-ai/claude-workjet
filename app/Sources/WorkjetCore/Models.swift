@@ -69,6 +69,10 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var installedSidecarVersion: String?
     public var knownHostsPath: String
     public var identityFilePath: String
+    /// `true` means that Tailscale owns SSH authentication and host-key
+    /// distribution. `nil` preserves the legacy "OpenSSH over a Tailscale
+    /// address" behavior for configurations written before this field existed.
+    public var tailscaleSSHEnabled: Bool?
     public var tailscaleExecutablePath: String?
     public var bubblewrapExecutablePath: String?
     public var lastSuccessfulPreflightAt: Date?
@@ -91,6 +95,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         installedSidecarVersion: String? = nil,
         knownHostsPath: String = "",
         identityFilePath: String = "",
+        tailscaleSSHEnabled: Bool? = nil,
         tailscaleExecutablePath: String? = nil,
         bubblewrapExecutablePath: String? = nil,
         lastSuccessfulPreflightAt: Date? = nil,
@@ -112,6 +117,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         self.installedSidecarVersion = installedSidecarVersion
         self.knownHostsPath = knownHostsPath
         self.identityFilePath = identityFilePath
+        self.tailscaleSSHEnabled = tailscaleSSHEnabled
         self.tailscaleExecutablePath = tailscaleExecutablePath
         self.bubblewrapExecutablePath = bubblewrapExecutablePath
         self.lastSuccessfulPreflightAt = lastSuccessfulPreflightAt
@@ -121,7 +127,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, name, transport, host, user, port, sandboxEnabled, pinnedSidecarVersion, telemetryEnabled
         case sidecarBundlePath, deploymentStatus, deploymentDetail, installedContentHash, installedSidecarVersion
-        case knownHostsPath, identityFilePath, tailscaleExecutablePath, bubblewrapExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
+        case knownHostsPath, identityFilePath, tailscaleSSHEnabled, tailscaleExecutablePath, bubblewrapExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -143,6 +149,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         installedSidecarVersion = try values.decodeIfPresent(String.self, forKey: .installedSidecarVersion)
         knownHostsPath = try values.decodeIfPresent(String.self, forKey: .knownHostsPath) ?? ""
         identityFilePath = try values.decodeIfPresent(String.self, forKey: .identityFilePath) ?? ""
+        tailscaleSSHEnabled = try values.decodeIfPresent(Bool.self, forKey: .tailscaleSSHEnabled)
         tailscaleExecutablePath = try values.decodeIfPresent(String.self, forKey: .tailscaleExecutablePath)
         bubblewrapExecutablePath = try values.decodeIfPresent(String.self, forKey: .bubblewrapExecutablePath)
         lastSuccessfulPreflightAt = try values.decodeIfPresent(Date.self, forKey: .lastSuccessfulPreflightAt)
@@ -150,6 +157,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     }
 
     public var isLocal: Bool { transport == .local }
+    public var usesManagedTailscaleSSH: Bool { transport == .tailscale && tailscaleSSHEnabled == true }
 }
 
 public enum CapacityStatus: Equatable, Codable, Sendable {

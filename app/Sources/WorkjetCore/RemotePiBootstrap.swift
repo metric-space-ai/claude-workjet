@@ -14,6 +14,9 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
     case hostKeyConfirmationMismatch
     case hostKeyUnknown
     case tailscaleUnavailable
+    case tailscaleSSHRequiresPort22
+    case tailscaleSSHNotReady(host: String)
+    case tailscaleSSHAccessDenied(user: String, host: String)
     case invalidBundle(String)
     case commandFailed(String)
     case preflightBlocked(String)
@@ -39,6 +42,11 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
         case .hostKeyConfirmationMismatch: return "Die bestätigte Identität gehört nicht zu diesem Computer. Es wurde nichts gespeichert."
         case .hostKeyUnknown: return "Die Identität dieses Computers wurde noch nicht bestätigt. Bestätige sie und richte den Computer danach erneut ein."
         case .tailscaleUnavailable: return "Tailscale wurde auf diesem Mac nicht gefunden."
+        case .tailscaleSSHRequiresPort22: return "Tailscale SSH verwendet fest Port 22. Wähle für andere Ports die Verbindung „SSH“."
+        case let .tailscaleSSHNotReady(host):
+            return "\(host) bietet Tailscale SSH noch nicht an. Führe auf diesem Ziel-Computer einmal `sudo tailscale set --ssh` aus und prüfe, dass die Tailnet-Policy diesen Zugriff erlaubt."
+        case let .tailscaleSSHAccessDenied(user, host):
+            return "Tailscale hat die Anmeldung als „\(user)“ auf \(host) abgelehnt. Prüfe, ob dieser Benutzer auf dem Ziel existiert und in der SSH-Policy des Tailnets erlaubt ist."
         case .invalidBundle: return "Die enthaltene Pi-Code-Komponente ist beschädigt. Installiere Workjet erneut."
         case let .commandFailed(detail): return detail
         case let .preflightBlocked(detail): return "Dieser Computer erfüllt noch nicht alle Voraussetzungen: \(detail)"
@@ -159,6 +167,17 @@ public struct AllowlistedTailscaleLocator: TailscaleLocating, Sendable {
     }
 }
 
+public enum TailscaleSSHKnownHosts {
+    /// The `tailscale ssh` wrapper writes the host keys advertised by the
+    /// coordination server here. It contains public material only and remains
+    /// owned by Tailscale rather than Workjet.
+    public static var path: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/tailscale/ssh_known_hosts")
+            .path
+    }
+}
+
 public enum RemoteCommandBuilder {
     static func knownHostsOption(for path: String) throws -> String {
         guard !path.contains("\0"), !path.contains("\n"), !path.contains("\r") else {
@@ -198,14 +217,23 @@ public enum RemoteCommandBuilder {
                 || remoteExecutable == ".local/lib/workjet/current/workjet-node" else {
             throw RemotePiBootstrapError.commandFailed("Der Vorgang wurde aus Sicherheitsgründen abgebrochen.")
         }
-        // Tailscale supplies discovery and the encrypted network path. Workjet
-        // deliberately uses the same strict OpenSSH transport for both remote
-        // connection types so bootstrap, host RPC and reverse provider relays
-        // all enforce the one explicitly confirmed private known_hosts file.
-        _ = tailscaleExecutable
         switch computer.transport {
         case .local:
             throw RemotePiBootstrapError.localComputer
+        case .tailscale where computer.usesManagedTailscaleSSH:
+            guard computer.port == 22 else { throw RemotePiBootstrapError.tailscaleSSHRequiresPort22 }
+            guard let executable = tailscaleExecutable,
+                  AllowlistedTailscaleLocator.allowedPaths.contains(executable) else {
+                throw RemotePiBootstrapError.tailscaleUnavailable
+            }
+            return CommandSpec(
+                executable: executable,
+                arguments: ["ssh", "\(computer.user)@\(computer.host)", remoteExecutable] + remoteArguments,
+                standardInput: standardInput,
+                timeout: timeout,
+                stdoutLimit: stdoutLimit,
+                stderrLimit: 1 * 1_024 * 1_024
+            )
         case .ssh, .tailscale:
             let knownHosts = computer.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
             guard knownHosts.hasPrefix("/") else { throw RemotePiBootstrapError.missingKnownHosts }
@@ -268,6 +296,9 @@ public struct RemotePiBootstrap: Sendable {
 
     public func scanHostKey(for computer: Computer) async throws -> RemoteHostKeyCandidate {
         try RemoteCommandBuilder.validate(computer)
+        if computer.usesManagedTailscaleSSH {
+            throw RemotePiBootstrapError.commandFailed("Tailscale verwaltet die Identität dieses Computers; eine manuelle Host-Key-Bestätigung ist nicht erforderlich.")
+        }
         guard computer.transport == .ssh || computer.transport == .tailscale else {
             throw RemotePiBootstrapError.localComputer
         }
@@ -345,11 +376,16 @@ public struct RemotePiBootstrap: Sendable {
             catch { throw RemotePiBootstrapError.invalidBundle(error.localizedDescription) }
             guard !bundle.isEmpty else { throw RemotePiBootstrapError.invalidBundle("Datei ist leer.") }
 
-            let knownHostsPath = computer.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard knownHostsPath.hasPrefix("/"), !knownHostsPath.contains("\0") else { throw RemotePiBootstrapError.missingKnownHosts }
-            do { _ = try files.readPrivateOwnedRegularFile(at: URL(fileURLWithPath: knownHostsPath), maximumBytes: 1_024 * 1_024) }
-            catch { throw RemotePiBootstrapError.missingKnownHosts }
             let tailscaleExecutable = computer.transport == .tailscale ? tailscaleLocator.executablePath() : nil
+            if computer.usesManagedTailscaleSSH {
+                guard tailscaleExecutable != nil else { throw RemotePiBootstrapError.tailscaleUnavailable }
+                guard computer.port == 22 else { throw RemotePiBootstrapError.tailscaleSSHRequiresPort22 }
+            } else {
+                let knownHostsPath = computer.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard knownHostsPath.hasPrefix("/"), !knownHostsPath.contains("\0") else { throw RemotePiBootstrapError.missingKnownHosts }
+                do { _ = try files.readPrivateOwnedRegularFile(at: URL(fileURLWithPath: knownHostsPath), maximumBytes: 1_024 * 1_024) }
+                catch { throw RemotePiBootstrapError.missingKnownHosts }
+            }
             computer.tailscaleExecutablePath = tailscaleExecutable
 
             let runnerData = Data(Self.turnRunnerSource.utf8)
@@ -458,12 +494,29 @@ public struct RemotePiBootstrap: Sendable {
         let result = try await runner.run(command)
         guard result.exitCode == 0 else {
             let stderr = String(decoding: result.standardError.prefix(2_048), as: UTF8.self)
-            // Tailscale transports still use SSH underneath. A missing or changed
-            // host key therefore needs the same guided confirmation flow as a
-            // direct SSH connection instead of leaking the raw ssh diagnostic.
-            if stderr.localizedCaseInsensitiveContains("host key verification failed")
-                || stderr.localizedCaseInsensitiveContains("known hosts")
-                || stderr.localizedCaseInsensitiveContains("no ed25519 host key is known") {
+            if computer.usesManagedTailscaleSSH {
+                if stderr.localizedCaseInsensitiveContains("no ed25519 host key is known")
+                    || stderr.localizedCaseInsensitiveContains("host key verification failed")
+                    || stderr.localizedCaseInsensitiveContains("connection refused") {
+                    throw RemotePiBootstrapError.tailscaleSSHNotReady(host: computer.host)
+                }
+                if stderr.localizedCaseInsensitiveContains("tailnet policy does not permit")
+                    || stderr.localizedCaseInsensitiveContains("permission denied")
+                    || stderr.localizedCaseInsensitiveContains("access denied") {
+                    throw RemotePiBootstrapError.tailscaleSSHAccessDenied(user: computer.user, host: computer.host)
+                }
+                if stderr.localizedCaseInsensitiveContains("not available on macos builds distributed through the app store") {
+                    throw RemotePiBootstrapError.commandFailed("Diese Tailscale-Installation stellt `tailscale ssh` nicht bereit. Installiere die Standalone-Version von Tailscale oder wähle die Verbindung „SSH“.")
+                }
+            }
+            // Explicit OpenSSH routes use Workjet's manual trust flow. Managed
+            // Tailscale SSH never falls into that flow because Tailscale owns
+            // host-key distribution.
+            if !computer.usesManagedTailscaleSSH && (
+                stderr.localizedCaseInsensitiveContains("host key verification failed")
+                    || stderr.localizedCaseInsensitiveContains("known hosts")
+                    || stderr.localizedCaseInsensitiveContains("no ed25519 host key is known")
+            ) {
                 throw RemotePiBootstrapError.hostKeyUnknown
             }
             if stderr.localizedCaseInsensitiveContains("permission denied")
@@ -2275,7 +2328,7 @@ private struct PreflightFacts {
 public extension RemotePiBootstrapError {
     var isBlocked: Bool {
         switch self {
-        case .preflightBlocked, .tailscaleUnavailable, .missingKnownHosts, .sshServiceUnavailable, .sshConnectionTimedOut: return true
+        case .preflightBlocked, .tailscaleUnavailable, .tailscaleSSHRequiresPort22, .tailscaleSSHNotReady, .tailscaleSSHAccessDenied, .missingKnownHosts, .sshServiceUnavailable, .sshConnectionTimedOut: return true
         default: return false
         }
     }

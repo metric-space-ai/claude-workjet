@@ -1,10 +1,19 @@
 # Remote execution and security
 
-Workjet runs supported harnesses on computers reached through strict OpenSSH. Tailscale can provide device discovery and the encrypted network path, but Workjet still uses the same host-key-verified SSH command path.
+Workjet runs supported harnesses on computers reached through either Tailscale SSH or strict OpenSSH. The selected connection mode owns the full authentication contract; Tailscale mode does not silently fall back to a local SSH key.
 
 ## Trust setup
 
 A remote computer is not trusted merely because it appears in Tailscale or answers on port 22.
+
+For a new Tailscale computer:
+
+1. The target opts in once with `sudo tailscale set --ssh`; this target-side security decision cannot be granted by another tailnet device.
+2. The tailnet policy authorizes the source device, target device, and requested OS user.
+3. Workjet calls the allowlisted `tailscale ssh` client on port 22. Tailscale authenticates with node identity and validates the host key advertised through its coordination server.
+4. Workjet neither selects nor copies a local private SSH key. It does not maintain a second Tailscale host-key trust database.
+
+For an explicit SSH computer (and a legacy Tailscale record that has not been converted):
 
 1. Workjet scans the SSH host key without treating the scan as approval.
 2. The user compares and explicitly confirms the fingerprint.
@@ -13,7 +22,7 @@ A remote computer is not trusted merely because it appears in Tailscale or answe
 5. `BatchMode=yes`, `ForwardAgent=no`, an isolated SSH config (`-F /dev/null`), and strict known-host verification are enforced. Gateway runs add only Workjet's run-scoped loopback reverse forwarding.
 6. If an identity file is configured, Workjet uses `IdentitiesOnly=yes` and passes the local absolute path directly to OpenSSH.
 
-There is no `StrictHostKeyChecking=no` fallback. A changed or unknown key blocks setup or execution until the user resolves the trust change.
+There is no `StrictHostKeyChecking=no` fallback and no automatic downgrade from Tailscale SSH to key-based OpenSSH. A missing Tailscale SSH advertisement, policy denial, changed key, or unknown OpenSSH key blocks setup with route-specific remediation.
 
 ## Repository transport
 
@@ -105,7 +114,8 @@ Reconnect retries transport failures. A quiet output stream is not proof that a 
 
 Before using a real remote computer:
 
-- verify the host fingerprint through an independent channel;
+- for Tailscale SSH, enable it once on the target and verify the tailnet SSH policy;
+- for explicit SSH, verify the host fingerprint through an independent channel;
 - use a dedicated unprivileged SSH user;
 - keep the private known-hosts and identity files owner-only;
 - install only the harnesses needed on that host;

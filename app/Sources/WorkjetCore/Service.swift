@@ -658,7 +658,10 @@ public final class RemoteGatewayTunnelManager: RemoteGatewayTunnelManaging, @unc
 
     public func open(for computer: Computer) async throws -> RemoteGatewayTunnelLease {
         let command = try RemoteGatewayTunnelCommandBuilder.command(for: computer)
-        try validateKnownHosts(computer.knownHostsPath)
+        try validateKnownHosts(
+            RemoteGatewayTunnelCommandBuilder.knownHostsPath(for: computer),
+            containsOnlyPublicMaterial: computer.usesManagedTailscaleSSH
+        )
         let process = Process()
         process.executableURL = URL(fileURLWithPath: command.executable)
         process.arguments = command.arguments
@@ -759,13 +762,13 @@ public final class RemoteGatewayTunnelManager: RemoteGatewayTunnelManaging, @unc
         ids.forEach(close(leaseID:))
     }
 
-    private func validateKnownHosts(_ path: String) throws {
+    private func validateKnownHosts(_ path: String, containsOnlyPublicMaterial: Bool) throws {
         guard path.hasPrefix("/") else { throw RemoteGatewayTunnelError.missingKnownHosts }
         var info = stat()
         guard lstat(path, &info) == 0,
               (info.st_mode & S_IFMT) == S_IFREG,
               info.st_uid == geteuid(),
-              (info.st_mode & 0o077) == 0 else {
+              (containsOnlyPublicMaterial ? (info.st_mode & 0o022) == 0 : (info.st_mode & 0o077) == 0) else {
             throw RemoteGatewayTunnelError.invalidKnownHosts
         }
     }

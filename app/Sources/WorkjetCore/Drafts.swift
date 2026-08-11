@@ -136,6 +136,7 @@ public struct ComputerDraft: Equatable {
     public var sidecarBundlePath: String
     public var knownHostsPath: String
     public var identityFilePath: String
+    public var tailscaleSSHEnabled: Bool
 
     public init(computer: Computer? = nil) {
         self.id = computer?.id ?? UUID()
@@ -151,6 +152,9 @@ public struct ComputerDraft: Equatable {
         self.sidecarBundlePath = computer?.sidecarBundlePath ?? ""
         self.knownHostsPath = computer?.knownHostsPath ?? ""
         self.identityFilePath = computer?.identityFilePath ?? ""
+        // New Tailscale computers use Tailscale SSH. Existing records without
+        // the field remain on their proven legacy OpenSSH route until edited.
+        self.tailscaleSSHEnabled = computer == nil ? true : (computer?.tailscaleSSHEnabled == true)
     }
 
     public static func preferredConnectionDefaults(in computers: [Computer], transport: ComputerTransport) -> Computer? {
@@ -176,7 +180,8 @@ public struct ComputerDraft: Equatable {
     public var isDeployable: Bool {
         isValid
             && !sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (transport != .ssh || !knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            && ((transport == .tailscale && tailscaleSSHEnabled)
+                || !knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     public func applied(to computer: Computer?) -> Computer? {
@@ -193,6 +198,9 @@ public struct ComputerDraft: Equatable {
         result.sidecarBundlePath = sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines)
         result.knownHostsPath = knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines)
         result.identityFilePath = identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        result.tailscaleSSHEnabled = transport == .tailscale
+            ? (tailscaleSSHEnabled ? true : computer?.tailscaleSSHEnabled)
+            : nil
         if let computer {
             let routeChanged = computer.transport != result.transport
                 || computer.host != result.host
@@ -202,6 +210,7 @@ public struct ComputerDraft: Equatable {
                 || computer.sidecarBundlePath != result.sidecarBundlePath
                 || computer.knownHostsPath != result.knownHostsPath
                 || computer.identityFilePath != result.identityFilePath
+                || computer.tailscaleSSHEnabled != result.tailscaleSSHEnabled
             if routeChanged {
                 result.deploymentStatus = .notConfigured
                 result.deploymentDetail = "Verbindungs- oder Bundle-Konfiguration wurde geändert; erneut prüfen und einrichten."

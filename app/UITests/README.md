@@ -32,9 +32,10 @@ save/relaunch persistence, the missing-route recovery action, masked provider
 account identity, provider deselection and disconnect, Settings quick
 navigation, and the one-click custom compatible-endpoint form.
 
-The opt-in `testLiveTailscaleComputerSetupScansConfirmsDeploysAndPersists`
+The opt-in `testLiveTailscaleComputerSetupUsesManagedIdentityDeploysAndPersists`
 executes the complete production computer-editor flow against a real target.
 It runs only while `/tmp/workjet-live-tailscale-ui-test` exists with exactly
-three lines: Tailscale device name, SSH user, and independently approved SHA256
-host fingerprint. Without that short-lived gate the test is skipped, so the
-ordinary suite never confirms or deploys to a remote computer accidentally.
+two lines: Tailscale device name and an OS user explicitly allowed by the
+tailnet SSH policy. The target must already advertise Tailscale SSH. Without
+that short-lived gate the test is skipped, so the ordinary suite never deploys
+to a remote computer accidentally.

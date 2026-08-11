@@ -294,9 +294,14 @@ public enum ManagedPrompt {
         let sandbox = computer.sandboxEnabled
             ? "Der App-Runner `'node' '.local/lib/workjet/current/workjet-pi-turn.mjs' '--sandbox'` aktiviert `--sandbox` ausdrücklich und darf bei fehlendem Bubblewrap nicht unsandboxed weiterlaufen."
             : "Der App-Runner aktiviert keine OS-Sandbox; diese deaktivierte Grenze bleibt sichtbar."
-        let transport = computer.transport == .ssh
-            ? "Die App erzwingt beim SSH-Transport `StrictHostKeyChecking=yes` mit der privaten Known-Hosts-Datei."
-            : "Die App verwendet den bestätigten Tailscale-Transport."
+        let transport: String
+        if computer.usesManagedTailscaleSSH {
+            transport = "Die App verwendet Tailscale SSH auf Port 22. Tailscale authentifiziert den Benutzer über die Tailnet-Policy und verteilt den angekündigten Host-Key; ein privater SSH-Schlüssel dieses Macs wird nicht verwendet. Das Ziel muss Tailscale SSH einmal mit `sudo tailscale set --ssh` freigeben."
+        } else if computer.transport == .ssh {
+            transport = "Die App erzwingt beim SSH-Transport `StrictHostKeyChecking=yes` mit der privaten Known-Hosts-Datei."
+        } else {
+            transport = "Diese ältere Tailscale-Konfiguration verwendet weiterhin ausdrücklich bestätigtes OpenSSH über den Tailscale-Netzpfad."
+        }
         return "\(sandbox) \(transport) Diese Fakten beschreiben ausschließlich die interne App-Ausführung."
     }
 

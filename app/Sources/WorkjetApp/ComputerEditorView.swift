@@ -95,12 +95,15 @@ struct ComputerEditorView: View {
             HStack(spacing: 8) {
                 WJChoiceButton(title: "Tailscale", isSelected: draft.transport == .tailscale) {
                     draft.transport = .tailscale
+                    draft.tailscaleSSHEnabled = true
+                    draft.port = 22
+                    draft.identityFilePath = ""
                     pendingHostKey = nil
-                    prepareKnownHostsDefault()
                     model.refreshTailscaleDevices()
                 }
                 WJChoiceButton(title: "SSH", isSelected: draft.transport == .ssh) {
                     draft.transport = .ssh
+                    draft.tailscaleSSHEnabled = false
                     pendingHostKey = nil
                     prepareKnownHostsDefault()
                 }
@@ -118,22 +121,43 @@ struct ComputerEditorView: View {
                 field(label: "Host", placeholder: "devbox.example.test", text: $draft.host)
             }
             field(label: "SSH-Benutzer", placeholder: "z. B. workjet", text: $draft.user)
-            HStack(spacing: 8) {
-                Text("SSH-Schlüssel").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
-                Text(draft.identityFilePath.isEmpty ? "Automatisch" : URL(fileURLWithPath: draft.identityFilePath).lastPathComponent)
-                    .font(.system(size: 12))
-                    .foregroundStyle(draft.identityFilePath.isEmpty ? WJTheme.secondaryText : .primary)
-                    .lineLimit(1)
-                Spacer()
-                if !draft.identityFilePath.isEmpty {
-                    Button("Zurücksetzen") { draft.identityFilePath = "" }.buttonStyle(.bordered).controlSize(.mini)
+            if usesManagedTailscaleSSH {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "checkmark.shield")
+                        .foregroundStyle(WJTheme.accent)
+                    Text("Tailscale übernimmt Anmeldung und Geräteidentität. Auf diesem Mac ist kein SSH-Schlüssel erforderlich.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(WJTheme.secondaryText)
                 }
-                Button("Wählen …") { chooseIdentityFile() }.buttonStyle(.bordered).controlSize(.mini)
+            } else {
+                HStack(spacing: 8) {
+                    Text("SSH-Schlüssel").font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
+                    Text(draft.identityFilePath.isEmpty ? "Automatisch" : URL(fileURLWithPath: draft.identityFilePath).lastPathComponent)
+                        .font(.system(size: 12))
+                        .foregroundStyle(draft.identityFilePath.isEmpty ? WJTheme.secondaryText : .primary)
+                        .lineLimit(1)
+                    Spacer()
+                    if !draft.identityFilePath.isEmpty {
+                        Button("Zurücksetzen") { draft.identityFilePath = "" }.buttonStyle(.bordered).controlSize(.mini)
+                    }
+                    Button("Wählen …") { chooseIdentityFile() }.buttonStyle(.bordered).controlSize(.mini)
+                }
             }
-            if let reusedConnectionDefaultsFrom {
+            if let reusedConnectionDefaultsFrom, !usesManagedTailscaleSSH {
                 Text("Die SSH-Voreinstellungen wurden von „\(reusedConnectionDefaultsFrom)“ übernommen. Du kannst sie ändern.")
                     .font(.system(size: 9))
                     .foregroundStyle(WJTheme.secondaryText)
+            }
+            if draft.transport == .tailscale && !usesManagedTailscaleSSH {
+                HStack {
+                    Text("Bestehende Verbindung: OpenSSH über den Tailscale-Netzpfad.")
+                        .font(.system(size: 9))
+                        .foregroundStyle(WJTheme.secondaryText)
+                    Spacer()
+                    Button("Auf Tailscale SSH umstellen") { convertToManagedTailscaleSSH() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                }
             }
         }
     }
@@ -160,7 +184,6 @@ struct ComputerEditorView: View {
                             draft.host = device.preferredHost
                             draft.name = device.hostname
                             pendingHostKey = nil
-                            prepareKnownHostsDefault()
                             if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 draft.user = NSUserName()
                             }
@@ -232,16 +255,19 @@ struct ComputerEditorView: View {
                     .foregroundStyle(WJTheme.quotaCritical)
                     .accessibilityIdentifier("computer.editor.inline.error")
             }
-            if draft.transport == .ssh || draft.transport == .tailscale {
+            if !usesManagedTailscaleSSH && (draft.transport == .ssh || draft.transport == .tailscale) {
                 hostKeyOnboarding
             }
             if pendingHostKey == nil {
-                Button(isScanningHostKey ? "Verbindung wird geprüft …" : "Identität prüfen & einrichten") { scanHostKey() }
+                Button(primarySetupButtonTitle) {
+                    if usesManagedTailscaleSSH { deploy() }
+                    else { scanHostKey() }
+                }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .disabled(isScanningHostKey || isDeploying || persistenceOperationInFlight || computer?.isLocal == true)
-                    .accessibilityIdentifier("computer.ssh-host-key.scan")
+                    .accessibilityIdentifier(usesManagedTailscaleSSH ? "computer.tailscale.setup" : "computer.ssh-host-key.scan")
             }
         }
     }
@@ -280,9 +306,15 @@ struct ComputerEditorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Port").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
-                    TextField("22", value: $draft.port, format: .number).textFieldStyle(.plain).fieldSurface()
+                    if usesManagedTailscaleSSH {
+                        Text("22 · von Tailscale SSH vorgegeben")
+                            .font(.system(size: 11))
+                            .foregroundStyle(WJTheme.secondaryText)
+                    } else {
+                        TextField("22", value: $draft.port, format: .number).textFieldStyle(.plain).fieldSurface()
+                    }
                 }
-                if draft.transport == .ssh || draft.transport == .tailscale {
+                if !usesManagedTailscaleSSH && (draft.transport == .ssh || draft.transport == .tailscale) {
                     field(label: "Known hosts", placeholder: "/Users/…/.ssh/workjet_known_hosts", text: $draft.knownHostsPath)
                     Text("Workjet akzeptiert nur den ausdrücklich bestätigten Schlüssel dieses Computers.")
                         .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
@@ -362,7 +394,8 @@ struct ComputerEditorView: View {
             if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 draft.user = template.user
             }
-            if draft.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !usesManagedTailscaleSSH,
+               draft.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 draft.identityFilePath = template.identityFilePath
             }
             reusedConnectionDefaultsFrom = template.name
@@ -385,6 +418,7 @@ struct ComputerEditorView: View {
     }
 
     private func prepareKnownHostsDefault() {
+        guard !usesManagedTailscaleSSH else { return }
         guard draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         draft.knownHostsPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Workjet/ssh/known_hosts")
@@ -485,6 +519,17 @@ struct ComputerEditorView: View {
         pendingHostKey = nil
     }
 
+    private func convertToManagedTailscaleSSH() {
+        draft.tailscaleSSHEnabled = true
+        draft.port = 22
+        draft.identityFilePath = ""
+        draft.knownHostsPath = ""
+        pendingHostKey = nil
+        validationMessage = nil
+        deploymentStatus = .notConfigured
+        deploymentDetail = "Tailscale übernimmt die Verbindung; richte den Computer erneut ein."
+    }
+
     private func saveAndClose() {
         guard !persistenceOperationInFlight else { return }
         validationMessage = validationMessageForSave()
@@ -538,10 +583,21 @@ struct ComputerEditorView: View {
         if draft.sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Die Pi-Code-Komponente fehlt in dieser Workjet-App."
         }
-        if draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !usesManagedTailscaleSSH,
+           draft.knownHostsPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Bestätige zuerst die Identität dieses Computers."
         }
         return nil
+    }
+
+    private var usesManagedTailscaleSSH: Bool {
+        draft.transport == .tailscale && draft.tailscaleSSHEnabled
+    }
+
+    private var primarySetupButtonTitle: String {
+        if isDeploying { return "Einrichtung läuft …" }
+        if usesManagedTailscaleSSH { return "Über Tailscale einrichten" }
+        return isScanningHostKey ? "Verbindung wird geprüft …" : "Identität prüfen & einrichten"
     }
 
     private func field(label: String, placeholder: String, text: Binding<String>) -> some View {

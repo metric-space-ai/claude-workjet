@@ -52,7 +52,7 @@ Workjet provides configuration, execution plumbing, and observable run state. It
 ## Core workflow
 
 1. Configure the provider accounts and compatible endpoints you use.
-2. Keep work local or add a remote computer over Tailscale or SSH with an explicitly confirmed host key.
+2. Keep work local or add a remote computer. Tailscale mode uses Tailscale SSH identity and policy; SSH mode uses an explicitly confirmed host key and optional local identity file.
 3. Define named workers with a harness, model, provider route, instructions, skills, and target computer.
    Greppy is available for repository navigation, and the optional Web Research
    toggle adds live search plus normal page access without removing a worker's
@@ -64,7 +64,8 @@ Workjet provides configuration, execution plumbing, and observable run state. It
 ## Security model
 
 - Provider secrets are stored as owner-only files under `~/.config/workjet/credentials/` (directory mode `0700`, files `0600`). Non-secret configuration is stored under `~/Library/Application Support/Workjet/`.
-- Remote commands use strict, host-key-verified OpenSSH for both SSH and Tailscale-discovered computers. SSH agent forwarding is disabled.
+- New Tailscale computers use Tailscale SSH on port 22. Tailscale authenticates through the tailnet policy and supplies the advertised host key; Workjet does not use a local private SSH key. The target must opt in once with `sudo tailscale set --ssh`.
+- Explicit SSH computers use strict, host-key-verified OpenSSH. SSH agent forwarding is disabled. Older Tailscale records keep their existing OpenSSH route until deliberately converted.
 - Remote repositories are transferred as immutable Git bundles over the verified connection. The remote computer does not need a GitHub account, origin credentials, origin network access, or a forwarded SSH agent.
 - Remote result import creates only `refs/workjet/<run-id>` in the source repository. It does not merge, rebase, stage, checkout, or modify the working tree.
 - Worktrees and harness tool policies are useful boundaries, but they are not a complete operating-system sandbox. Pi Code can additionally require Bubblewrap on a supported Linux remote and fails closed when that requested sandbox is unavailable.
@@ -84,7 +85,7 @@ Claude Code / Claude Desktop
           |
           +----> local harness process
           |
-          +----> strict SSH over LAN or Tailscale
+          +----> Tailscale SSH or strict OpenSSH
                          |
                          +----> versioned remote host runtime
                          +----> detached Git-bundle worktree

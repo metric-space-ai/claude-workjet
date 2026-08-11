@@ -241,11 +241,13 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.range(of: "provisionConfiguredWorkers(on: deployed)")!.lowerBound < computer.range(of: "saveComputerDurably(deployed)")!.lowerBound)
     }
 
-    func testComputerPrimarySetupScansThenExplicitConfirmationDeploys() throws {
+    func testComputerPrimarySetupUsesManagedTailscaleOrExplicitSSHTrustWithoutFallback() throws {
         let computer = try sourceText("Sources/WorkjetApp/ComputerEditorView.swift")
 
         XCTAssertTrue(computer.contains("if pendingHostKey == nil"))
-        XCTAssertTrue(computer.contains("Button(isScanningHostKey ? \"Verbindung wird geprüft …\" : \"Identität prüfen & einrichten\") { scanHostKey() }"))
+        XCTAssertTrue(computer.contains("if usesManagedTailscaleSSH { deploy() }"))
+        XCTAssertTrue(computer.contains("else { scanHostKey() }"))
+        XCTAssertTrue(computer.contains("return \"Über Tailscale einrichten\""))
         XCTAssertTrue(computer.contains("Button(\"Bestätigen & einrichten\") { confirmHostKey(pendingHostKey) }"))
         XCTAssertTrue(computer.contains("try model.confirmRemoteHostKey(candidate, for: target)"))
         XCTAssertTrue(computer.contains("deploymentDetail = \"Host-Key wurde bestätigt und privat gespeichert. Einrichtung wird erneut versucht.\"\n            deploy()"))
@@ -253,6 +255,8 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.contains("Button(persistenceOperationInFlight ? \"Wird gespeichert …\" : \"Für später speichern\") { saveConnectionForLater() }"))
         XCTAssertTrue(computer.contains("let template = preferredRemoteDefaults"))
         XCTAssertTrue(computer.contains("draft.identityFilePath = template.identityFilePath"))
+        XCTAssertTrue(computer.contains("Tailscale übernimmt Anmeldung und Geräteidentität"))
+        XCTAssertTrue(computer.contains("Button(\"Auf Tailscale SSH umstellen\")"))
     }
 
     func testProviderDeletionRequiresConfirmationUsesDurableAsyncAPIAndBlocksDuplicateActions() throws {

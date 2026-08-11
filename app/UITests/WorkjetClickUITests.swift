@@ -393,6 +393,18 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(add.isHittable)
     }
 
+    func testNewTailscaleComputerUsesManagedIdentityWithoutLocalSSHKey() {
+        let addComputer = app.buttons["Computer hinzufügen"]
+        XCTAssertTrue(addComputer.waitForExistence(timeout: 5))
+        addComputer.click()
+
+        XCTAssertTrue(app.staticTexts["Computer einrichten"].waitForExistence(timeout: 3))
+        XCTAssertTrue(app.staticTexts["Tailscale übernimmt Anmeldung und Geräteidentität. Auf diesem Mac ist kein SSH-Schlüssel erforderlich."].exists)
+        XCTAssertTrue(app.buttons["computer.tailscale.setup"].exists)
+        XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "SSH-Schlüssel")).count, 0)
+        XCTAssertEqual(app.buttons.matching(identifier: "computer.ssh-host-key.scan").count, 0)
+    }
+
     func testPencilTargetsExactWorkerAndEditorHasOneTaskSource() {
         let row = app.descendants(matching: .any)["worker.row.\(completionID.uppercased())"]
         let pencil = app.buttons["worker.edit.\(completionID.uppercased())"]
@@ -552,19 +564,18 @@ final class WorkjetClickUITests: XCTestCase {
         assertVisibleWorkerIDs([completionID, uiWorkerID])
     }
 
-    func testLiveTailscaleComputerSetupScansConfirmsDeploysAndPersists() throws {
+    func testLiveTailscaleComputerSetupUsesManagedIdentityDeploysAndPersists() throws {
         let liveConfiguration = URL(fileURLWithPath: "/tmp/workjet-live-tailscale-ui-test")
         guard let contents = try? String(contentsOf: liveConfiguration, encoding: .utf8) else {
-            throw XCTSkip("Live-Tailscale-Abnahme ist nur mit explizitem Ziel und erwartetem Fingerprint aktiv.")
+            throw XCTSkip("Live-Tailscale-Abnahme ist nur mit explizitem Ziel und erlaubtem OS-Benutzer aktiv.")
         }
         let values = contents.split(whereSeparator: \.isNewline).map(String.init)
-        guard values.count == 3 else {
-            XCTFail("Die Live-Tailscale-Testkonfiguration muss Gerät, SSH-Benutzer und Fingerprint enthalten.")
+        guard values.count == 2 else {
+            XCTFail("Die Live-Tailscale-Testkonfiguration muss Gerät und erlaubten OS-Benutzer enthalten.")
             return
         }
         let deviceName = values[0]
         let sshUser = values[1]
-        let expectedFingerprint = values[2]
 
         let addComputer = app.buttons["Computer hinzufügen"]
         XCTAssertTrue(addComputer.waitForExistence(timeout: 5))
@@ -583,25 +594,14 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(userField.exists, "Der Tailscale-Editor muss genau das sichtbare SSH-Benutzerfeld anbieten.")
         replaceText(in: userField, with: sshUser)
 
-        let scan = app.buttons["computer.ssh-host-key.scan"]
-        scrollToHittable(scan)
-        XCTAssertEqual(scan.label, "Identität prüfen & einrichten")
-        scan.click()
-
-        let fingerprint = app.descendants(matching: .any)["computer.ssh-host-key.fingerprint"]
-        XCTAssertTrue(fingerprint.waitForExistence(timeout: 15), app.debugDescription)
-        XCTAssertTrue(
-            app.staticTexts[expectedFingerprint].exists,
-            "Der erwartete reale Host-Fingerprint muss als sichtbarer Text angezeigt werden."
-        )
-        let confirm = app.buttons["computer.ssh-host-key.confirm"]
-        scrollToHittable(confirm)
-        XCTAssertEqual(confirm.label, "Bestätigen & einrichten")
-        confirm.click()
+        let setup = app.buttons["computer.tailscale.setup"]
+        scrollToHittable(setup)
+        XCTAssertEqual(setup.label, "Über Tailscale einrichten")
+        setup.click()
 
         XCTAssertTrue(
             app.buttons["Computer \(deviceName)"].waitForExistence(timeout: 90),
-            "Nach bestätigtem Fingerprint muss Deployment und persistentes Speichern bis zur Hauptansicht durchlaufen."
+            "Tailscale-SSH-Deployment und persistentes Speichern müssen bis zur Hauptansicht durchlaufen."
         )
     }
 

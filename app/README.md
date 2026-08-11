@@ -12,7 +12,7 @@ Workjet is not a hosted service and does not orchestrate work itself. Claude rem
 | Xcode build and UI tests | Xcode with the `Workjet` macOS scheme |
 | Release-shaped app bundle | The above plus `rsvg-convert` from Homebrew `librsvg` |
 | Pi sidecar reproducibility checks | Node.js 22.19.0 or newer in the Node 22 line, plus npm |
-| Remote execution | A supported remote host reached through host-key-verified SSH, optionally discovered through Tailscale |
+| Remote execution | A supported remote host reached through Tailscale SSH or host-key-verified OpenSSH |
 
 Confirm the basic toolchain:
 
@@ -232,7 +232,7 @@ Never attach these directories to an issue without inspecting and redacting acco
 
 ## Remote repository transport
 
-Repository-backed remote runs create an immutable Git bundle from the current worktree, including tracked edits, deletions, and non-ignored untracked files. The bundle is capped at 64 MiB and sent through strict host-key-verified SSH, including when Tailscale supplies discovery and the encrypted network path.
+Repository-backed remote runs create an immutable Git bundle from the current worktree, including tracked edits, deletions, and non-ignored untracked files. The bundle is capped at 64 MiB and sent through Tailscale SSH or strict host-key-verified OpenSSH.
 
 The remote computer does not need a GitHub account, origin credentials, forwarded SSH agents, or access to the Git origin. Result import verifies the returned Git bundle and writes only `refs/workjet/<run-id>` locally. See [Remote execution and security](../docs/remote-execution-security.md).
 
