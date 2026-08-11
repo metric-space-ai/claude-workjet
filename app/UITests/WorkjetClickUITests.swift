@@ -429,7 +429,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut."].exists)
     }
 
-    func testLiveTailscaleSetupNamesMissingTargetOptInInsteadOfGenericPreflight() throws {
+    func testLiveTailscaleSetupShowsActionableRecoveryInsteadOfGenericPreflight() throws {
         let liveConfiguration = URL(fileURLWithPath: "/tmp/workjet-live-tailscale-ui-blocked")
         guard let contents = try? String(contentsOf: liveConfiguration, encoding: .utf8) else {
             throw XCTSkip("Live-Tailscale-Preflight ist nur mit explizitem Ziel aktiv.")
@@ -452,19 +452,28 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertTrue(setup.isHittable)
         setup.click()
 
-        let detail = app.staticTexts["computer.deployment.detail"]
+        let recoveryTitle = app.descendants(matching: .any)["computer.tailscale.recovery.title"]
         XCTAssertTrue(
-            detail.waitForExistence(timeout: 25),
-            "Die Einrichtung muss einen überprüfbaren Status anzeigen. UI: \(app.debugDescription)"
+            recoveryTitle.waitForExistence(timeout: 25),
+            "Die Einrichtung muss eine konkrete Tailscale-Diagnose anzeigen. UI: \(app.debugDescription)"
         )
-        let detailText = [detail.label, detail.value as? String]
+        let command = app.descendants(matching: .any)["computer.tailscale.recovery-command"]
+        XCTAssertTrue(command.exists, "Recovery-Befehl fehlt. UI: \(app.debugDescription)")
+        let commandText = [command.label, command.value as? String]
             .compactMap { $0 }
             .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         XCTAssertTrue(
-            detailText.contains("sudo tailscale set --ssh"),
-            "Die echte Einrichtung muss den fehlenden Ziel-Opt-in benennen statt einen ungültigen Preflight zu melden. Detail: \(detailText). UI: \(app.debugDescription)"
+            commandText.contains("sudo tailscale set --ssh") || commandText.hasPrefix("id "),
+            "Die echte Einrichtung muss den konkreten Zielschritt benennen statt einen ungültigen Preflight zu melden. Befehl: \(commandText). UI: \(app.debugDescription)"
         )
         XCTAssertTrue(app.buttons["computer.tailscale.copy-activation-command"].exists)
+        XCTAssertTrue(app.links["Tailscale-Anleitung"].exists)
+        let showAccount = app.buttons["Linux-Konto anzeigen"]
+        if showAccount.exists {
+            showAccount.click()
+            XCTAssertTrue(app.staticTexts["Linux-Konto"].exists)
+        }
         XCTAssertEqual(app.buttons["computer.tailscale.setup"].label, "Erneut prüfen & einrichten")
         XCTAssertFalse(app.staticTexts["Der Computer konnte nicht vollständig geprüft werden."].exists)
     }

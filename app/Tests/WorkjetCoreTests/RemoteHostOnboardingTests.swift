@@ -179,6 +179,7 @@ final class RemoteHostOnboardingTests: XCTestCase {
 
         XCTAssertEqual(result.deploymentStatus, .blocked)
         XCTAssertTrue(result.deploymentDetail.contains("sudo tailscale set --ssh"))
+        XCTAssertEqual(result.remoteSetupIssue, .tailscaleSSHNotEnabled)
         let commands = await runner.recordedCommands()
         XCTAssertEqual(commands.count, 1)
         XCTAssertEqual(commands[0].executable, "/usr/bin/tailscale")
@@ -198,15 +199,38 @@ final class RemoteHostOnboardingTests: XCTestCase {
             tailscaleLocator: Locator(path: "/usr/bin/tailscale")
         ).deploy(target)
 
-        XCTAssertEqual(result.deploymentStatus, .failed)
-        XCTAssertEqual(result.deploymentDetail, "Workjet konnte die Tailscale-App nicht für die Remote-Verbindung erreichen. Öffne Tailscale und versuche es erneut.")
+        XCTAssertEqual(result.deploymentStatus, .blocked)
+        XCTAssertEqual(result.deploymentDetail, "Workjet konnte die Tailscale-App auf diesem Mac nicht erreichen.")
+        XCTAssertEqual(result.remoteSetupIssue, .tailscaleAppUnavailable)
+    }
+
+    func testManagedTailscaleBootstrapClassifiesLinuxAccountOrPolicyDenial() async {
+        let runner = Runner([
+            CommandResult(exitCode: 255, standardError: Data("Permission denied by Tailscale SSH policy".utf8))
+        ])
+        var target = managedTailscaleComputer
+        target.sidecarBundlePath = "/Applications/Workjet.app/Contents/Resources/ctox-pi-sidecar.mjs"
+
+        let result = await RemotePiBootstrap(
+            runner: runner,
+            files: Files(),
+            tailscaleLocator: Locator(path: "/usr/bin/tailscale")
+        ).deploy(target)
+
+        XCTAssertEqual(result.deploymentStatus, .blocked)
+        XCTAssertEqual(result.remoteSetupIssue, .tailscaleAccessDenied)
+        XCTAssertTrue(result.deploymentDetail.contains("workjet"))
+        XCTAssertTrue(result.deploymentDetail.contains("SSH-Policy"))
     }
 
     func testManagedTailscaleModePersistsInComputerJSON() throws {
-        let encoded = try JSONEncoder().encode(managedTailscaleComputer)
+        var computer = managedTailscaleComputer
+        computer.remoteSetupIssue = .tailscaleAccessDenied
+        let encoded = try JSONEncoder().encode(computer)
         let decoded = try JSONDecoder().decode(Computer.self, from: encoded)
         XCTAssertEqual(decoded.tailscaleSSHEnabled, true)
         XCTAssertTrue(decoded.usesManagedTailscaleSSH)
+        XCTAssertEqual(decoded.remoteSetupIssue, .tailscaleAccessDenied)
     }
 
     func testScanDoesNotWriteBeforeExplicitConfirmationAndUsesFixedArgumentArray() async throws {

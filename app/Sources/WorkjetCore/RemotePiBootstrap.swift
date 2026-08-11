@@ -14,9 +14,11 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
     case hostKeyConfirmationMismatch
     case hostKeyUnknown
     case tailscaleUnavailable
+    case tailscaleAppUnavailable
     case tailscaleSSHRequiresPort22
     case tailscaleSSHNotReady(host: String)
     case tailscaleSSHAccessDenied(user: String, host: String)
+    case tailscaleSSHUnsupportedClient
     case invalidBundle(String)
     case commandFailed(String)
     case preflightBlocked(String)
@@ -42,11 +44,14 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
         case .hostKeyConfirmationMismatch: return "Die bestätigte Identität gehört nicht zu diesem Computer. Es wurde nichts gespeichert."
         case .hostKeyUnknown: return "Die Identität dieses Computers wurde noch nicht bestätigt. Bestätige sie und richte den Computer danach erneut ein."
         case .tailscaleUnavailable: return "Tailscale wurde auf diesem Mac nicht gefunden."
+        case .tailscaleAppUnavailable: return "Workjet konnte die Tailscale-App auf diesem Mac nicht erreichen."
         case .tailscaleSSHRequiresPort22: return "Tailscale SSH verwendet fest Port 22. Wähle für andere Ports die Verbindung „SSH“."
         case let .tailscaleSSHNotReady(host):
             return "\(host) bietet Tailscale SSH noch nicht an. Führe auf diesem Ziel-Computer einmal `sudo tailscale set --ssh` aus und prüfe, dass die Tailnet-Policy diesen Zugriff erlaubt."
         case let .tailscaleSSHAccessDenied(user, host):
             return "Tailscale hat die Anmeldung als „\(user)“ auf \(host) abgelehnt. Prüfe, ob dieser Benutzer auf dem Ziel existiert und in der SSH-Policy des Tailnets erlaubt ist."
+        case .tailscaleSSHUnsupportedClient:
+            return "Diese Tailscale-Installation unterstützt `tailscale ssh` nicht."
         case .invalidBundle: return "Die enthaltene Pi-Code-Komponente ist beschädigt. Installiere Workjet erneut."
         case let .commandFailed(detail): return detail
         case let .preflightBlocked(detail): return "Dieser Computer erfüllt noch nicht alle Voraussetzungen: \(detail)"
@@ -365,6 +370,7 @@ public struct RemotePiBootstrap: Sendable {
         var computer = input
         computer.pinnedSidecarVersion = PiSidecarRuntime.version
         computer.bubblewrapExecutablePath = nil
+        computer.remoteSetupIssue = nil
         computer.deploymentStatus = .checking
         computer.deploymentDetail = "Der Computer wird geprüft."
         do {
@@ -445,6 +451,7 @@ public struct RemotePiBootstrap: Sendable {
 
             computer.deploymentStatus = .installed
             computer.deploymentDetail = "Pi Code wurde eingerichtet. Der Computer ist bereit."
+            computer.remoteSetupIssue = nil
             computer.installedContentHash = contentHash
             computer.installedSidecarVersion = PiSidecarRuntime.version
             computer.lastSuccessfulDeploymentAt = now()
@@ -452,12 +459,14 @@ public struct RemotePiBootstrap: Sendable {
         } catch let error as RemotePiBootstrapError {
             computer.deploymentStatus = error.isBlocked ? .blocked : .failed
             computer.deploymentDetail = error.localizedDescription
+            computer.remoteSetupIssue = error.remoteSetupIssue
             computer.installedContentHash = nil
             computer.installedSidecarVersion = nil
             return computer
         } catch {
             computer.deploymentStatus = .failed
             computer.deploymentDetail = "Der Computer konnte nicht eingerichtet werden. Prüfe Verbindung und Einstellungen."
+            computer.remoteSetupIssue = nil
             computer.installedContentHash = nil
             computer.installedSidecarVersion = nil
             return computer
@@ -496,7 +505,7 @@ public struct RemotePiBootstrap: Sendable {
         let stdout = String(decoding: result.standardOutput.prefix(2_048), as: UTF8.self)
         if computer.usesManagedTailscaleSSH,
            stdout.localizedCaseInsensitiveContains("The Tailscale GUI failed to start") {
-            throw RemotePiBootstrapError.commandFailed("Workjet konnte die Tailscale-App nicht für die Remote-Verbindung erreichen. Öffne Tailscale und versuche es erneut.")
+            throw RemotePiBootstrapError.tailscaleAppUnavailable
         }
         guard result.exitCode == 0 else {
             let stderr = String(decoding: result.standardError.prefix(2_048), as: UTF8.self)
@@ -512,7 +521,7 @@ public struct RemotePiBootstrap: Sendable {
                     throw RemotePiBootstrapError.tailscaleSSHAccessDenied(user: computer.user, host: computer.host)
                 }
                 if stderr.localizedCaseInsensitiveContains("not available on macos builds distributed through the app store") {
-                    throw RemotePiBootstrapError.commandFailed("Diese Tailscale-Installation stellt `tailscale ssh` nicht bereit. Installiere die Standalone-Version von Tailscale oder wähle die Verbindung „SSH“.")
+                    throw RemotePiBootstrapError.tailscaleSSHUnsupportedClient
                 }
             }
             // Explicit OpenSSH routes use Workjet's manual trust flow. Managed
@@ -2332,9 +2341,21 @@ private struct PreflightFacts {
 }
 
 public extension RemotePiBootstrapError {
+    var remoteSetupIssue: RemoteSetupIssue? {
+        switch self {
+        case .tailscaleUnavailable: return .tailscaleNotInstalled
+        case .tailscaleAppUnavailable: return .tailscaleAppUnavailable
+        case .tailscaleSSHRequiresPort22: return .tailscalePortInvalid
+        case .tailscaleSSHNotReady: return .tailscaleSSHNotEnabled
+        case .tailscaleSSHAccessDenied: return .tailscaleAccessDenied
+        case .tailscaleSSHUnsupportedClient: return .tailscaleClientUnsupported
+        default: return nil
+        }
+    }
+
     var isBlocked: Bool {
         switch self {
-        case .preflightBlocked, .tailscaleUnavailable, .tailscaleSSHRequiresPort22, .tailscaleSSHNotReady, .tailscaleSSHAccessDenied, .missingKnownHosts, .sshServiceUnavailable, .sshConnectionTimedOut: return true
+        case .preflightBlocked, .tailscaleUnavailable, .tailscaleAppUnavailable, .tailscaleSSHRequiresPort22, .tailscaleSSHNotReady, .tailscaleSSHAccessDenied, .tailscaleSSHUnsupportedClient, .missingKnownHosts, .sshServiceUnavailable, .sshConnectionTimedOut: return true
         default: return false
         }
     }

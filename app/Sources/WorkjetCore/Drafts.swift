@@ -214,6 +214,7 @@ public struct ComputerDraft: Equatable {
             if routeChanged {
                 result.deploymentStatus = .notConfigured
                 result.deploymentDetail = "Verbindungs- oder Bundle-Konfiguration wurde geändert; erneut prüfen und einrichten."
+                result.remoteSetupIssue = nil
                 result.installedContentHash = nil
                 result.installedSidecarVersion = nil
                 result.tailscaleExecutablePath = nil

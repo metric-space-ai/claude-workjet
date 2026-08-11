@@ -52,6 +52,17 @@ public enum DeploymentStatus: String, Codable, Equatable, Sendable {
     case failed = "Fehlgeschlagen"
 }
 
+/// Stable recovery categories for remote setup. The UI must not infer an
+/// actionable state by parsing localized error text.
+public enum RemoteSetupIssue: String, Codable, Equatable, Sendable {
+    case tailscaleNotInstalled
+    case tailscaleAppUnavailable
+    case tailscaleSSHNotEnabled
+    case tailscaleAccessDenied
+    case tailscaleClientUnsupported
+    case tailscalePortInvalid
+}
+
 public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var id: UUID
     public var name: String
@@ -65,6 +76,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var sidecarBundlePath: String
     public var deploymentStatus: DeploymentStatus
     public var deploymentDetail: String
+    public var remoteSetupIssue: RemoteSetupIssue?
     public var installedContentHash: String?
     public var installedSidecarVersion: String?
     public var knownHostsPath: String
@@ -91,6 +103,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         sidecarBundlePath: String = "",
         deploymentStatus: DeploymentStatus = .notConfigured,
         deploymentDetail: String = "Noch nicht geprüft.",
+        remoteSetupIssue: RemoteSetupIssue? = nil,
         installedContentHash: String? = nil,
         installedSidecarVersion: String? = nil,
         knownHostsPath: String = "",
@@ -113,6 +126,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         self.sidecarBundlePath = sidecarBundlePath
         self.deploymentStatus = deploymentStatus
         self.deploymentDetail = deploymentDetail
+        self.remoteSetupIssue = remoteSetupIssue
         self.installedContentHash = installedContentHash
         self.installedSidecarVersion = installedSidecarVersion
         self.knownHostsPath = knownHostsPath
@@ -126,7 +140,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, transport, host, user, port, sandboxEnabled, pinnedSidecarVersion, telemetryEnabled
-        case sidecarBundlePath, deploymentStatus, deploymentDetail, installedContentHash, installedSidecarVersion
+        case sidecarBundlePath, deploymentStatus, deploymentDetail, remoteSetupIssue, installedContentHash, installedSidecarVersion
         case knownHostsPath, identityFilePath, tailscaleSSHEnabled, tailscaleExecutablePath, bubblewrapExecutablePath, lastSuccessfulPreflightAt, lastSuccessfulDeploymentAt
     }
 
@@ -145,6 +159,7 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
         sidecarBundlePath = try values.decodeIfPresent(String.self, forKey: .sidecarBundlePath) ?? ""
         deploymentStatus = try values.decodeIfPresent(DeploymentStatus.self, forKey: .deploymentStatus) ?? .notConfigured
         deploymentDetail = try values.decodeIfPresent(String.self, forKey: .deploymentDetail) ?? "Noch nicht geprüft."
+        remoteSetupIssue = try values.decodeIfPresent(RemoteSetupIssue.self, forKey: .remoteSetupIssue)
         installedContentHash = try values.decodeIfPresent(String.self, forKey: .installedContentHash)
         installedSidecarVersion = try values.decodeIfPresent(String.self, forKey: .installedSidecarVersion)
         knownHostsPath = try values.decodeIfPresent(String.self, forKey: .knownHostsPath) ?? ""

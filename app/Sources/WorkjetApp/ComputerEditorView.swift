@@ -13,6 +13,7 @@ struct ComputerEditorView: View {
     @State private var isDeploying = false
     @State private var deploymentStatus: DeploymentStatus
     @State private var deploymentDetail: String
+    @State private var remoteSetupIssue: RemoteSetupIssue?
     @State private var manualTailscaleHost = false
     @State private var selectedDeviceID: String?
     @State private var validationMessage: String?
@@ -21,6 +22,7 @@ struct ComputerEditorView: View {
     @State private var isScanningHostKey = false
     @State private var persistenceOperationInFlight = false
     @State private var reusedConnectionDefaultsFrom: String?
+    @State private var technicalDetailsExpanded = false
 
     init(computer: Computer?, onClose: @escaping () -> Void) {
         self.computer = computer
@@ -29,6 +31,7 @@ struct ComputerEditorView: View {
         _workingComputer = State(initialValue: computer)
         _deploymentStatus = State(initialValue: computer?.deploymentStatus ?? .notConfigured)
         _deploymentDetail = State(initialValue: computer?.deploymentDetail ?? "Noch nicht geprüft.")
+        _remoteSetupIssue = State(initialValue: computer?.remoteSetupIssue)
         _manualTailscaleHost = State(initialValue: computer?.transport == .tailscale && !(computer?.host.isEmpty ?? true))
     }
 
@@ -99,12 +102,14 @@ struct ComputerEditorView: View {
                     draft.port = 22
                     draft.identityFilePath = ""
                     pendingHostKey = nil
+                    remoteSetupIssue = nil
                     model.refreshTailscaleDevices()
                 }
                 WJChoiceButton(title: "SSH", isSelected: draft.transport == .ssh) {
                     draft.transport = .ssh
                     draft.tailscaleSSHEnabled = false
                     pendingHostKey = nil
+                    remoteSetupIssue = nil
                     prepareKnownHostsDefault()
                 }
             }
@@ -184,6 +189,7 @@ struct ComputerEditorView: View {
                             draft.host = device.preferredHost
                             draft.name = device.hostname
                             pendingHostKey = nil
+                            remoteSetupIssue = nil
                             if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 draft.user = NSUserName()
                             }
@@ -245,10 +251,14 @@ struct ComputerEditorView: View {
                     if isDeploying { ProgressView().controlSize(.mini) }
                 }
                 if !deploymentDetail.isEmpty {
-                    Text(deploymentDetail)
-                        .font(.system(size: 10))
-                        .foregroundStyle(deploymentStatus == .failed || deploymentStatus == .blocked ? WJTheme.quotaCritical : WJTheme.secondaryText)
-                        .accessibilityIdentifier("computer.deployment.detail")
+                    if tailscaleRecovery != nil {
+                        tailscaleRecoveryPanel
+                    } else {
+                        Text(deploymentDetail)
+                            .font(.system(size: 10))
+                            .foregroundStyle(deploymentStatus == .failed || deploymentStatus == .blocked ? WJTheme.quotaCritical : WJTheme.secondaryText)
+                            .accessibilityIdentifier("computer.deployment.detail")
+                    }
                 }
             }
             if let validationMessage {
@@ -256,15 +266,6 @@ struct ComputerEditorView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(WJTheme.quotaCritical)
                     .accessibilityIdentifier("computer.editor.inline.error")
-            }
-            if let command = tailscaleSSHActivationCommand {
-                Button("Befehl für den Zielcomputer kopieren") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .accessibilityIdentifier("computer.tailscale.copy-activation-command")
             }
             if !usesManagedTailscaleSSH && (draft.transport == .ssh || draft.transport == .tailscale) {
                 hostKeyOnboarding
@@ -313,7 +314,7 @@ struct ComputerEditorView: View {
     }
 
     private var technicalDetails: some View {
-        DisclosureGroup("Technische Details") {
+        DisclosureGroup("Technische Details", isExpanded: $technicalDetailsExpanded) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("Port").font(.system(size: 11)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
@@ -354,12 +355,14 @@ struct ComputerEditorView: View {
         isDeploying = true
         deploymentStatus = .checking
         deploymentDetail = "Prüfung läuft …"
+        remoteSetupIssue = nil
         Task {
             var deployed = await model.bootstrapRemoteComputer(saved)
             workingComputer = deployed
             draft = ComputerDraft(computer: deployed)
             deploymentStatus = deployed.deploymentStatus
             deploymentDetail = deployed.deploymentDetail
+            remoteSetupIssue = deployed.remoteSetupIssue
             guard deployed.deploymentStatus == .installed else {
                 isDeploying = false
                 return
@@ -373,6 +376,7 @@ struct ComputerEditorView: View {
                 if let failure = provisioning.failure {
                     deploymentStatus = .failed
                     deploymentDetail = "Worker sind nicht bereit. \(failure.userVisibleDetail)"
+                    remoteSetupIssue = nil
                     validationMessage = deploymentDetail
                     isDeploying = false
                     return
@@ -384,6 +388,7 @@ struct ComputerEditorView: View {
                 draft = ComputerDraft(computer: deployed)
                 deploymentStatus = .installed
                 deploymentDetail = deployed.deploymentDetail
+                remoteSetupIssue = nil
             }
 
             persistenceOperationInFlight = true
@@ -456,9 +461,11 @@ struct ComputerEditorView: View {
             } catch let error as RemotePiBootstrapError {
                 deploymentStatus = error.isBlocked ? .blocked : .failed
                 deploymentDetail = error.localizedDescription
+                remoteSetupIssue = error.remoteSetupIssue
             } catch {
                 deploymentStatus = .failed
                 deploymentDetail = error.localizedDescription
+                remoteSetupIssue = nil
             }
             isScanningHostKey = false
         }
@@ -470,6 +477,7 @@ struct ComputerEditorView: View {
         guard validationMessage == nil, var saved = draft.applied(to: workingComputer) else { return }
         saved.deploymentStatus = deploymentStatus == .checking ? .notConfigured : deploymentStatus
         saved.deploymentDetail = deploymentDetail.isEmpty ? "Noch nicht eingerichtet." : deploymentDetail
+        saved.remoteSetupIssue = remoteSetupIssue
         saved.installedContentHash = nil
         saved.installedSidecarVersion = nil
         persistenceOperationInFlight = true
@@ -549,6 +557,7 @@ struct ComputerEditorView: View {
         validationMessage = nil
         deploymentStatus = .notConfigured
         deploymentDetail = "Tailscale übernimmt die Verbindung; richte den Computer erneut ein."
+        remoteSetupIssue = nil
     }
 
     private func saveAndClose() {
@@ -625,11 +634,164 @@ struct ComputerEditorView: View {
         return isScanningHostKey ? "Verbindung wird geprüft …" : "Identität prüfen & einrichten"
     }
 
-    private var tailscaleSSHActivationCommand: String? {
-        guard usesManagedTailscaleSSH,
-              deploymentStatus == .blocked,
-              deploymentDetail.contains("sudo tailscale set --ssh") else { return nil }
-        return "sudo tailscale set --ssh"
+    private struct TailscaleRecovery {
+        enum Action {
+            case openTailscale
+            case showLinuxAccount
+            case openDownload
+        }
+
+        let title: String
+        let explanation: String
+        let steps: [String]
+        let command: String?
+        let action: Action?
+    }
+
+    private var tailscaleRecovery: TailscaleRecovery? {
+        guard usesManagedTailscaleSSH, let remoteSetupIssue else { return nil }
+        let target = draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? draft.host
+            : draft.name
+        switch remoteSetupIssue {
+        case .tailscaleSSHNotEnabled:
+            return TailscaleRecovery(
+                title: "Tailscale SSH fehlt auf \(target)",
+                explanation: "Workjet sieht den Computer im Tailnet, darf dort aber noch keine Befehle ausführen.",
+                steps: [
+                    "Öffne direkt auf \(target) ein Terminal.",
+                    "Aktiviere dort Tailscale SSH mit dem unten stehenden Befehl. Dafür sind Adminrechte auf dem Zielcomputer erforderlich.",
+                    "Klicke danach auf „Erneut prüfen & einrichten“. Workjet installiert Pi Code, Harness und ausgewählte Skills anschließend selbst."
+                ],
+                command: "sudo tailscale set --ssh",
+                action: nil
+            )
+        case .tailscaleAccessDenied:
+            return TailscaleRecovery(
+                title: "Tailscale SSH verweigert den Zugriff",
+                explanation: "Der Computer ist erreichbar. Entweder existiert das Linux-Konto „\(draft.user)“ dort nicht oder die SSH-Policy des Tailnets erlaubt diesen Zugriff nicht.",
+                steps: [
+                    "Prüfe auf \(target), dass das Linux-Konto „\(draft.user)“ existiert.",
+                    "Erlaube in der Tailscale-SSH-Policy den Zugriff auf dieses Konto und diesen Computer.",
+                    "Klicke danach auf „Erneut prüfen & einrichten“."
+                ],
+                command: "id \(draft.user)",
+                action: .showLinuxAccount
+            )
+        case .tailscaleNotInstalled:
+            return TailscaleRecovery(
+                title: "Tailscale fehlt auf diesem Mac",
+                explanation: "Workjet benötigt die lokale Tailscale-App, um Geräte zu finden und die Verbindung aufzubauen.",
+                steps: [
+                    "Installiere Tailscale auf diesem Mac.",
+                    "Melde diesen Mac im gleichen Tailnet wie den Zielcomputer an.",
+                    "Öffne Workjet erneut und aktualisiere die Geräteliste."
+                ],
+                command: nil,
+                action: .openDownload
+            )
+        case .tailscaleAppUnavailable:
+            return TailscaleRecovery(
+                title: "Tailscale ist auf diesem Mac nicht bereit",
+                explanation: "Die App ist installiert, antwortet Workjet aber momentan nicht.",
+                steps: [
+                    "Öffne Tailscale und prüfe, dass „Verbunden“ angezeigt wird.",
+                    "Kehre zu Workjet zurück und klicke auf „Erneut prüfen & einrichten“."
+                ],
+                command: nil,
+                action: .openTailscale
+            )
+        case .tailscaleClientUnsupported:
+            return TailscaleRecovery(
+                title: "Diese Tailscale-Version unterstützt den benötigten Zugriff nicht",
+                explanation: "Workjet braucht eine Tailscale-Installation, die den Befehl `tailscale ssh` bereitstellt.",
+                steps: [
+                    "Installiere die aktuelle Standalone-Version von Tailscale.",
+                    "Verbinde sie mit deinem Tailnet und versuche die Einrichtung erneut."
+                ],
+                command: nil,
+                action: .openDownload
+            )
+        case .tailscalePortInvalid:
+            return TailscaleRecovery(
+                title: "Tailscale SSH verwendet Port 22",
+                explanation: "Für einen anderen Port muss der Verbindungstyp „SSH“ verwendet werden.",
+                steps: ["Öffne die technischen Details oder wechsle oben zu „SSH“."],
+                command: nil,
+                action: .showLinuxAccount
+            )
+        }
+    }
+
+    @ViewBuilder private var tailscaleRecoveryPanel: some View {
+        if let recovery = tailscaleRecovery {
+            VStack(alignment: .leading, spacing: 9) {
+                Text(recovery.title)
+                    .font(.system(size: 11, weight: .semibold))
+                    .accessibilityIdentifier("computer.tailscale.recovery.title")
+                Text(recovery.explanation)
+                    .font(.system(size: 10))
+                    .foregroundStyle(WJTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("computer.deployment.detail")
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(recovery.steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 7) {
+                            Text("\(index + 1).")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(WJTheme.secondaryText)
+                                .frame(width: 16, alignment: .trailing)
+                            Text(step)
+                                .font(.system(size: 10))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                if let command = recovery.command {
+                    Text(command)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(WJTheme.background))
+                        .accessibilityIdentifier("computer.tailscale.recovery-command")
+                }
+                HStack(spacing: 8) {
+                    if let command = recovery.command {
+                        Button("Befehl kopieren") { copyToPasteboard(command) }
+                            .accessibilityIdentifier("computer.tailscale.copy-activation-command")
+                    }
+                    if let action = recovery.action {
+                        recoveryButton(for: action)
+                    }
+                    Link("Tailscale-Anleitung", destination: URL(string: "https://tailscale.com/docs/features/tailscale-ssh")!)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(WJTheme.divider, lineWidth: 1))
+        }
+    }
+
+    @ViewBuilder private func recoveryButton(for action: TailscaleRecovery.Action) -> some View {
+        switch action {
+        case .openTailscale:
+            Button("Tailscale öffnen") {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Tailscale.app"))
+            }
+        case .showLinuxAccount:
+            Button("Linux-Konto anzeigen") { technicalDetailsExpanded = true }
+        case .openDownload:
+            Link("Tailscale laden", destination: URL(string: "https://tailscale.com/download/mac")!)
+        }
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
     }
 
     private func field(label: String, placeholder: String, text: Binding<String>) -> some View {
