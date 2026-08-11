@@ -405,6 +405,29 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "computer.ssh-host-key.scan").count, 0)
     }
 
+    func testLiveTailscaleDiscoveryListsConfiguredPeerWithoutShellEnvironment() throws {
+        let liveConfiguration = URL(fileURLWithPath: "/tmp/workjet-live-tailscale-ui-discovery")
+        guard let deviceName = try? String(contentsOf: liveConfiguration, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !deviceName.isEmpty else {
+            throw XCTSkip("Live-Tailscale-Gerätediscovery ist nur mit explizitem Ziel aktiv.")
+        }
+
+        let addComputer = app.buttons["Computer hinzufügen"]
+        XCTAssertTrue(addComputer.waitForExistence(timeout: 5))
+        addComputer.click()
+        XCTAssertTrue(app.staticTexts["Computer einrichten"].waitForExistence(timeout: 3))
+
+        let device = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH[c] %@", "\(deviceName),")
+        ).firstMatch
+        XCTAssertTrue(
+            device.waitForExistence(timeout: 15),
+            "Die launchd-ähnliche App-Sitzung muss das reale Tailscale-Ziel ohne geerbtes SHLVL auflisten."
+        )
+        XCTAssertFalse(app.staticTexts["Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut."].exists)
+    }
+
     func testPencilTargetsExactWorkerAndEditorHasOneTaskSource() {
         let row = app.descendants(matching: .any)["worker.row.\(completionID.uppercased())"]
         let pencil = app.buttons["worker.edit.\(completionID.uppercased())"]
@@ -610,6 +633,7 @@ final class WorkjetClickUITests: XCTestCase {
         application.launchEnvironment["WORKJET_UI_TEST_WINDOW"] = "1"
         application.launchEnvironment["WORKJET_UI_TEST_HOME"] = isolatedHome.path
         application.launchEnvironment["WORKJET_UI_TEST_SEED"] = "1"
+        application.launchEnvironment["SHLVL"] = ""
         if remoteRunFixture {
             application.launchEnvironment["WORKJET_UI_TEST_REMOTE_RUN"] = "1"
         }

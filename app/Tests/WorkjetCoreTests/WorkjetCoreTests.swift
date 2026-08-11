@@ -933,6 +933,7 @@ final class TailscaleDeviceTests: XCTestCase {
         XCTAssertEqual(commands.first?.executable, "/usr/bin/tailscale")
         XCTAssertEqual(commands.first?.arguments, ["status", "--json"])
         XCTAssertEqual(commands.first?.stdoutLimit, 1_048_576)
+        XCTAssertEqual(commands.first?.environment?["SHLVL"].flatMap { $0.isEmpty ? nil : $0 } != nil, true)
 
         do {
             _ = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/tmp/tailscale")).discover()
@@ -978,6 +979,23 @@ final class TailscaleDeviceTests: XCTestCase {
         }
         let commandCount = await runner.recorded().count
         XCTAssertEqual(commandCount, 2)
+    }
+
+    func testTailscaleGUIBootstrapTextIsNotMisreportedAsMalformedJSON() async throws {
+        let runner = Runner(CommandResult(
+            exitCode: 0,
+            standardOutput: Data("The Tailscale GUI failed to start: CLIError 3".utf8)
+        ))
+
+        do {
+            _ = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/usr/bin/tailscale")).discover()
+            XCTFail("Tailscale-GUI-Fehlertext darf nicht als Status-JSON geparst werden.")
+        } catch {
+            XCTAssertEqual(error as? TailscaleDeviceError, .guiUnavailable)
+            XCTAssertEqual(error.localizedDescription, "Workjet konnte die Tailscale-App nicht erreichen. Öffne Tailscale und versuche es erneut.")
+        }
+        let commandCount = await runner.recorded().count
+        XCTAssertEqual(commandCount, 1)
     }
 
     func testInstalledTailscaleStatusIsParseableThroughProductionRunnerWhenAvailable() async throws {

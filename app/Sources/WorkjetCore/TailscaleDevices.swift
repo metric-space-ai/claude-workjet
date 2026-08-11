@@ -25,6 +25,7 @@ public struct TailscaleDevice: Identifiable, Equatable, Sendable {
 
 public enum TailscaleDeviceError: LocalizedError, Equatable {
     case unavailable
+    case guiUnavailable
     case notConnected(String)
     case commandFailed(String)
     case outputTooLarge
@@ -33,6 +34,7 @@ public enum TailscaleDeviceError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .unavailable: return "Tailscale wurde auf diesem Mac nicht gefunden."
+        case .guiUnavailable: return "Workjet konnte die Tailscale-App nicht erreichen. Öffne Tailscale und versuche es erneut."
         case .notConnected: return "Tailscale ist nicht verbunden. Öffne Tailscale und versuche es erneut."
         case .commandFailed: return "Die Tailscale-Geräteliste konnte nicht geladen werden. Öffne Tailscale und versuche es erneut."
         case .outputTooLarge, .malformedStatus: return "Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut."
@@ -121,9 +123,26 @@ public struct TailscaleDeviceDiscovery: Sendable {
     }
 
     private func discover(executable: String) async throws -> [TailscaleDevice] {
+        // The macOS Tailscale CLI deliberately distinguishes terminal-style
+        // invocations by the presence of SHLVL. Menu-bar apps launched by
+        // launchd do not receive it; without it the CLI tries (and fails) to
+        // launch the GUI and exits 0 with an English error on stdout instead
+        // of returning status JSON. Preserve the app environment and add the
+        // marker expected by Tailscale's supported CLI entry point.
+        var environment = ProcessInfo.processInfo.environment
+        if environment["SHLVL"]?.isEmpty != false {
+            environment["SHLVL"] = "1"
+        }
         let result: CommandResult
         do {
-            result = try await runner.run(CommandSpec(executable: executable, arguments: ["status", "--json"], timeout: 3, stdoutLimit: 1_048_576, stderrLimit: 16_384))
+            result = try await runner.run(CommandSpec(
+                executable: executable,
+                arguments: ["status", "--json"],
+                environment: environment,
+                timeout: 3,
+                stdoutLimit: 1_048_576,
+                stderrLimit: 16_384
+            ))
         } catch {
             throw TailscaleDeviceError.commandFailed(error.localizedDescription)
         }
@@ -131,6 +150,10 @@ public struct TailscaleDeviceDiscovery: Sendable {
         guard result.exitCode == 0 else {
             let detail = String(decoding: result.standardError.prefix(1_024), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             throw TailscaleDeviceError.commandFailed(detail.isEmpty ? "Exit \(result.exitCode)" : detail)
+        }
+        if String(decoding: result.standardOutput.prefix(256), as: UTF8.self)
+            .contains("The Tailscale GUI failed to start") {
+            throw TailscaleDeviceError.guiUnavailable
         }
         return try TailscaleDeviceParser.parse(result.standardOutput)
     }
