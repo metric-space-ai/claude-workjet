@@ -894,6 +894,24 @@ const safeOwnedDirectory = (directory, parent) => {
     return info.isDirectory() && !info.isSymbolicLink() && info.uid === process.geteuid() && path.dirname(real) === realParent && path.basename(real) === path.basename(normalized);
   } catch { return false; }
 };
+const safeOwnedDescendantDirectory = (directory, parent) => {
+  const normalized = path.resolve(directory);
+  const normalizedParent = path.resolve(parent);
+  const relative = path.relative(normalizedParent, normalized);
+  const parts = relative.split(path.sep);
+  if (!relative || path.isAbsolute(relative) || parts.some(part => !part || part === "." || part === "..")) return false;
+  try {
+    const realParent = fs.realpathSync(normalizedParent);
+    let candidate = normalizedParent;
+    for (const part of parts) {
+      candidate = path.join(candidate, part);
+      const info = fs.lstatSync(candidate);
+      if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.geteuid()) return false;
+    }
+    const real = fs.realpathSync(normalized);
+    return real.startsWith(`${realParent}${path.sep}`);
+  } catch { return false; }
+};
 const ensurePrivateOwnedDirectory = (directory, parent, normalizePermissions = true) => {
   if (!fs.existsSync(directory)) fs.mkdirSync(directory, {mode: 0o700});
   if (!safeOwnedDirectory(directory, parent)) throw new Error("unsafe managed skill directory");
@@ -1544,10 +1562,10 @@ const importWorkspace = async () => {
   const keys = Object.keys(manifest).sort().join(",");
   const baseKeys = "bundleSHA256,byteSize,repoID,schemaVersion,snapshotCommitOID";
   const gitlinkKeys = "bundleSHA256,byteSize,repoID,schemaVersion,snapshotCommitOID,submodules";
-  const safeTopLevelGitlinkPath = value => typeof value === "string" && value.length > 0 && !value.includes("/") && safeGitPath(value);
+  const safeGitlinkPath = value => typeof value === "string" && value.length > 0 && safeGitPath(value);
   const submodules = Array.isArray(manifest.submodules) ? manifest.submodules : [];
   const validSubmodules = submodules.length > 0 && submodules.length <= 256 && submodules.every(value => {
-    if (!value || Object.keys(value).sort().join(",") !== "bundleRef,commitOID,path" || !safeTopLevelGitlinkPath(value.path) || !validOID(value.commitOID) || typeof value.bundleRef !== "string" || !/^refs\/workjet\/submodules\/[a-z0-9-]+\/[0-9]+$/.test(value.bundleRef)) return false;
+    if (!value || Object.keys(value).sort().join(",") !== "bundleRef,commitOID,path" || !safeGitlinkPath(value.path) || !validOID(value.commitOID) || typeof value.bundleRef !== "string" || !/^refs\/workjet\/submodules\/[a-z0-9-]+\/[0-9]+$/.test(value.bundleRef)) return false;
     return true;
   }) && new Set(submodules.map(value => value.path)).size === submodules.length && new Set(submodules.map(value => value.bundleRef)).size === submodules.length;
   if (!validRepoID(manifest.repoID) || !validOID(manifest.snapshotCommitOID) || !/^[0-9a-f]{64}$/.test(manifest.bundleSHA256) || !Number.isSafeInteger(manifest.byteSize) || manifest.byteSize < 1 || manifest.byteSize > limit || !((keys === baseKeys && manifest.schemaVersion === 1) || (keys === gitlinkKeys && manifest.schemaVersion === 2 && validSubmodules))) reject("workspace_manifest_invalid");
@@ -1604,14 +1622,15 @@ const createRunWorkspace = (descriptor, runID) => {
     if (!safeOwnedDirectory(worktree, worktreesRoot) || path.basename(worktree) !== runID) throw new Error("workspace_path_unsafe");
     for (const [submodulePath, oid] of [...gitlinks].sort(([left], [right]) => left.localeCompare(right))) {
       const destination = path.join(worktree, submodulePath);
-      if (path.dirname(destination) !== worktree) throw new Error("workspace_submodule_path_unsafe");
+      const relative = path.relative(worktree, destination);
+      if (!safeGitPath(relative) || path.isAbsolute(relative)) throw new Error("workspace_submodule_path_unsafe");
       if (fs.existsSync(destination)) {
-        if (!safeOwnedDirectory(destination, worktree) || fs.readdirSync(destination).length !== 0) throw new Error("workspace_submodule_path_unsafe");
+        if (!safeOwnedDescendantDirectory(destination, worktree) || fs.readdirSync(destination).length !== 0) throw new Error("workspace_submodule_path_unsafe");
         fs.rmdirSync(destination);
       }
       execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "add", "--detach", destination, oid], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
       createdSubmodules.push(destination);
-      if (!safeOwnedDirectory(destination, worktree)) throw new Error("workspace_submodule_path_unsafe");
+      if (!safeOwnedDescendantDirectory(destination, worktree)) throw new Error("workspace_submodule_path_unsafe");
     }
   } catch (error) {
     for (const destination of createdSubmodules.reverse()) { try { execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", destination], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]}); } catch {} }
@@ -1634,7 +1653,7 @@ const indexedGitlinks = staged => {
   const result = new Map();
   for (const value of staged.filter(entry => entry.startsWith("160000 "))) {
     const match = /^160000 ([0-9a-f]{40,64}) 0\t([^\0]+)$/.exec(value);
-    if (!match || !safeGitPath(match[2]) || match[2].includes("/") || result.has(match[2])) throw new Error("workspace_result_tree_unsafe");
+    if (!match || !safeGitPath(match[2]) || result.has(match[2])) throw new Error("workspace_result_tree_unsafe");
     result.set(match[2], match[1]);
   }
   return result;
@@ -1676,7 +1695,7 @@ const validateCommitTree = (cache, commitOID, errorPrefix, allowedGitlinks = new
   const observedGitlinks = new Map();
   for (const entry of entries) {
     if (entry.mode === "160000") {
-      if (entry.type !== "commit" || entry.path.includes("/") || allowedGitlinks.get(entry.path) !== entry.oid || observedGitlinks.has(entry.path)) throw new Error(`${errorPrefix}_tree_unsafe`);
+      if (entry.type !== "commit" || allowedGitlinks.get(entry.path) !== entry.oid || observedGitlinks.has(entry.path)) throw new Error(`${errorPrefix}_tree_unsafe`);
       observedGitlinks.set(entry.path, entry.oid);
       continue;
     }
@@ -1690,7 +1709,7 @@ const validateCommitTree = (cache, commitOID, errorPrefix, allowedGitlinks = new
   return budget;
 };
 const snapshotGitlinks = (cache, snapshotOID) => new Map(commitTreeEntries(cache, snapshotOID, "workspace_snapshot").filter(entry => entry.mode === "160000").map(entry => {
-  if (entry.type !== "commit" || entry.path.includes("/")) throw new Error("workspace_snapshot_tree_unsafe");
+  if (entry.type !== "commit") throw new Error("workspace_snapshot_tree_unsafe");
   return [entry.path, entry.oid];
 }));
 const validateSnapshotTree = (cache, snapshotOID) => {
@@ -1729,7 +1748,7 @@ const capturedWorkspaceResult = (request, directory, state, launch) => {
   if (currentIndexGitlinks.size !== gitlinks.size || [...gitlinks].some(([submodulePath, oid]) => currentIndexGitlinks.get(submodulePath) !== oid)) throw new Error("workspace_result_submodule_changed");
   for (const [submodulePath, oid] of gitlinks) {
     const submodule = path.join(worktree, submodulePath);
-    if (path.dirname(submodule) !== worktree || !safeOwnedDirectory(submodule, worktree)) throw new Error("workspace_result_submodule_changed");
+    if (!safeGitPath(path.relative(worktree, submodule)) || !safeOwnedDescendantDirectory(submodule, worktree)) throw new Error("workspace_result_submodule_changed");
     let head, status;
     try {
       const gitFileInfo = fs.lstatSync(path.join(submodule, ".git"));
@@ -1949,9 +1968,9 @@ if (request.operation === "probe") {
       const gitlinks = snapshotGitlinks(cache, launch.workspace.snapshotCommitOID);
       for (const submodulePath of [...gitlinks.keys()].sort().reverse()) {
         const submodule = path.join(worktree, submodulePath);
-        if (path.dirname(submodule) !== worktree) throw new Error("unsafe submodule path");
+        if (!safeGitPath(path.relative(worktree, submodule))) throw new Error("unsafe submodule path");
         if (fs.existsSync(submodule)) {
-          if (!safeOwnedDirectory(submodule, worktree)) throw new Error("unsafe submodule checkout");
+          if (!safeOwnedDescendantDirectory(submodule, worktree)) throw new Error("unsafe submodule checkout");
           execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", submodule], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
         }
       }

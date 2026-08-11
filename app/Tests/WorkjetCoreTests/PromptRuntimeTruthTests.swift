@@ -56,7 +56,7 @@ final class PromptRuntimeTruthTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Workjet-owned isolated worktrees"))
         XCTAssertFalse(prompt.contains("A local run uses the checkout from which `workjet run` was invoked"))
         XCTAssertTrue(prompt.contains("Repository-backed local and remote runs use Workjet-owned isolated worktrees"))
-        XCTAssertTrue(prompt.contains("initialized top-level Git submodules are available offline at their pinned commits and must remain unchanged"))
+        XCTAssertTrue(prompt.contains("initialized non-recursive Git submodules are available offline at their pinned commits and must remain unchanged"))
         XCTAssertFalse(prompt.contains("local runs use the invoking checkout"))
         XCTAssertFalse(prompt.contains("Fable erzeugt den aktuellen `CtoxTurnRequest`"))
         XCTAssertFalse(prompt.contains("/usr/bin/ssh"))

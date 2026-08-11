@@ -3169,7 +3169,7 @@ public struct LocalRunService: Sendable {
         }
         guard snapshot.manifest.submodules.allSatisfy({ submodule in
             advertisedHeads[submodule.bundleRef] == submodule.commitOID
-                && safeTopLevelGitlinkPath(submodule.path)
+                && safeGitlinkPath(submodule.path)
                 && GitRepositoryInspector.validOID(submodule.commitOID)
                 && submodule.bundleRef.hasPrefix("refs/workjet/submodules/")
         }) else { throw WorkspaceResultError.resultMismatch }
@@ -3271,9 +3271,10 @@ public struct LocalRunService: Sendable {
         }
     }
 
-    private func safeTopLevelGitlinkPath(_ value: String) -> Bool {
-        !value.isEmpty && !value.hasPrefix("/") && !value.contains("\0") && !value.contains("/")
-            && value != "." && value != ".."
+    private func safeGitlinkPath(_ value: String) -> Bool {
+        let components = value.split(separator: "/", omittingEmptySubsequences: false)
+        return !value.isEmpty && !value.hasPrefix("/") && !value.contains("\0")
+            && !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." })
             && !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f })
     }
 
@@ -3287,7 +3288,7 @@ public struct LocalRunService: Sendable {
             guard metadata.count == 3 else { throw WorkspaceResultError.repositoryUnsafe }
             if metadata[0] == "160000" {
                 let path = String(fields[1]), oid = String(metadata[2])
-                guard metadata[1] == "commit", safeTopLevelGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
+                guard metadata[1] == "commit", safeGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
                     throw WorkspaceResultError.repositoryUnsafe
                 }
                 result[path] = oid
@@ -3307,7 +3308,7 @@ public struct LocalRunService: Sendable {
                 throw WorkspaceResultError.repositoryUnsafe
             }
             let path = String(fields[1]), oid = String(metadata[1])
-            guard safeTopLevelGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
+            guard safeGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
                 throw WorkspaceResultError.repositoryUnsafe
             }
             result[path] = oid
@@ -3317,9 +3318,9 @@ public struct LocalRunService: Sendable {
 
     private func materializePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
         for path in gitlinks.keys.sorted() {
-            guard let oid = gitlinks[path], safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            guard let oid = gitlinks[path], safeGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
             let destination = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
-            guard destination.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            guard destination.path.hasPrefix(worktree.path + "/") else { throw WorkspaceResultError.repositoryUnsafe }
             if FileManager.default.fileExists(atPath: destination.path) {
                 let contents = try FileManager.default.contentsOfDirectory(atPath: destination.path)
                 guard contents.isEmpty else { throw WorkspaceResultError.repositoryUnsafe }
@@ -3334,9 +3335,9 @@ public struct LocalRunService: Sendable {
 
     private func validatePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
         for path in gitlinks.keys.sorted() {
-            guard let oid = gitlinks[path], safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            guard let oid = gitlinks[path], safeGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
             let submodule = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
-            guard submodule.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            guard submodule.path.hasPrefix(worktree.path + "/") else { throw WorkspaceResultError.repositoryUnsafe }
             try requireOwnedDirectory(submodule, beneath: worktree)
             var gitFileInfo = stat()
             guard lstat(submodule.appendingPathComponent(".git").path, &gitFileInfo) == 0,
@@ -3356,9 +3357,9 @@ public struct LocalRunService: Sendable {
 
     private func removePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
         for path in gitlinks.keys.sorted().reversed() {
-            guard safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            guard safeGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
             let submodule = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
-            guard submodule.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            guard submodule.path.hasPrefix(worktree.path + "/") else { throw WorkspaceResultError.repositoryUnsafe }
             if FileManager.default.fileExists(atPath: submodule.path) {
                 try requireOwnedDirectory(submodule, beneath: worktree)
                 _ = try runGit(["--git-dir=\(repository.path)", "worktree", "remove", "--force", submodule.path], cwd: paths.stateDirectory)
@@ -3371,7 +3372,20 @@ public struct LocalRunService: Sendable {
         let value = directory.standardizedFileURL
         let root = parent.standardizedFileURL
         guard value.deletingLastPathComponent() == root || value.path.hasPrefix(root.path + "/") else { throw WorkspaceResultError.repositoryUnsafe }
-        for candidate in [root, value] {
+        let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedValue = value.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedValue.deletingLastPathComponent() == resolvedRoot || resolvedValue.path.hasPrefix(resolvedRoot.path + "/") else {
+            throw WorkspaceResultError.repositoryUnsafe
+        }
+        let relativeComponents = value.path.dropFirst(root.path.count)
+            .split(separator: "/", omittingEmptySubsequences: true)
+        var candidates = [root]
+        var candidate = root
+        for component in relativeComponents {
+            candidate.appendPathComponent(String(component), isDirectory: true)
+            candidates.append(candidate)
+        }
+        for candidate in candidates {
             var info = stat()
             guard lstat(candidate.path, &info) == 0,
                   (info.st_mode & S_IFMT) == S_IFDIR,

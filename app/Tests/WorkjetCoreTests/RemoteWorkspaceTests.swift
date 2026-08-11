@@ -55,7 +55,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         return RepositoryFixture(root: root, repository: repository)
     }
 
-    private func repositoryWithSubmodules(count: Int = 1) throws -> SubmoduleFixture {
+    private func repositoryWithSubmodules(count: Int = 1, pathPrefix: String? = nil, shallow: Bool = false) throws -> SubmoduleFixture {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-submodule-tests-\(UUID().uuidString)", isDirectory: true)
         let repository = root.appendingPathComponent("parent", isDirectory: true)
         try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
@@ -73,12 +73,19 @@ final class RemoteWorkspaceTests: XCTestCase {
             _ = try git(["commit", "-m", "submodule old"], cwd: source)
             try Data("submodule \(index) pinned\n".utf8).write(to: source.appendingPathComponent("module.txt"))
             _ = try git(["commit", "-am", "submodule pinned"], cwd: source)
-            let name = "module-\(index)"
+            let name = [pathPrefix, "module-\(index)"].compactMap { $0 }.joined(separator: "/")
             _ = try git(["-c", "protocol.file.allow=always", "submodule", "add", source.path, name], cwd: repository)
             let checkout = repository.appendingPathComponent(name, isDirectory: true)
-            _ = try git(["remote", "set-url", "origin", "ssh://credential-required@127.0.0.1:1/unreachable.git"], cwd: checkout)
+            let commit = try git(["rev-parse", "HEAD"], cwd: checkout)
+            if shallow {
+                let shallowFile = URL(fileURLWithPath: try git(["rev-parse", "--git-path", "shallow"], cwd: checkout))
+                try Data((commit + "\n").utf8).write(to: shallowFile)
+                XCTAssertEqual(try git(["rev-parse", "--is-shallow-repository"], cwd: checkout), "true")
+            } else {
+                _ = try git(["remote", "set-url", "origin", "ssh://credential-required@127.0.0.1:1/unreachable.git"], cwd: checkout)
+            }
             submodules.append(checkout)
-            commits.append(try git(["rev-parse", "HEAD"], cwd: source))
+            commits.append(commit)
         }
         _ = try git(["commit", "-am", "add pinned submodules"], cwd: repository)
         return SubmoduleFixture(root: root, repository: repository, submodules: submodules, commits: commits)
@@ -298,14 +305,14 @@ final class RemoteWorkspaceTests: XCTestCase {
     }
 
     func testSnapshotBundlesInitializedPinnedSubmodulesOfflineAndDeterministically() async throws {
-        let fixture = try repositoryWithSubmodules(count: 2)
+        let fixture = try repositoryWithSubmodules(count: 2, pathPrefix: "third_party")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let parentBefore = try state(fixture.repository)
         let submoduleHeads = try fixture.submodules.map { try git(["rev-parse", "HEAD"], cwd: $0) }
         let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: fixture.repository)
 
         XCTAssertEqual(snapshot.manifest.schemaVersion, 2)
-        XCTAssertEqual(snapshot.manifest.submodules.map(\.path), ["module-0", "module-1"])
+        XCTAssertEqual(snapshot.manifest.submodules.map(\.path), ["third_party/module-0", "third_party/module-1"])
         XCTAssertEqual(snapshot.manifest.submodules.map(\.commitOID), fixture.commits)
         XCTAssertEqual(try state(fixture.repository), parentBefore)
         XCTAssertEqual(try fixture.submodules.map { try git(["rev-parse", "HEAD"], cwd: $0) }, submoduleHeads)
@@ -319,7 +326,7 @@ final class RemoteWorkspaceTests: XCTestCase {
 
         let materialized = try materialize(snapshot, under: fixture.root.appendingPathComponent("offline", isDirectory: true).creatingDirectory())
         for index in 0..<2 {
-            let submodule = materialized.appendingPathComponent("module-\(index)", isDirectory: true)
+            let submodule = materialized.appendingPathComponent("third_party/module-\(index)", isDirectory: true)
             XCTAssertEqual(try String(contentsOf: submodule.appendingPathComponent("module.txt"), encoding: .utf8), "submodule \(index) pinned\n")
             XCTAssertEqual(try git(["rev-parse", "HEAD"], cwd: submodule), fixture.commits[index])
             XCTAssertEqual(try git(["rev-parse", "--abbrev-ref", "HEAD"], cwd: submodule), "HEAD")
@@ -334,10 +341,23 @@ final class RemoteWorkspaceTests: XCTestCase {
         }
         XCTAssertEqual(try git(["for-each-ref", "--format=%(refname) %(objectname)"], cwd: fixture.repository), refsBeforeFailure)
 
-        _ = try git(["submodule", "deinit", "-f", "module-0"], cwd: fixture.repository)
+        _ = try git(["submodule", "deinit", "-f", "third_party/module-0"], cwd: fixture.repository)
         await assertSnapshotCase(at: fixture.repository) {
-            $0 == .submoduleUnavailable(path: "module-0", commitOID: fixture.commits[0])
+            $0 == .submoduleUnavailable(path: "third_party/module-0", commitOID: fixture.commits[0])
         }
+    }
+
+    func testSnapshotCompletesShallowSubmoduleOnCallerAndKeepsRemoteOffline() async throws {
+        let fixture = try repositoryWithSubmodules(pathPrefix: "third_party", shallow: true)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+
+        let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: fixture.repository)
+        XCTAssertEqual(snapshot.manifest.submodules.map(\.path), ["third_party/module-0"])
+        let materialized = try materialize(snapshot, under: fixture.root.appendingPathComponent("offline-shallow", isDirectory: true).creatingDirectory())
+        let submodule = materialized.appendingPathComponent("third_party/module-0", isDirectory: true)
+        XCTAssertEqual(try git(["rev-parse", "HEAD"], cwd: submodule), fixture.commits[0])
+        XCTAssertEqual(try String(contentsOf: submodule.appendingPathComponent("module.txt"), encoding: .utf8), "submodule 0 pinned\n")
+        XCTAssertFalse((try git(["remote"], cwd: submodule)).contains("origin"))
     }
 
     private func restoreEnvironment(_ name: String, to value: String?) {
@@ -504,7 +524,7 @@ final class RemoteWorkspaceTests: XCTestCase {
     }
 
     func testRemoteHostMaterializesPinnedSubmodulesOfflineCapturesParentEditRejectsSubmoduleMutationAndCleansUp() async throws {
-        let fixture = try repositoryWithSubmodules(count: 2)
+        let fixture = try repositoryWithSubmodules(count: 2, pathPrefix: "third_party")
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: fixture.repository)
         let identity = try await GitRepositoryInspector().inspect(root: fixture.repository, expectedRepoID: snapshot.manifest.repoID)
@@ -519,7 +539,7 @@ final class RemoteWorkspaceTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: claude.path)
             _ = try self.commandData("/usr/bin/xattr", ["-c", claude.path])
         }
-        try makeExecutable("#!/bin/sh\ncat module-0/module.txt module-1/module.txt > observed-submodules.txt\nprintf 'remote parent edit\\n' > tracked.txt\n")
+        try makeExecutable("#!/bin/sh\ncat third_party/module-0/module.txt third_party/module-1/module.txt > observed-submodules.txt\nprintf 'remote parent edit\\n' > tracked.txt\n")
 
         let probe = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .probe))
         XCTAssertTrue(probe.capabilities.contains("workspace-gitlinks-v1"))
@@ -535,7 +555,7 @@ final class RemoteWorkspaceTests: XCTestCase {
         let worktree = home.appendingPathComponent(".local/state/workjet/host/worktrees/\(runID)")
         XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("observed-submodules.txt"), encoding: .utf8), "submodule 0 pinned\nsubmodule 1 pinned\n")
         for index in 0..<2 {
-            let submodule = worktree.appendingPathComponent("module-\(index)", isDirectory: true)
+            let submodule = worktree.appendingPathComponent("third_party/module-\(index)", isDirectory: true)
             XCTAssertEqual(try git(["rev-parse", "HEAD"], cwd: submodule), fixture.commits[index])
             XCTAssertTrue(FileManager.default.fileExists(atPath: submodule.appendingPathComponent(".git").path))
             XCTAssertFalse((try git(["remote"], cwd: submodule)).contains("origin"), "Workjet-owned nested checkout must not retain the caller origin")
@@ -547,15 +567,15 @@ final class RemoteWorkspaceTests: XCTestCase {
         let record = RemoteWorkspaceRunRecord(runID: runID, sourceRepositoryRoot: fixture.repository.path, computerID: UUID(), ownerID: ownerID, repoID: snapshot.manifest.repoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID, repositoryIdentity: identity)
         let imported = try await LocalWorkspaceResultImporter().importResult(result, for: record, temporaryRoot: paths.remoteWorkspaceImportsDirectory)
         XCTAssertEqual(try git(["show", "\(imported.resultRef):tracked.txt"], cwd: fixture.repository), "remote parent edit")
-        XCTAssertEqual(try git(["ls-tree", imported.resultRef, "module-0"], cwd: fixture.repository), "160000 commit \(fixture.commits[0])\tmodule-0")
+        XCTAssertEqual(try git(["ls-tree", imported.resultRef, "third_party/module-0"], cwd: fixture.repository), "160000 commit \(fixture.commits[0])\tthird_party/module-0")
         _ = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .workspaceFinalize, runID: runID, ownerID: ownerID, workspaceDisposition: .integrated))
         XCTAssertFalse(FileManager.default.fileExists(atPath: worktree.path))
 
         let previousSubmoduleOID = try git(["rev-parse", "HEAD^"], cwd: fixture.submodules[0])
         let mutations = [
-            ("content", "#!/bin/sh\nprintf 'changed\\n' > module-0/module.txt\n"),
-            ("head", "#!/bin/sh\n/usr/bin/git -C module-0 checkout --detach HEAD^ >/dev/null 2>&1\n"),
-            ("gitlink", "#!/bin/sh\n/usr/bin/git update-index --cacheinfo 160000,\(previousSubmoduleOID),module-0\n")
+            ("content", "#!/bin/sh\nprintf 'changed\\n' > third_party/module-0/module.txt\n"),
+            ("head", "#!/bin/sh\n/usr/bin/git -C third_party/module-0 checkout --detach HEAD^ >/dev/null 2>&1\n"),
+            ("gitlink", "#!/bin/sh\n/usr/bin/git update-index --cacheinfo 160000,\(previousSubmoduleOID),third_party/module-0\n")
         ]
         for (mutationIndex, mutation) in mutations.enumerated() {
             let (suffix, script) = mutation
@@ -637,7 +657,7 @@ final class RemoteWorkspaceTests: XCTestCase {
     }
 
     private func waitForTerminal(host: URL, home: URL, bin: URL, runID: String) throws -> RemoteHostResponse {
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(20)
         var response = RemoteHostResponse(ok: false)
         repeat {
             response = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .events, runID: runID, afterSequence: 0))

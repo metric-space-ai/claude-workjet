@@ -94,6 +94,7 @@ public enum WorkspaceSnapshotError: LocalizedError, Equatable, Sendable {
     case nestedRepository(String)
     case gitlink(String)
     case submoduleUnavailable(path: String, commitOID: String)
+    case shallowSubmoduleOriginUnavailable(String)
     case submoduleModified(String)
     case recursiveSubmodule(String)
     case lfsManaged(String)
@@ -114,6 +115,7 @@ public enum WorkspaceSnapshotError: LocalizedError, Equatable, Sendable {
         case .nestedRepository: return "Nicht deklarierte verschachtelte Git-Repositories werden nicht unterstützt."
         case .gitlink: return "Dieser Gitlink kann nicht sicher als initialisiertes Submodule übernommen werden."
         case let .submoduleUnavailable(path, commitOID): return "Das Submodule \(path) ist nicht initialisiert oder der angeheftete Commit \(commitOID) fehlt lokal. Initialisiere es ohne den Commit zu ändern und versuche es erneut."
+        case let .shallowSubmoduleOriginUnavailable(path): return "Das flach geklonte Submodule \(path) enthält nicht genug Historie für den Snapshot und Workjet konnte sie über dessen Origin nicht ergänzen. Prüfe den Origin-Zugriff auf diesem Mac oder klone das Submodule vollständig. Der Remote-Computer benötigt weiterhin keinen GitHub-Zugang."
         case let .submoduleModified(path): return "Das Submodule \(path) enthält Änderungen oder ist nicht am angehefteten Commit ausgecheckt. Stelle einen sauberen Zustand her und versuche es erneut."
         case let .recursiveSubmodule(path): return "Rekursive Submodule werden noch nicht unterstützt (\(path))."
         case .lfsManaged: return "Git-LFS-Inhalte werden für Remote-Workspaces noch nicht unterstützt."
@@ -221,8 +223,27 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
             var manifestSubmodules: [WorkspaceSnapshotSubmodule] = []
             for (index, submodule) in submodules.enumerated() {
                 let bundleRef = "refs/workjet/submodules/\(namespace)/\(index)"
-                _ = try await git(["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", submodule.repository.path, "\(submodule.commitOID):\(bundleRef)"], cwd: root.path, environment: environment, timeout: 120)
                 createdRefs.append((bundleRef, submodule.commitOID))
+                let completeLocally = try await gitRaw(["rev-list", "--quiet", "--objects", submodule.commitOID], cwd: root.path, environment: environment, allowFailure: true).exitCode == 0
+                if completeLocally {
+                    _ = try await git(["update-ref", bundleRef, submodule.commitOID, String(repeating: "0", count: submodule.commitOID.count)], cwd: root.path, environment: environment)
+                } else {
+                    let shallow = text(try await git(["rev-parse", "--is-shallow-repository"], cwd: submodule.repository.path, environment: nil).standardOutput) == "true"
+                    if shallow {
+                        let originResult = try await gitRaw(["remote", "get-url", "origin"], cwd: submodule.repository.path, allowFailure: true)
+                        let origin = text(originResult.standardOutput)
+                        guard originResult.exitCode == 0, !origin.isEmpty, !origin.contains("\0"),
+                              !origin.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }) else {
+                            throw WorkspaceSnapshotError.shallowSubmoduleOriginUnavailable(submodule.path)
+                        }
+                        let fetch = try await gitRaw(["fetch", "--refetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", origin, "\(submodule.commitOID):\(bundleRef)"], cwd: root.path, environment: environment, timeout: 180, allowFailure: true)
+                        let connectivity = try await gitRaw(["rev-list", "--quiet", "--objects", submodule.commitOID], cwd: root.path, environment: environment, allowFailure: true)
+                        let complete = fetch.exitCode == 0 && connectivity.exitCode == 0
+                        guard complete else { throw WorkspaceSnapshotError.shallowSubmoduleOriginUnavailable(submodule.path) }
+                    } else {
+                        _ = try await git(["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", submodule.repository.path, "\(submodule.commitOID):\(bundleRef)"], cwd: root.path, environment: environment, timeout: 120)
+                    }
+                }
                 manifestSubmodules.append(WorkspaceSnapshotSubmodule(path: submodule.path, commitOID: submodule.commitOID, bundleRef: bundleRef))
             }
             _ = try await git(["bundle", "create", bundleURL.path] + createdRefs.map(\.ref), cwd: root.path, environment: environment, timeout: 180)
@@ -302,7 +323,7 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
                 throw WorkspaceSnapshotError.gitlink(path)
             }
             let components = path.split(separator: "/", omittingEmptySubsequences: false)
-            guard components.count == 1, !path.isEmpty, !path.hasPrefix("/"), !path.contains("\0"),
+            guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\0"),
                   !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }),
                   !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
                 throw WorkspaceSnapshotError.gitlink(path)
@@ -313,7 +334,7 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
     }
 
     private func validateSubmodules(_ links: [Gitlink], root: URL) async throws -> [Gitlink] {
-        guard links.count <= 256 else { throw WorkspaceSnapshotError.gitlink("too many top-level submodules") }
+        guard links.count <= 256 else { throw WorkspaceSnapshotError.gitlink("too many submodules") }
         for link in links {
             let repository = link.repository.resolvingSymlinksInPath().standardizedFileURL
             guard repository.path == root.appendingPathComponent(link.path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path,
