@@ -281,7 +281,7 @@ public enum WorkjetDefaults {
             <!-- WORKJET CLI EXECUTION CONTRACT END -->
 
             <!-- WORKJET WORKER PREAMBLE BEGIN -->
-            Work only in the checkout supplied by Workjet and never cd to another checkout. Do not assume it is isolated: remote repository runs use an imported Workjet workspace, while local runs use the invoking checkout. Commit in green slices so a timeout can still land value. No subagents.
+            Work only in the checkout supplied by Workjet and never cd to another checkout. Repository-backed local and remote runs use Workjet-owned isolated worktrees created from immutable snapshots; never edit the invoking checkout directly. Commit in green slices so a timeout can still land value. No subagents.
             <!-- WORKJET WORKER PREAMBLE END -->
 
             <!-- WORKJET OPUS SYSTEM PROMPT BEGIN -->
