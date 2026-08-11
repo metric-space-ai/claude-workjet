@@ -2279,7 +2279,11 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
             throw WorkjetCLIError(code: "remote_supervisor_start_failed", message: "Der dauerhafte Remote-Supervisor konnte nicht gestartet werden.", exitCode: .transport)
         }
 
-        let deadline = Date().addingTimeInterval(90)
+        // Snapshot preparation may complete a shallow submodule from its
+        // caller-side origin (180 s) and the remote import has its own 180 s
+        // bound. Do not abandon the supervisor while the host can still
+        // legitimately accept the workspace and create an orphaned run.
+        let deadline = Date().addingTimeInterval(600)
         while Date() < deadline {
             if let data = try? Data(contentsOf: responseURL),
                let handshake = try? JSONDecoder().decode(RemoteSupervisorHandshake.self, from: data) {

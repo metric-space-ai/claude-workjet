@@ -1693,6 +1693,7 @@ const validateCommitTree = (cache, commitOID, errorPrefix, allowedGitlinks = new
   budget.entries += entries.length;
   if (budget.entries > RESULT_TREE_ENTRY_LIMIT) throw new Error(`${errorPrefix}_tree_too_large`);
   const observedGitlinks = new Map();
+  const blobs = [];
   for (const entry of entries) {
     if (entry.mode === "160000") {
       if (entry.type !== "commit" || allowedGitlinks.get(entry.path) !== entry.oid || observedGitlinks.has(entry.path)) throw new Error(`${errorPrefix}_tree_unsafe`);
@@ -1700,7 +1701,18 @@ const validateCommitTree = (cache, commitOID, errorPrefix, allowedGitlinks = new
       continue;
     }
     if (entry.mode === "120000" || entry.type !== "blob") throw new Error(`${errorPrefix}_tree_unsafe`);
-    const size = Number(execFileSync(gitExecutable, ["cat-file", "-s", entry.oid], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024}).trim());
+    blobs.push(entry);
+  }
+  const sizes = blobs.length === 0 ? [] : execFileSync(
+    gitExecutable,
+    ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+    {cwd: cache, env: gitEnvironment(), encoding: "utf8", input: blobs.map(entry => `${entry.oid}\n`).join(""), timeout: 60000, maxBuffer: 16 * 1024 * 1024}
+  ).trimEnd().split("\n");
+  if (sizes.length !== blobs.length) throw new Error(`${errorPrefix}_object_invalid`);
+  for (let index = 0; index < blobs.length; index += 1) {
+    const fields = sizes[index].split(" ");
+    if (fields.length !== 3 || fields[0] !== blobs[index].oid || fields[1] !== "blob") throw new Error(`${errorPrefix}_object_invalid`);
+    const size = Number(fields[2]);
     if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${errorPrefix}_object_invalid`);
     budget.bytes += size;
     if (budget.bytes > RESULT_LIMIT) throw new Error(`${errorPrefix}_objects_too_large`);
