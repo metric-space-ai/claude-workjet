@@ -1457,6 +1457,7 @@ const monitor = async runID => {
   for (let index = 0; index < providerExecution.candidates.length; index += 1) {
     const candidate = providerExecution.candidates[index];
     const healthProbe = launch.healthProbe === true;
+    const turnTimeoutSeconds = Number.isSafeInteger(launch.turnTimeoutSeconds) && launch.turnTimeoutSeconds >= 1 && launch.turnTimeoutSeconds <= 10800 ? launch.turnTimeoutSeconds : 3600;
     const childCWD = launch.harnessID === "pi-code" || healthProbe ? release : launch.hostWorkspace?.path;
     if (launch.harnessID !== "pi-code" && !healthProbe && (!safeOwnedDirectory(childCWD, worktreesRoot) || path.basename(childCWD) !== runID)) {
       appendEvent(directory, {kind: "error", text: "workspace path is unavailable for this run"});
@@ -1491,13 +1492,32 @@ const monitor = async runID => {
     child.stderr.on("data", chunk => stderr.push(chunk));
     child.on("error", error => { const text = redactSecrets(error.message, secrets); appendEvent(directory, {kind: "error", text}); setState(directory, "error", {error: text}); });
     child.stdin.end(resolved.input);
+    let timedOut = false;
+    let killTimer;
+    const timeoutTimer = setTimeout(() => {
+      if (!childAlive(child.pid, pidIdentity)) return;
+      timedOut = true;
+      const text = `worker turn timed out after ${turnTimeoutSeconds} seconds`;
+      appendEvent(directory, {kind: "timeout", text, exitCode: 124});
+      setState(directory, "running", {error: text, timedOut: true, heartbeatAt: new Date().toISOString()});
+      try { signalProcessGroup(child.pid, "SIGTERM"); } catch {}
+      killTimer = setTimeout(() => {
+        if (childAlive(child.pid, pidIdentity)) {
+          try { signalProcessGroup(child.pid, "SIGKILL"); } catch {}
+        }
+      }, STOP_GRACE_MS);
+      killTimer.unref();
+    }, turnTimeoutSeconds * 1000);
+    timeoutTimer.unref();
     const exit = await new Promise(resolve => child.on("close", (code, signal) => resolve({code, signal})));
+    clearTimeout(timeoutTimer);
+    if (killTimer) clearTimeout(killTimer);
     stdout.flush();
     stderr.flush();
     clearInterval(heartbeat);
-    finalExit = exit;
+    finalExit = timedOut ? {code: 124, signal: exit.signal ?? "SIGTERM"} : exit;
     const stopped = fs.existsSync(path.join(directory, "stop-requested"));
-    if (stopped || exit.code === 0 || index + 1 >= providerExecution.candidates.length || !retryableProviderFailure(diagnostic)) break;
+    if (timedOut || stopped || exit.code === 0 || index + 1 >= providerExecution.candidates.length || !retryableProviderFailure(diagnostic)) break;
     appendEvent(directory, {kind: "lifecycle", text: "provider fallback"});
   }
   const stopRequested = fs.existsSync(path.join(directory, "stop-requested"));
@@ -1730,7 +1750,7 @@ if (![1, PROTOCOL].includes(request.protocolVersion)) reject("incompatible proto
 cleanupRetainedRuns();
 
 if (request.operation === "probe") {
-  const capabilities = ["start", "provider-execution-v1", "gateway-relay-v1", "relay-loss-v1", "health-probe-v1", "events-after-exclusive-cursor", "bounded-events", "recoverable-cursor-gap", "child-heartbeat", "pid-start-identity", "term-kill-stop", "list", "adopt", "run-metadata-v1", "run-retention-v1", "harness-lifecycle-v2", "managed-skill-lifecycle-v1", "pi-code"];
+  const capabilities = ["start", "provider-execution-v1", "gateway-relay-v1", "relay-loss-v1", "health-probe-v1", "events-after-exclusive-cursor", "bounded-events", "recoverable-cursor-gap", "child-heartbeat", "pid-start-identity", "term-kill-stop", "turn-timeout-v1", "list", "adopt", "run-metadata-v1", "run-retention-v1", "harness-lifecycle-v2", "managed-skill-lifecycle-v1", "pi-code"];
   if (executableAt(harnessDefinitions["claude-code"].candidates)) capabilities.push("claude-code");
   if (executableAt(harnessDefinitions["codex-cli"].candidates)) capabilities.push("codex-cli");
   if (executableAt(harnessDefinitions.opencode.candidates)) capabilities.push("opencode");
@@ -1753,6 +1773,8 @@ if (request.operation === "probe") {
   response({managedSkillResult});
 } else if (request.operation === "start") {
   try { resolveLaunch(request.launch); } catch (error) { reject(error.message); }
+  if (request.turnTimeoutSeconds !== undefined && (!Number.isSafeInteger(request.turnTimeoutSeconds) || request.turnTimeoutSeconds < 1 || request.turnTimeoutSeconds > 10800)) reject("invalid turn timeout");
+  const turnTimeoutSeconds = request.launch.healthProbe === true ? 3600 : (request.turnTimeoutSeconds ?? 3600);
   let providerExecution;
   try { providerExecution = validateProviderExecution(request.providerExecution); } catch (error) { reject(error.message); }
   const workerID = workerIDFromOwner(request.ownerID);
@@ -1766,7 +1788,7 @@ if (request.operation === "probe") {
   const directory = runDirectory(runID);
   fs.mkdirSync(directory, {mode: 0o700});
   const startedAt = new Date().toISOString();
-  atomicJSON(path.join(directory, "launch.json"), {...request.launch, hostWorkspace, providerRoute: providerMetadata(providerExecution), workerID, workerName: request.workerName?.trim(), startedAt});
+  atomicJSON(path.join(directory, "launch.json"), {...request.launch, hostWorkspace, providerRoute: providerMetadata(providerExecution), workerID, workerName: request.workerName?.trim(), turnTimeoutSeconds, startedAt});
   atomicJSON(ledgerFile(directory), []);
   atomicJSON(metadataFile(directory), {cursor: 0, count: 0, bytes: 2});
   setState(directory, "starting", {

@@ -604,6 +604,25 @@ server.listen(socketPath);
         XCTAssertFalse(events.contains(where: { $0.contains("used-second") }))
     }
 
+    func testTurnTimeoutTerminatesRemoteWorkerAndNeverFallsBack() throws {
+        let fixture = try fixture(script: "term-trap-ready")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let route = RemoteProviderExecution(displayName: "Anthropic Pool", candidates: [
+            RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "First", endpoint: "https://api.anthropic.com/", authentication: .none, secret: nil),
+            RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Second", endpoint: "https://api.anthropic.com/", authentication: .none, secret: nil)
+        ])
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test-model", reasoning: nil, sandbox: false, input: Data("timeout".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"])
+        let startedAt = Date()
+        let started = try call(fixture, RemoteHostRequest(operation: .start, launch: launch, ownerID: "timeout-test", providerExecution: route, turnTimeoutSeconds: 1))
+        let runID = try XCTUnwrap(started.runID)
+        let terminal = try waitForState(fixture, runID: runID, { $0.state == .failed }, timeout: 8)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 6)
+        XCTAssertTrue(terminal.events.contains { $0.kind == "timeout" && $0.exitCode == 124 })
+        XCTAssertFalse(terminal.events.contains { $0.text == "provider fallback" })
+        let launchFile = fixture.home.appendingPathComponent(".local/state/workjet/host/runs/\(runID)/launch.json")
+        XCTAssertTrue(String(decoding: try Data(contentsOf: launchFile), as: UTF8.self).contains("\"turnTimeoutSeconds\":1"))
+    }
+
     func testProviderPoolDoesNotFallbackForTransportOrServerFailure() throws {
         let script = "if [ \"$ANTHROPIC_AUTH_TOKEN\" = first-secret ]; then echo 'HTTP 503 upstream timeout' >&2; exit 1; fi; echo used-second"
         let fixture = try fixture(script: script)

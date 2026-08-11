@@ -53,6 +53,8 @@ final class PromptRuntimeTruthTests: XCTestCase {
         XCTAssertTrue(prompt.contains("require the JSON `checkedAt` value"))
         XCTAssertTrue(prompt.contains("Do not replace mixed results with a blanket summary"))
         XCTAssertTrue(prompt.contains("App-Fakt; nicht direkt ausführen"))
+        XCTAssertTrue(prompt.contains("Workjet-owned isolated worktrees"))
+        XCTAssertFalse(prompt.contains("A local run uses the checkout from which `workjet run` was invoked"))
         XCTAssertFalse(prompt.contains("Fable erzeugt den aktuellen `CtoxTurnRequest`"))
         XCTAssertFalse(prompt.contains("/usr/bin/ssh"))
         XCTAssertFalse(prompt.contains("NDJSON-Zeile"))

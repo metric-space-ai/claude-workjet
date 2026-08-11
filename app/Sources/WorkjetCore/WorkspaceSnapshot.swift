@@ -376,8 +376,12 @@ public struct RemoteWorkspaceRunRecord: Codable, Equatable, Sendable {
     public var resultCommitOID: String?
     public var resultRef: String?
     public var terminalState: RemoteHostRunState?
+    /// Present only for local repository runs. Older remote records decode
+    /// without these fields and retain their existing lifecycle behavior.
+    public var localWorktreePath: String?
+    public var localRepositoryPath: String?
 
-    public init(schemaVersion: Int = 1, runID: String, sourceRepositoryRoot: String, computerID: UUID, ownerID: String, repoID: String, snapshotCommitOID: String, repositoryIdentity: GitRepositoryIdentity, lifecycle: RemoteWorkspaceLifecycle = .started, resultCommitOID: String? = nil, resultRef: String? = nil, terminalState: RemoteHostRunState? = nil) {
+    public init(schemaVersion: Int = 1, runID: String, sourceRepositoryRoot: String, computerID: UUID, ownerID: String, repoID: String, snapshotCommitOID: String, repositoryIdentity: GitRepositoryIdentity, lifecycle: RemoteWorkspaceLifecycle = .started, resultCommitOID: String? = nil, resultRef: String? = nil, terminalState: RemoteHostRunState? = nil, localWorktreePath: String? = nil, localRepositoryPath: String? = nil) {
         self.schemaVersion = schemaVersion
         self.runID = runID
         self.sourceRepositoryRoot = sourceRepositoryRoot
@@ -390,6 +394,8 @@ public struct RemoteWorkspaceRunRecord: Codable, Equatable, Sendable {
         self.resultCommitOID = resultCommitOID
         self.resultRef = resultRef
         self.terminalState = terminalState
+        self.localWorktreePath = localWorktreePath
+        self.localRepositoryPath = localRepositoryPath
     }
 }
 

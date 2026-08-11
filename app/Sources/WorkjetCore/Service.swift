@@ -943,7 +943,9 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
         return try await startRemoteWorker(worker, on: computer, route: route, input: input, ownerID: ownerID)
     }
     public func startRemoteWorker(_ worker: Worker, on computer: Computer, route: ResolvedProviderRuntimeRoute, input: Data, ownerID: String) async throws -> RemoteHostResponse {
-        let technicalRules = try configurationStore.load()?.technicalRules ?? ""
+        let runtimeConfiguration = try configurationStore.load()
+        let technicalRules = runtimeConfiguration?.technicalRules ?? ""
+        let turnTimeoutSeconds = min(max(runtimeConfiguration?.turnTimeoutSeconds ?? 3_600, 60), 10_800)
         let snapshot: WorkspaceSnapshot?
         let healthProbe = worker.invocation.options["workjet.health-probe"] == "v1"
         if worker.harness == .piSidecar || healthProbe {
@@ -970,6 +972,9 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
             }
             if healthProbe, !probe.capabilities.contains("health-probe-v1") {
                 throw RemoteHostProtocolError.missingCapability("health-probe-v1")
+            }
+            if !healthProbe, !probe.capabilities.contains("turn-timeout-v1") {
+                throw RemoteHostProtocolError.missingCapability("turn-timeout-v1")
             }
             if tunnel != nil, !probe.capabilities.contains("gateway-relay-v1") {
                 throw RemoteHostProtocolError.missingCapability("gateway-relay-v1")
@@ -1005,7 +1010,17 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
                     technicalRules: technicalRules
                 )
             }
-            let response = try await client.start(worker: worker, input: input, systemPrompt: systemPrompt, providerExecution: execution, ownerID: ownerID, workspace: workspace, verifiedCapabilities: probe.capabilities)
+            let response = try await client.start(
+                worker: worker,
+                input: input,
+                systemPrompt: systemPrompt,
+                providerExecution: execution,
+                ownerID: ownerID,
+                workerName: worker.name,
+                workspace: workspace,
+                turnTimeoutSeconds: turnTimeoutSeconds,
+                verifiedCapabilities: probe.capabilities
+            )
             guard let runID = response.runID else { throw RemoteHostProtocolError.malformedResponse }
             if let snapshot {
                 do {
@@ -2017,12 +2032,28 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
             availableSkillIDs: availableSkillIDs,
             technicalRules: configuration.technicalRules ?? ""
         )
+        let workspace: LocalWorkspaceContext?
+        if repositoryAvailable, worker.invocation.options["workjet.health-probe"] != "v1" {
+            let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: workingDirectory)
+            guard let sourceRoot = snapshot.sourceRepositoryRoot else { throw WorkspaceResultError.repositoryUnsafe }
+            let identity = try await GitRepositoryInspector().inspect(root: sourceRoot, expectedRepoID: snapshot.manifest.repoID)
+            workspace = LocalWorkspaceContext(
+                snapshot: snapshot,
+                repositoryIdentity: identity,
+                computerID: worker.computerID,
+                ownerID: "workjet-worker-\(worker.id.uuidString.lowercased())"
+            )
+        } else {
+            workspace = nil
+        }
         return try localRuns.start(
             worker: worker,
             route: route,
             brief: brief,
             systemPrompt: systemPrompt,
             skillIDs: availableSkillIDs.intersection(Set(WorkerSkillCatalog.effectiveSkills(for: worker).map(\.id))),
+            workspace: workspace,
+            turnTimeoutSeconds: Double(min(max(configuration.turnTimeoutSeconds, 60), 10_800)),
             supervisorExecutable: supervisorExecutable
         )
     }
@@ -2357,11 +2388,17 @@ public struct LiveWorkjetCLIBacking: WorkjetCLIBacking, @unchecked Sendable {
     }
     public func importResult(runID: String) async throws -> WorkspaceResultImportReceipt {
         let record = try workspaceRuns.load(runID: runID)
+        if record.localWorktreePath != nil || record.localRepositoryPath != nil {
+            return try await localRuns.importResult(runID: runID)
+        }
         guard let computer = configuration.computers.first(where: { $0.id == record.computerID }), !computer.isLocal else { throw WorkspaceResultError.identityMismatch }
         return try await service.importRemoteWorkspaceResult(on: computer, runID: runID)
     }
     public func mark(runID: String, disposition: RemoteWorkspaceDisposition) async throws -> WorkspaceLifecycleReceipt {
         let record = try workspaceRuns.load(runID: runID)
+        if record.localWorktreePath != nil || record.localRepositoryPath != nil {
+            return try localRuns.mark(runID: runID, disposition: disposition)
+        }
         guard let computer = configuration.computers.first(where: { $0.id == record.computerID }), !computer.isLocal else { throw WorkspaceResultError.identityMismatch }
         return try await service.markRemoteWorkspace(on: computer, runID: runID, disposition: disposition)
     }
@@ -2742,6 +2779,20 @@ public struct WorkjetCLIEngine: Sendable {
 
 // MARK: - Safe local CLI run service
 
+public struct LocalWorkspaceContext: Sendable {
+    public var snapshot: WorkspaceSnapshot
+    public var repositoryIdentity: GitRepositoryIdentity
+    public var computerID: UUID
+    public var ownerID: String
+
+    public init(snapshot: WorkspaceSnapshot, repositoryIdentity: GitRepositoryIdentity, computerID: UUID, ownerID: String) {
+        self.snapshot = snapshot
+        self.repositoryIdentity = repositoryIdentity
+        self.computerID = computerID
+        self.ownerID = ownerID
+    }
+}
+
 public struct LocalRunService: Sendable {
     private struct LaunchSpec: Codable {
         var executable: String
@@ -2755,6 +2806,10 @@ public struct LocalRunService: Sendable {
         var route: ResolvedProviderRuntimeRoute
         var systemPrompt: String?
         var skillIDs: [String]
+        var currentDirectory: String?
+        var workspaceRepoID: String?
+        var snapshotCommitOID: String?
+        var turnTimeoutSeconds: Double?
     }
 
     private struct Snapshot: Codable {
@@ -2798,7 +2853,7 @@ public struct LocalRunService: Sendable {
         return try start(worker: worker, route: route, brief: brief, systemPrompt: nil, skillIDs: [], supervisorExecutable: supervisorExecutable)
     }
 
-    public func start(worker: Worker, route: ResolvedProviderRuntimeRoute, brief: Data, systemPrompt: String? = nil, skillIDs: Set<String> = [], supervisorExecutable: URL) throws -> RemoteHostResponse {
+    public func start(worker: Worker, route: ResolvedProviderRuntimeRoute, brief: Data, systemPrompt: String? = nil, skillIDs: Set<String> = [], workspace: LocalWorkspaceContext? = nil, turnTimeoutSeconds: Double = 3_600, supervisorExecutable: URL) throws -> RemoteHostResponse {
         guard let briefText = String(data: brief, encoding: .utf8), !briefText.isEmpty else {
             throw WorkjetCLIError(code: "brief_invalid", message: "Der lokale Brief muss gültiger, nicht leerer UTF-8-Text sein.", exitCode: .usage)
         }
@@ -2840,6 +2895,13 @@ public struct LocalRunService: Sendable {
         try createPrivateDirectory(paths.runsDirectory)
         try createPrivateDirectory(paths.runIndexDirectory)
         try createPrivateDirectory(directory)
+        let currentDirectory: URL?
+        if let workspace {
+            currentDirectory = try materializeWorkspace(workspace, runID: runID, runDirectory: directory)
+        } else {
+            currentDirectory = nil
+        }
+        let normalizedTimeout = min(max(turnTimeoutSeconds, 1), 10_800)
         let spec = LaunchSpec(
             executable: executable.path,
             arguments: arguments,
@@ -2851,7 +2913,11 @@ public struct LocalRunService: Sendable {
             harness: worker.harness,
             route: route,
             systemPrompt: systemPrompt,
-            skillIDs: skillIDs.sorted()
+            skillIDs: skillIDs.sorted(),
+            currentDirectory: currentDirectory?.path,
+            workspaceRepoID: workspace?.snapshot.manifest.repoID,
+            snapshotCommitOID: workspace?.snapshot.manifest.snapshotCommitOID,
+            turnTimeoutSeconds: normalizedTimeout
         )
         try AtomicFile.write(try JSONEncoder().encode(spec), to: directory.appendingPathComponent("launch.json"), directoryMode: 0o700, fileMode: 0o600)
         try AtomicFile.write(Data((worker.id.uuidString.lowercased() + "\n").utf8), to: directory.appendingPathComponent("worker-id"), directoryMode: 0o700, fileMode: 0o600)
@@ -2896,6 +2962,54 @@ public struct LocalRunService: Sendable {
         return RemoteHostResponse(ok: true, runID: runID, state: .stopped, cursor: try readSnapshot(directory)?.sequence ?? 0)
     }
 
+    public func importResult(runID: String, importer: LocalWorkspaceResultImporter = LocalWorkspaceResultImporter()) async throws -> WorkspaceResultImportReceipt {
+        var record = try RemoteWorkspaceRunStore(paths: paths).load(runID: runID)
+        guard record.localWorktreePath != nil, record.localRepositoryPath != nil else { throw WorkspaceResultError.identityMismatch }
+        guard record.lifecycle != .integrated, record.lifecycle != .abandoned else { throw WorkspaceResultError.dispositionConflict }
+        let directory = try requiredOwnedRunDirectory(runID)
+        let snapshot = try readSnapshot(directory)
+        guard let terminalState = snapshot.flatMap({ RemoteHostRunState(rawValue: $0.state) }), terminalState.isTerminal else {
+            throw WorkspaceResultError.runNotTerminal
+        }
+        let manifestData = try SecureFile.readRegularOwnedFile(at: directory.appendingPathComponent("result-manifest.json"), maximumBytes: 4_096)
+        let bundle = try SecureFile.readRegularOwnedFile(at: directory.appendingPathComponent("result.bundle"), maximumBytes: LocalWorkspaceResultImporter.maximumBundleBytes)
+        guard let manifest = try? JSONDecoder().decode(WorkspaceResultManifest.self, from: manifestData) else { throw WorkspaceResultError.resultMalformed }
+        let receipt = try await importer.importResult(WorkspaceResult(manifest: manifest, bundle: bundle), for: record, temporaryRoot: paths.remoteWorkspaceImportsDirectory)
+        record.lifecycle = .imported
+        record.resultRef = receipt.resultRef
+        record.resultCommitOID = receipt.resultCommitOID
+        record.terminalState = terminalState
+        try RemoteWorkspaceRunStore(paths: paths).save(record)
+        return receipt
+    }
+
+    public func mark(runID: String, disposition: RemoteWorkspaceDisposition) throws -> WorkspaceLifecycleReceipt {
+        let store = RemoteWorkspaceRunStore(paths: paths)
+        var record = try store.load(runID: runID)
+        guard record.localWorktreePath != nil, record.localRepositoryPath != nil else { throw WorkspaceResultError.identityMismatch }
+        let target: RemoteWorkspaceLifecycle = disposition == .integrated ? .integrated : .abandoned
+        if record.lifecycle == .integrated || record.lifecycle == .abandoned {
+            guard record.lifecycle == target, let terminal = record.terminalState else { throw WorkspaceResultError.dispositionConflict }
+            return WorkspaceLifecycleReceipt(runID: runID, lifecycle: target, resultRef: record.resultRef, resultCommitOID: record.resultCommitOID, terminalState: terminal)
+        }
+        let directory = try requiredOwnedRunDirectory(runID)
+        guard let state = try readSnapshot(directory).flatMap({ RemoteHostRunState(rawValue: $0.state) }), state.isTerminal else {
+            throw WorkspaceResultError.runNotTerminal
+        }
+        if disposition == .integrated {
+            guard record.lifecycle == .imported,
+                  record.resultRef == "refs/workjet/\(runID)",
+                  record.resultCommitOID.map(GitRepositoryInspector.validOID) == true else {
+                throw WorkspaceResultError.integratedBeforeImport
+            }
+        }
+        try cleanupLocalWorktree(record)
+        record.lifecycle = target
+        record.terminalState = state
+        try store.save(record)
+        return WorkspaceLifecycleReceipt(runID: runID, lifecycle: target, resultRef: record.resultRef, resultCommitOID: record.resultCommitOID, terminalState: state)
+    }
+
     public func supervise(runDirectory: URL) throws {
         let directory = runDirectory.standardizedFileURL
         guard directory.deletingLastPathComponent().standardizedFileURL == paths.runsDirectory.standardizedFileURL,
@@ -2930,7 +3044,8 @@ public struct LocalRunService: Sendable {
             let spawned = try spawnSuspended(
                 executable: executable.path,
                 arguments: effectiveArguments(spec, candidate: candidate),
-                environment: environment
+                environment: environment,
+                currentDirectory: spec.currentDirectory
             )
             let pid = spawned.pid
         let deadline = Date().addingTimeInterval(2)
@@ -2955,39 +3070,208 @@ public struct LocalRunService: Sendable {
         try AtomicFile.write(Data("\(pid)\n".utf8), to: directory.appendingPathComponent("pid"), directoryMode: 0o700, fileMode: 0o600)
         guard kill(pid, SIGCONT) == 0 else { throw LocalStateError.io("Der lokale Worker konnte nicht fortgesetzt werden.") }
         var waitStatus: Int32 = 0
-        var output = Data()
         var diagnostic = Data()
+        let turnDeadline = Date().addingTimeInterval(spec.turnTimeoutSeconds ?? 3_600)
+        var timedOut = false
+        var terminationSentAt: Date?
         while waitpid(pid, &waitStatus, WNOHANG) == 0 {
-            drain(spawned.stdout, into: &output)
-            drain(spawned.stderr, into: &diagnostic)
+            try drainEvents(spawned.stdout, kind: "stdout", sequence: &sequence, directory: directory)
+            try drainEvents(spawned.stderr, kind: "stderr", sequence: &sequence, directory: directory, diagnostic: &diagnostic)
+            if !timedOut, Date() >= turnDeadline {
+                timedOut = true
+                finalExitCode = 124
+                sequence += 1
+                try appendEvent(RemoteHostEvent(
+                    sequence: sequence,
+                    timestamp: ISO8601DateFormatter().string(from: Date()),
+                    kind: "timeout",
+                    text: "worker turn timed out after \(spec.turnTimeoutSeconds ?? 3_600) seconds",
+                    exitCode: 124
+                ), directory: directory)
+                _ = kill(-pid, SIGTERM)
+                terminationSentAt = Date()
+            } else if timedOut, let terminationSentAt, Date().timeIntervalSince(terminationSentAt) >= 2.5 {
+                _ = kill(-pid, SIGKILL)
+            }
             try writeSnapshot(Snapshot(sequence: sequence, state: "running", heartbeatAt: ISO8601DateFormatter().string(from: Date()), model: spec.model, reasoning: spec.reasoning, speed: spec.speed, providerRoute: candidate.displayName), directory: directory)
-            Thread.sleep(forTimeInterval: 0.25)
+            Thread.sleep(forTimeInterval: 0.05)
         }
-        drain(spawned.stdout, into: &output)
-        drain(spawned.stderr, into: &diagnostic)
+        try drainEvents(spawned.stdout, kind: "stdout", sequence: &sequence, directory: directory)
+        try drainEvents(spawned.stderr, kind: "stderr", sequence: &sequence, directory: directory, diagnostic: &diagnostic)
         close(spawned.stdout)
         close(spawned.stderr)
-        let exitCode: Int32 = (waitStatus & 0x7f) == 0 ? ((waitStatus >> 8) & 0xff) : 128 + (waitStatus & 0x7f)
+        let observedExitCode: Int32 = (waitStatus & 0x7f) == 0 ? ((waitStatus >> 8) & 0xff) : 128 + (waitStatus & 0x7f)
+        let exitCode: Int32 = timedOut ? 124 : observedExitCode
         finalExitCode = exitCode
-        if !output.isEmpty {
-            sequence += 1
-            try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "stdout", text: String(decoding: output, as: UTF8.self)), directory: directory)
-        }
-        if exitCode != 0, !diagnostic.isEmpty {
-            sequence += 1
-            try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "stderr", text: String(decoding: diagnostic, as: UTF8.self), exitCode: exitCode), directory: directory)
-        }
-        if exitCode != 0, candidateIndex + 1 < spec.route.candidates.count,
+        if !timedOut, exitCode != 0, candidateIndex + 1 < spec.route.candidates.count,
            ProviderRuntimeFailureClass.classify(exitCode: exitCode, diagnostic: String(decoding: diagnostic, as: UTF8.self)) == .retryable {
             continue
         }
         break
         }
+        var finalState = finalExitCode == 0 ? "completed" : "failed"
+        if spec.currentDirectory != nil {
+            do {
+                try captureLocalWorkspaceResult(spec: spec, runID: directory.lastPathComponent, terminalState: RemoteHostRunState(rawValue: finalState) ?? .failed, runDirectory: directory)
+            } catch {
+                finalExitCode = 1
+                finalState = "error"
+                sequence += 1
+                try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "result-error", text: "local workspace result could not be published", exitCode: finalExitCode), directory: directory)
+            }
+        }
         sequence += 1
-        let finalState = finalExitCode == 0 ? "completed" : "failed"
         try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "lifecycle", text: finalState, exitCode: finalExitCode), directory: directory)
         try AtomicFile.write(Data("\(finalExitCode)\n".utf8), to: directory.appendingPathComponent("rc"), directoryMode: 0o700, fileMode: 0o600)
         try writeSnapshot(Snapshot(sequence: sequence, state: finalState, heartbeatAt: ISO8601DateFormatter().string(from: Date()), model: spec.model, reasoning: spec.reasoning, speed: spec.speed, providerRoute: spec.route.displayName), directory: directory)
+    }
+
+    private func materializeWorkspace(_ context: LocalWorkspaceContext, runID: String, runDirectory: URL) throws -> URL {
+        let snapshot = context.snapshot
+        guard let sourceRoot = snapshot.sourceRepositoryRoot,
+              GitRepositoryInspector.validDigest(snapshot.manifest.repoID),
+              GitRepositoryInspector.validOID(snapshot.manifest.snapshotCommitOID),
+              snapshot.bundle.count == snapshot.manifest.byteSize,
+              GitRepositoryInspector.sha256(snapshot.bundle) == snapshot.manifest.bundleSHA256 else {
+            throw WorkspaceResultError.resultMismatch
+        }
+        try createPrivateDirectory(paths.localWorkspaceRepositoriesDirectory)
+        try createPrivateDirectory(paths.localWorktreesDirectory)
+        let repository = paths.localWorkspaceRepositoriesDirectory.appendingPathComponent("\(snapshot.manifest.repoID).git", isDirectory: true).standardizedFileURL
+        if !FileManager.default.fileExists(atPath: repository.path) {
+            try createPrivateDirectory(repository)
+            _ = try runGit(["init", "--bare", repository.path], cwd: paths.localWorkspaceRepositoriesDirectory)
+        }
+        try requireOwnedDirectory(repository, beneath: paths.localWorkspaceRepositoriesDirectory)
+        let repoWorktrees = paths.localWorktreesDirectory.appendingPathComponent(snapshot.manifest.repoID, isDirectory: true).standardizedFileURL
+        try createPrivateDirectory(repoWorktrees)
+        try requireOwnedDirectory(repoWorktrees, beneath: paths.localWorktreesDirectory)
+        let worktree = repoWorktrees.appendingPathComponent(runID, isDirectory: true).standardizedFileURL
+        guard !FileManager.default.fileExists(atPath: worktree.path) else { throw WorkspaceResultError.repositoryUnsafe }
+
+        let bundle = runDirectory.appendingPathComponent("snapshot.bundle")
+        try AtomicFile.write(snapshot.bundle, to: bundle, directoryMode: 0o700, fileMode: 0o600)
+        let heads = try runGit(["bundle", "list-heads", bundle.path], cwd: sourceRoot)
+        let advertisedRef = heads.split(whereSeparator: \Character.isNewline).compactMap { line -> String? in
+            let fields = line.split(separator: " ", maxSplits: 1).map(String.init)
+            return fields.count == 2 && fields[0] == snapshot.manifest.snapshotCommitOID ? fields[1] : nil
+        }.first
+        guard let advertisedRef, advertisedRef.hasPrefix("refs/workjet/input-") else { throw WorkspaceResultError.resultMismatch }
+        let snapshotRef = "refs/workjet/snapshots/\(runID)"
+        _ = try runGit(["--git-dir=\(repository.path)", "fetch", "--no-tags", bundle.path, "\(advertisedRef):\(snapshotRef)"], cwd: paths.stateDirectory)
+        _ = try runGit(["--git-dir=\(repository.path)", "worktree", "add", "--detach", worktree.path, snapshot.manifest.snapshotCommitOID], cwd: paths.stateDirectory)
+        try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+        try? FileManager.default.removeItem(at: bundle)
+
+        let record = RemoteWorkspaceRunRecord(
+            runID: runID,
+            sourceRepositoryRoot: sourceRoot.path,
+            computerID: context.computerID,
+            ownerID: context.ownerID,
+            repoID: snapshot.manifest.repoID,
+            snapshotCommitOID: snapshot.manifest.snapshotCommitOID,
+            repositoryIdentity: context.repositoryIdentity,
+            localWorktreePath: worktree.path,
+            localRepositoryPath: repository.path
+        )
+        try RemoteWorkspaceRunStore(paths: paths).save(record)
+        return worktree
+    }
+
+    private func captureLocalWorkspaceResult(spec: LaunchSpec, runID: String, terminalState: RemoteHostRunState, runDirectory: URL) throws {
+        guard let worktreePath = spec.currentDirectory,
+              let repoID = spec.workspaceRepoID,
+              let snapshotOID = spec.snapshotCommitOID,
+              GitRepositoryInspector.validDigest(repoID),
+              GitRepositoryInspector.validOID(snapshotOID) else { throw WorkspaceResultError.invalidRecord }
+        let repository = paths.localWorkspaceRepositoriesDirectory.appendingPathComponent("\(repoID).git", isDirectory: true).standardizedFileURL
+        let repoWorktrees = paths.localWorktreesDirectory.appendingPathComponent(repoID, isDirectory: true).standardizedFileURL
+        let worktree = URL(fileURLWithPath: worktreePath, isDirectory: true).standardizedFileURL
+        guard worktree == repoWorktrees.appendingPathComponent(runID, isDirectory: true).standardizedFileURL else { throw WorkspaceResultError.repositoryUnsafe }
+        try requireOwnedDirectory(repository, beneath: paths.localWorkspaceRepositoriesDirectory)
+        try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+        _ = try runGit(["add", "-A", "--", "."], cwd: worktree)
+        let staged = try runGit(["ls-files", "--stage"], cwd: worktree)
+        guard !staged.split(whereSeparator: \Character.isNewline).contains(where: { $0.hasPrefix("120000 ") || $0.hasPrefix("160000 ") }) else {
+            throw WorkspaceResultError.repositoryUnsafe
+        }
+        let tree = try runGit(["write-tree"], cwd: worktree).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard GitRepositoryInspector.validOID(tree) else { throw WorkspaceResultError.importFailed }
+        let resultOID = try runGit(["commit-tree", tree, "-p", snapshotOID], cwd: worktree, input: Data("Workjet local result \(runID)\n".utf8)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard GitRepositoryInspector.validOID(resultOID) else { throw WorkspaceResultError.importFailed }
+        let resultRef = "refs/workjet/results/\(runID)"
+        _ = try runGit(["--git-dir=\(repository.path)", "update-ref", resultRef, resultOID], cwd: paths.stateDirectory)
+        let bundleURL = runDirectory.appendingPathComponent("result.bundle")
+        _ = try runGit(["--git-dir=\(repository.path)", "bundle", "create", bundleURL.path, resultRef], cwd: paths.stateDirectory)
+        let bundle = try SecureFile.readRegularOwnedFile(at: bundleURL, maximumBytes: LocalWorkspaceResultImporter.maximumBundleBytes)
+        let manifest = WorkspaceResultManifest(
+            runID: runID,
+            repoID: repoID,
+            snapshotCommitOID: snapshotOID,
+            resultCommitOID: resultOID,
+            bundleSHA256: GitRepositoryInspector.sha256(bundle),
+            byteSize: bundle.count,
+            terminalState: terminalState
+        )
+        try AtomicFile.write(try JSONEncoder().encode(manifest), to: runDirectory.appendingPathComponent("result-manifest.json"), directoryMode: 0o700, fileMode: 0o600)
+    }
+
+    private func cleanupLocalWorktree(_ record: RemoteWorkspaceRunRecord) throws {
+        guard let worktreePath = record.localWorktreePath, let repositoryPath = record.localRepositoryPath else { throw WorkspaceResultError.invalidRecord }
+        let repository = URL(fileURLWithPath: repositoryPath, isDirectory: true).standardizedFileURL
+        let expectedRepository = paths.localWorkspaceRepositoriesDirectory.appendingPathComponent("\(record.repoID).git", isDirectory: true).standardizedFileURL
+        let repoWorktrees = paths.localWorktreesDirectory.appendingPathComponent(record.repoID, isDirectory: true).standardizedFileURL
+        let worktree = URL(fileURLWithPath: worktreePath, isDirectory: true).standardizedFileURL
+        let expectedWorktree = repoWorktrees.appendingPathComponent(record.runID, isDirectory: true).standardizedFileURL
+        guard repository == expectedRepository, worktree == expectedWorktree else { throw WorkspaceResultError.repositoryUnsafe }
+        try requireOwnedDirectory(repository, beneath: paths.localWorkspaceRepositoriesDirectory)
+        try requireOwnedDirectory(repoWorktrees, beneath: paths.localWorktreesDirectory)
+        if FileManager.default.fileExists(atPath: worktree.path) {
+            try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+            _ = try runGit(["--git-dir=\(repository.path)", "worktree", "remove", "--force", worktree.path], cwd: paths.stateDirectory)
+            guard !FileManager.default.fileExists(atPath: worktree.path) else { throw WorkspaceResultError.repositoryUnsafe }
+        }
+    }
+
+    private func requireOwnedDirectory(_ directory: URL, beneath parent: URL) throws {
+        let value = directory.standardizedFileURL
+        let root = parent.standardizedFileURL
+        guard value.deletingLastPathComponent() == root || value.path.hasPrefix(root.path + "/") else { throw WorkspaceResultError.repositoryUnsafe }
+        for candidate in [root, value] {
+            var info = stat()
+            guard lstat(candidate.path, &info) == 0,
+                  (info.st_mode & S_IFMT) == S_IFDIR,
+                  info.st_uid == geteuid() else { throw WorkspaceResultError.repositoryUnsafe }
+        }
+    }
+
+    @discardableResult
+    private func runGit(_ arguments: [String], cwd: URL, input: Data? = nil) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = cwd
+        var environment = GitRepositoryInspector.gitEnvironment
+        environment["GIT_AUTHOR_NAME"] = "Workjet Result"
+        environment["GIT_AUTHOR_EMAIL"] = "result@workjet.invalid"
+        environment["GIT_COMMITTER_NAME"] = "Workjet Result"
+        environment["GIT_COMMITTER_EMAIL"] = "result@workjet.invalid"
+        process.environment = environment
+        let stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        process.standardInput = input == nil ? FileHandle.nullDevice : stdin
+        try process.run()
+        if let input {
+            stdin.fileHandleForWriting.write(input)
+            try stdin.fileHandleForWriting.close()
+        }
+        let output = stdout.fileHandleForReading.readDataToEndOfFile()
+        let diagnostic = stderr.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard output.count <= 16 * 1_024 * 1_024, diagnostic.count <= 1_048_576,
+              process.terminationStatus == 0 else { throw WorkspaceResultError.importFailed }
+        return String(decoding: output, as: UTF8.self)
     }
 
     private func validatedExecutable(_ rawPath: String, purpose: String) throws -> URL {
@@ -3191,14 +3475,20 @@ public struct LocalRunService: Sendable {
         var stderr: Int32
     }
 
-    private func spawnSuspended(executable: String, arguments: [String], environment: [String: String]) throws -> SpawnedProcess {
+    private func spawnSuspended(executable: String, arguments: [String], environment: [String: String], currentDirectory: String?) throws -> SpawnedProcess {
         var attributes: posix_spawnattr_t?
         guard posix_spawnattr_init(&attributes) == 0 else { throw LocalStateError.io("Startattribute konnten nicht erstellt werden.") }
         defer { posix_spawnattr_destroy(&attributes) }
-        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_START_SUSPENDED))
+        posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_START_SUSPENDED | POSIX_SPAWN_SETSID))
         var actions: posix_spawn_file_actions_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { throw LocalStateError.io("Startkanäle konnten nicht erstellt werden.") }
         defer { posix_spawn_file_actions_destroy(&actions) }
+        if let currentDirectory {
+            guard currentDirectory.hasPrefix("/"), !currentDirectory.contains("\0"),
+                  posix_spawn_file_actions_addchdir_np(&actions, currentDirectory) == 0 else {
+                throw LocalStateError.insecurePath(currentDirectory)
+            }
+        }
         var stdoutPipe: [Int32] = [0, 0]
         guard pipe(&stdoutPipe) == 0 else { throw LocalStateError.io("Ausgabekanal konnte nicht erstellt werden.") }
         var stderrPipe: [Int32] = [0, 0]
@@ -3232,24 +3522,61 @@ public struct LocalRunService: Sendable {
         return SpawnedProcess(pid: child, stdout: stdoutPipe[0], stderr: stderrPipe[0])
     }
 
-    private func drain(_ descriptor: Int32, into data: inout Data) {
-        guard data.count < 65_536 else { return }
-        var buffer = [UInt8](repeating: 0, count: min(4_096, 65_536 - data.count))
+    private func drainEvents(
+        _ descriptor: Int32,
+        kind: String,
+        sequence: inout UInt64,
+        directory: URL,
+        diagnostic: inout Data
+    ) throws {
+        var buffer = [UInt8](repeating: 0, count: 4_096)
         while true {
             let count = read(descriptor, &buffer, buffer.count)
-            if count > 0 { data.append(contentsOf: buffer.prefix(count)) }
-            else { break }
+            if count > 0 {
+                let chunk = Data(buffer.prefix(count))
+                if diagnostic.count + chunk.count > 65_536 {
+                    diagnostic.removeFirst(min(diagnostic.count, diagnostic.count + chunk.count - 65_536))
+                }
+                diagnostic.append(chunk)
+                sequence += 1
+                try appendEvent(RemoteHostEvent(
+                    sequence: sequence,
+                    timestamp: ISO8601DateFormatter().string(from: Date()),
+                    kind: kind,
+                    text: String(decoding: chunk, as: UTF8.self)
+                ), directory: directory)
+            } else if count < 0, errno == EINTR {
+                continue
+            } else {
+                break
+            }
         }
+    }
+
+    private func drainEvents(_ descriptor: Int32, kind: String, sequence: inout UInt64, directory: URL) throws {
+        var ignored = Data()
+        try drainEvents(descriptor, kind: kind, sequence: &sequence, directory: directory, diagnostic: &ignored)
     }
 
     private func createPrivateDirectory(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        var info = stat()
+        guard lstat(url.path, &info) == 0,
+              (info.st_mode & S_IFMT) == S_IFDIR,
+              info.st_uid == geteuid() else { throw LocalStateError.insecurePath(url.path) }
+        _ = chmod(url.path, 0o700)
+        guard lstat(url.path, &info) == 0, (info.st_mode & 0o077) == 0 else { throw LocalStateError.insecurePath(url.path) }
     }
 
     private func ownedRunDirectory(_ runID: String) -> URL? {
-        guard runID.hasPrefix("local-"), !runID.contains("/"), !runID.contains("..") else { return nil }
+        guard runID.hasPrefix("local-"), LocalWorkspaceResultImporter.safeRunID(runID) else { return nil }
         let directory = paths.runsDirectory.appendingPathComponent(runID, isDirectory: true).standardizedFileURL
-        return isOwnedDirectory(directory) ? directory : nil
+        return directory.deletingLastPathComponent() == paths.runsDirectory.standardizedFileURL && isOwnedDirectory(directory) ? directory : nil
+    }
+
+    private func requiredOwnedRunDirectory(_ runID: String) throws -> URL {
+        guard let directory = ownedRunDirectory(runID) else { throw WorkspaceResultError.recordNotFound }
+        return directory
     }
 
     private func readSnapshot(_ directory: URL) throws -> Snapshot? {

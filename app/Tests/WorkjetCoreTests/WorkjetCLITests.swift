@@ -342,7 +342,7 @@ final class WorkjetCLITests: XCTestCase {
         }
     }
 
-    func testLocalHarnessReceivesEffectiveModelReasoningSpeedAndSanitizedEnvironment() throws {
+    func testLocalHarnessReceivesEffectiveModelReasoningSpeedAndSanitizedEnvironment() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-launch-context-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -374,7 +374,7 @@ final class WorkjetCLITests: XCTestCase {
         let runID = try XCTUnwrap(response.runID)
         let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
         let deadline = Date().addingTimeInterval(5)
-        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
 
         let arguments = try String(contentsOf: argumentsFile, encoding: .utf8)
         XCTAssertTrue(arguments.contains("--model\ngpt-5.6-sol"))
@@ -392,7 +392,7 @@ final class WorkjetCLITests: XCTestCase {
         XCTAssertTrue(events.events.contains { $0.kind == "stdout" && $0.text?.contains("fixture-output") == true })
     }
 
-    func testDirectCredentialIsPrefetchedBeforeDetachedSupervisorStarts() throws {
+    func testDirectCredentialIsPrefetchedBeforeDetachedSupervisorStarts() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-prefetched-credential-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -416,14 +416,14 @@ final class WorkjetCLITests: XCTestCase {
         let runID = try XCTUnwrap(response.runID)
         let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
         let deadline = Date().addingTimeInterval(30)
-        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: rc.path))
         XCTAssertEqual(try String(contentsOf: observed, encoding: .utf8), "prefetched-value")
         XCTAssertEqual(credentials.reads, ["provider-direct"], "Nur der autorisierte Elternprozess darf den Zugang lesen.")
     }
 
-    func testWebResearchKeepsClaudeToolsAndInjectsGatewayForCodexHelper() throws {
+    func testWebResearchKeepsClaudeToolsAndInjectsGatewayForCodexHelper() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-web-context-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -454,7 +454,7 @@ final class WorkjetCLITests: XCTestCase {
         let runID = try XCTUnwrap(response.runID)
         let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
         let deadline = Date().addingTimeInterval(30)
-        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
 
         let value = try String(contentsOf: observed, encoding: .utf8)
         XCTAssertTrue(value.hasPrefix("codex\nhttp://127.0.0.1:8317/v1\ngateway-secret\n\(paths.stateDirectory.appendingPathComponent("greppy").path)\n"))
@@ -463,7 +463,7 @@ final class WorkjetCLITests: XCTestCase {
         XCTAssertEqual(gateway.reads, [CLIProxyGatewayCredentialStore.reference])
     }
 
-    func testLocalDirectPoolRetriesOnlyAnAuthenticatedCapacityFailure() throws {
+    func testLocalDirectPoolRetriesOnlyAnAuthenticatedCapacityFailure() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-provider-pool-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -512,7 +512,7 @@ final class WorkjetCLITests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: trace, encoding: .utf8).split(whereSeparator: \.isNewline).map(String.init), ["Primary"])
     }
 
-    func testCodexAndOpenCodeUseVerifiedOneShotArgvWithoutPaidTurns() throws {
+    func testCodexAndOpenCodeUseVerifiedOneShotArgvWithoutPaidTurns() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-local-one-shot-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -539,7 +539,7 @@ final class WorkjetCLITests: XCTestCase {
             let runID = try XCTUnwrap(response.runID)
             let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
             let deadline = Date().addingTimeInterval(30)
-            while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { Thread.sleep(forTimeInterval: 0.025) }
+            while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
             XCTAssertTrue(FileManager.default.fileExists(atPath: rc.path), "\(harness)")
             let actual = try String(contentsOf: output, encoding: .utf8)
                 .split(whereSeparator: \.isNewline).map(String.init)
@@ -590,6 +590,170 @@ final class WorkjetCLITests: XCTestCase {
         backing.markReceipt = WorkspaceLifecycleReceipt(runID: "run-3", lifecycle: .abandoned, terminalState: .failed)
         let abandoned = try await engine.execute(.runsMark(runID: "run-3", disposition: .abandoned, json: true))
         XCTAssertEqual(abandoned.lifecycle, "abandoned")
+    }
+
+    func testLocalGitRunIsIsolatedStreamsOutputAndPublishesLifecycleResult() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-local-workspace-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let repository = root.appendingPathComponent("caller", isDirectory: true)
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        _ = try fixtureGit(["init"], cwd: repository)
+        try Data("committed\n".utf8).write(to: repository.appendingPathComponent("tracked.txt"))
+        _ = try fixtureGit(["add", "tracked.txt"], cwd: repository)
+        _ = try fixtureGit(["commit", "-m", "fixture"], cwd: repository)
+        let originalHead = try fixtureGit(["rev-parse", "HEAD"], cwd: repository)
+        let originalBranch = try fixtureGit(["symbolic-ref", "--short", "HEAD"], cwd: repository)
+        try Data("caller dirty\n".utf8).write(to: repository.appendingPathComponent("tracked.txt"))
+        try Data("caller untracked\n".utf8).write(to: repository.appendingPathComponent("caller-untracked.txt"))
+        let originalStatus = try fixtureGit(["status", "--porcelain=v1"], cwd: repository)
+
+        let harness = root.appendingPathComponent("fixture-harness")
+        let script = """
+        #!/bin/sh
+        printf '%s' 'isolated worker' > worker-output.txt
+        printf '%s' 'early-output'
+        sleep 1
+        printf '%s' 'final-partial'
+        """
+        try Data(script.utf8).write(to: harness)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+        let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
+        let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: repository)
+        let sourceRoot = try XCTUnwrap(snapshot.sourceRepositoryRoot)
+        let identity = try await GitRepositoryInspector().inspect(root: sourceRoot, expectedRepoID: snapshot.manifest.repoID)
+        let context = LocalWorkspaceContext(snapshot: snapshot, repositoryIdentity: identity, computerID: localID, ownerID: "workjet-worker-\(workerID.uuidString.lowercased())")
+        var worker = Worker(id: workerID, name: "Isolated", harness: .claudeCode, model: "fixture", computerID: localID)
+        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
+        let service = LocalRunService(paths: paths)
+        let response = try service.start(worker: worker, route: ResolvedProviderRuntimeRoute(displayName: "Fixture", candidates: [
+            ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Fixture", endpoint: "https://example.invalid", authentication: .none, credentialReference: nil)
+        ]), brief: Data("implement".utf8), workspace: context, turnTimeoutSeconds: 10, supervisorExecutable: builtWorkjetCLI)
+        let runID = try XCTUnwrap(response.runID)
+        let runDirectory = paths.runsDirectory.appendingPathComponent(runID, isDirectory: true)
+        let rc = runDirectory.appendingPathComponent("rc")
+
+        let streamingDeadline = Date().addingTimeInterval(3)
+        var observedBeforeExit = false
+        repeat {
+            let events = try service.events(runID: runID, after: 0)?.events ?? []
+            if events.contains(where: { $0.kind == "stdout" && $0.text?.contains("early-output") == true }),
+               !FileManager.default.fileExists(atPath: rc.path) {
+                observedBeforeExit = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while Date() < streamingDeadline
+        XCTAssertTrue(observedBeforeExit, "stdout must be durable before process exit")
+
+        let terminalDeadline = Date().addingTimeInterval(15)
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < terminalDeadline { try await Task.sleep(for: .milliseconds(25)) }
+        let terminal = try XCTUnwrap(service.events(runID: runID, after: 0))
+        XCTAssertEqual(terminal.state, .completed)
+        let stdout = terminal.events.filter { $0.kind == "stdout" }.compactMap(\.text).joined()
+        XCTAssertTrue(stdout.contains("early-output"))
+        XCTAssertTrue(stdout.contains("final-partial"), "the final non-newline chunk must not be lost")
+
+        let record = try RemoteWorkspaceRunStore(paths: paths).load(runID: runID)
+        let worktree = URL(fileURLWithPath: try XCTUnwrap(record.localWorktreePath), isDirectory: true)
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("worker-output.txt"), encoding: .utf8), "isolated worker")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repository.appendingPathComponent("worker-output.txt").path))
+        XCTAssertEqual(try String(contentsOf: repository.appendingPathComponent("tracked.txt"), encoding: .utf8), "caller dirty\n")
+        XCTAssertEqual(try String(contentsOf: repository.appendingPathComponent("caller-untracked.txt"), encoding: .utf8), "caller untracked\n")
+        XCTAssertEqual(try fixtureGit(["status", "--porcelain=v1"], cwd: repository), originalStatus)
+        XCTAssertEqual(try fixtureGit(["rev-parse", "HEAD"], cwd: repository), originalHead)
+        XCTAssertEqual(try fixtureGit(["symbolic-ref", "--short", "HEAD"], cwd: repository), originalBranch)
+
+        let imported = try await service.importResult(runID: runID)
+        XCTAssertEqual(imported.resultRef, "refs/workjet/\(runID)")
+        XCTAssertEqual(try fixtureGit(["show", "\(imported.resultRef):worker-output.txt"], cwd: repository), "isolated worker")
+        let repeatedImport = try await service.importResult(runID: runID)
+        XCTAssertEqual(repeatedImport, imported)
+        let integrated = try service.mark(runID: runID, disposition: .integrated)
+        XCTAssertEqual(integrated.lifecycle, .integrated)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree.path))
+        XCTAssertEqual(try service.mark(runID: runID, disposition: .integrated), integrated)
+        XCTAssertThrowsError(try service.mark(runID: runID, disposition: .abandoned)) {
+            XCTAssertEqual($0 as? WorkspaceResultError, .dispositionConflict)
+        }
+
+        let abandonedResponse = try service.start(worker: worker, route: ResolvedProviderRuntimeRoute(displayName: "Fixture", candidates: [
+            ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Fixture", endpoint: "https://example.invalid", authentication: .none, credentialReference: nil)
+        ]), brief: Data("discard".utf8), workspace: context, turnTimeoutSeconds: 10, supervisorExecutable: builtWorkjetCLI)
+        let abandonedRunID = try XCTUnwrap(abandonedResponse.runID)
+        let abandonedRC = paths.runsDirectory.appendingPathComponent(abandonedRunID).appendingPathComponent("rc")
+        let abandonedDeadline = Date().addingTimeInterval(15)
+        while !FileManager.default.fileExists(atPath: abandonedRC.path), Date() < abandonedDeadline { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertThrowsError(try service.mark(runID: abandonedRunID, disposition: .integrated)) {
+            XCTAssertEqual($0 as? WorkspaceResultError, .integratedBeforeImport)
+        }
+        let abandonedRecord = try RemoteWorkspaceRunStore(paths: paths).load(runID: abandonedRunID)
+        let abandonedWorktree = try XCTUnwrap(abandonedRecord.localWorktreePath)
+        let abandoned = try service.mark(runID: abandonedRunID, disposition: .abandoned)
+        XCTAssertEqual(abandoned.lifecycle, .abandoned)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: abandonedWorktree))
+        XCTAssertEqual(try service.mark(runID: abandonedRunID, disposition: .abandoned), abandoned)
+        XCTAssertThrowsError(try service.mark(runID: abandonedRunID, disposition: .integrated)) {
+            XCTAssertEqual($0 as? WorkspaceResultError, .dispositionConflict)
+        }
+    }
+
+    func testLocalTimeoutDoesNotFallback() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-local-timeout-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let trace = root.appendingPathComponent("trace.txt")
+        let harness = root.appendingPathComponent("fixture-timeout")
+        let script = """
+        #!/bin/sh
+        printf '%s\n' "$WORKJET_PROVIDER_ROUTE" >> '\(trace.path)'
+        trap '' TERM
+        sleep 30
+        """
+        try Data(script.utf8).write(to: harness)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
+        let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
+        var worker = Worker(name: "Timeout", harness: .claudeCode, model: "fixture", computerID: localID)
+        worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
+        let route = ResolvedProviderRuntimeRoute(displayName: "Pool", candidates: [
+            ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Primary", endpoint: "https://primary.invalid", authentication: .none, credentialReference: nil),
+            ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Reserve", endpoint: "https://reserve.invalid", authentication: .none, credentialReference: nil)
+        ])
+        let service = LocalRunService(paths: paths)
+        let startedAt = Date()
+        let response = try service.start(worker: worker, route: route, brief: Data("timeout".utf8), turnTimeoutSeconds: 1, supervisorExecutable: builtWorkjetCLI)
+        let runID = try XCTUnwrap(response.runID)
+        let rc = paths.runsDirectory.appendingPathComponent(runID).appendingPathComponent("rc")
+        let deadline = Date().addingTimeInterval(8)
+        while !FileManager.default.fileExists(atPath: rc.path), Date() < deadline { try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 6)
+        let terminal = try XCTUnwrap(service.events(runID: runID, after: 0))
+        XCTAssertEqual(terminal.state, .failed)
+        XCTAssertTrue(terminal.events.contains { $0.kind == "timeout" && $0.exitCode == 124 })
+        XCTAssertEqual(try String(contentsOf: trace, encoding: .utf8).split(whereSeparator: \.isNewline).map(String.init), ["Primary"], "timeout must never trigger provider fallback")
+    }
+
+    private func fixtureGit(_ arguments: [String], cwd: URL) throws -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = cwd
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_AUTHOR_NAME"] = "Fixture"
+        environment["GIT_AUTHOR_EMAIL"] = "fixture@example.invalid"
+        environment["GIT_COMMITTER_NAME"] = "Fixture"
+        environment["GIT_COMMITTER_EMAIL"] = "fixture@example.invalid"
+        process.environment = environment
+        let output = Pipe(), error = Pipe()
+        process.standardOutput = output
+        process.standardError = error
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        let diagnostic = error.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            throw NSError(domain: "fixture-git", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: String(decoding: diagnostic, as: UTF8.self)])
+        }
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func configuration(remoteWorkers: [Worker], extraWorkers: [Worker] = [], providers: [Provider] = []) -> WorkjetConfiguration {

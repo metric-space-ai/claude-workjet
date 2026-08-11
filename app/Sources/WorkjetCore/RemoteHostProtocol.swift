@@ -315,12 +315,15 @@ public struct RemoteHostRequest: Codable, Equatable, Sendable {
     /// Optional start-time display name. The host accepts it only together
     /// with Workjet's deterministic owner identity and persists it as evidence.
     public var workerName: String?
+    /// Worker turn deadline. Probe deadlines remain a separate client-side
+    /// contract and health probes may omit this value.
+    public var turnTimeoutSeconds: Int?
     public var workspaceDisposition: RemoteWorkspaceDisposition?
     /// v2 operations that older exhaustive app adapters must not be forced to
     /// understand. Encoding emits this value as the actual wire `operation`.
     public var wireOperation: String?
 
-    public init(operation: RemoteHostOperation, runID: String? = nil, afterSequence: UInt64? = nil, launch: RemoteHarnessLaunch? = nil, ownerID: String? = nil, harnessID: String? = nil, skillID: String? = nil, providerExecution: RemoteProviderExecution? = nil, workerName: String? = nil, workspaceDisposition: RemoteWorkspaceDisposition? = nil, protocolVersion: Int = RemoteHostProtocolVersion.current, wireOperation: String? = nil) {
+    public init(operation: RemoteHostOperation, runID: String? = nil, afterSequence: UInt64? = nil, launch: RemoteHarnessLaunch? = nil, ownerID: String? = nil, harnessID: String? = nil, skillID: String? = nil, providerExecution: RemoteProviderExecution? = nil, workerName: String? = nil, turnTimeoutSeconds: Int? = nil, workspaceDisposition: RemoteWorkspaceDisposition? = nil, protocolVersion: Int = RemoteHostProtocolVersion.current, wireOperation: String? = nil) {
         self.protocolVersion = protocolVersion
         self.operation = operation
         self.runID = runID
@@ -331,6 +334,7 @@ public struct RemoteHostRequest: Codable, Equatable, Sendable {
         self.skillID = skillID
         self.providerExecution = providerExecution
         self.workerName = workerName
+        self.turnTimeoutSeconds = turnTimeoutSeconds
         self.workspaceDisposition = workspaceDisposition
         self.wireOperation = wireOperation
     }
@@ -343,7 +347,7 @@ public struct RemoteHostRequest: Codable, Equatable, Sendable {
         self.init(operation: action.operation, skillID: skillID)
     }
 
-    private enum CodingKeys: String, CodingKey { case protocolVersion, operation, runID, afterSequence, launch, ownerID, harnessID, skillID, providerExecution, workerName, workspaceDisposition }
+    private enum CodingKeys: String, CodingKey { case protocolVersion, operation, runID, afterSequence, launch, ownerID, harnessID, skillID, providerExecution, workerName, turnTimeoutSeconds, workspaceDisposition }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -359,6 +363,7 @@ public struct RemoteHostRequest: Codable, Equatable, Sendable {
         skillID = try values.decodeIfPresent(String.self, forKey: .skillID)
         providerExecution = try values.decodeIfPresent(RemoteProviderExecution.self, forKey: .providerExecution)
         workerName = try values.decodeIfPresent(String.self, forKey: .workerName)
+        turnTimeoutSeconds = try values.decodeIfPresent(Int.self, forKey: .turnTimeoutSeconds)
         workspaceDisposition = try values.decodeIfPresent(RemoteWorkspaceDisposition.self, forKey: .workspaceDisposition)
     }
 
@@ -374,6 +379,7 @@ public struct RemoteHostRequest: Codable, Equatable, Sendable {
         try values.encodeIfPresent(skillID, forKey: .skillID)
         try values.encodeIfPresent(providerExecution, forKey: .providerExecution)
         try values.encodeIfPresent(workerName, forKey: .workerName)
+        try values.encodeIfPresent(turnTimeoutSeconds, forKey: .turnTimeoutSeconds)
         try values.encodeIfPresent(workspaceDisposition, forKey: .workspaceDisposition)
     }
 }
@@ -646,16 +652,16 @@ public struct RemoteHostClient: RemoteHostCalling, Sendable {
         return snapshot.manifest.descriptor
     }
 
-    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
+    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, turnTimeoutSeconds: Int = 3_600, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
         if worker.harness != .piSidecar {
             let probe = try await probe()
             guard probe.capabilities.contains("workspace-git-v1") else { throw RemoteHostProtocolError.missingCapability("workspace-git-v1") }
         }
         let launch = try registry.launch(worker: worker, computer: computer, input: input, systemPrompt: systemPrompt, workspace: workspace)
-        return try await call(RemoteHostRequest(operation: .start, launch: launch))
+        return try await call(RemoteHostRequest(operation: .start, launch: launch, turnTimeoutSeconds: min(max(turnTimeoutSeconds, 60), 10_800)))
     }
 
-    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, providerExecution: RemoteProviderExecution, ownerID: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, verifiedCapabilities: [String]? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
+    public func start(worker: Worker, input: Data, systemPrompt: String? = nil, providerExecution: RemoteProviderExecution, ownerID: String? = nil, workerName: String? = nil, workspace: RemoteWorkspaceDescriptor? = nil, turnTimeoutSeconds: Int = 3_600, verifiedCapabilities: [String]? = nil, registry: RemoteHarnessAdapterRegistry = .init()) async throws -> RemoteHostResponse {
         if worker.harness != .piSidecar {
             let capabilities: [String]
         if let verifiedCapabilities { capabilities = verifiedCapabilities }
@@ -663,7 +669,7 @@ public struct RemoteHostClient: RemoteHostCalling, Sendable {
             guard capabilities.contains("workspace-git-v1") else { throw RemoteHostProtocolError.missingCapability("workspace-git-v1") }
         }
         let launch = try registry.launch(worker: worker, computer: computer, input: input, systemPrompt: systemPrompt, workspace: workspace)
-        return try await call(RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: providerExecution))
+        return try await call(RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: providerExecution, workerName: workerName, turnTimeoutSeconds: min(max(turnTimeoutSeconds, 60), 10_800)))
     }
 
     public func events(runID: String, after sequence: UInt64) async throws -> RemoteHostResponse {

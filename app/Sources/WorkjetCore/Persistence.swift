@@ -28,6 +28,8 @@ public struct WorkjetPaths: Equatable, Sendable {
     public var healthProbeDirectory: URL { stateDirectory.appendingPathComponent("health-probe", isDirectory: true) }
     public var remoteWorkspaceRunsDirectory: URL { stateDirectory.appendingPathComponent("remote-workspaces", isDirectory: true) }
     public var remoteWorkspaceImportsDirectory: URL { stateDirectory.appendingPathComponent("remote-workspace-imports", isDirectory: true) }
+    public var localWorkspaceRepositoriesDirectory: URL { stateDirectory.appendingPathComponent("workspace-repositories", isDirectory: true) }
+    public var localWorktreesDirectory: URL { stateDirectory.appendingPathComponent("worktrees", isDirectory: true) }
 }
 
 public enum WorkjetActivationState: String, Equatable, Sendable {
@@ -547,7 +549,8 @@ public final class RemoteWorkspaceRunStore: @unchecked Sendable {
                   LocalWorkspaceResultImporter.safeRunID(record.runID), record.sourceRepositoryRoot.hasPrefix("/"),
                   !record.sourceRepositoryRoot.contains("\0"), GitRepositoryInspector.validDigest(record.repoID),
                   GitRepositoryInspector.validOID(record.snapshotCommitOID),
-                  record.ownerID.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil else {
+                  record.ownerID.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil,
+                  Self.validLocalWorkspacePaths(record.localWorktreePath, record.localRepositoryPath) else {
                 throw WorkspaceResultError.invalidRecord
             }
             return record
@@ -560,7 +563,8 @@ public final class RemoteWorkspaceRunStore: @unchecked Sendable {
               GitRepositoryInspector.validDigest(record.repoID), GitRepositoryInspector.validOID(record.snapshotCommitOID),
               record.ownerID.range(of: "^[A-Za-z0-9._-]{1,128}$", options: .regularExpression) != nil,
               record.resultCommitOID.map(GitRepositoryInspector.validOID) ?? true,
-              record.resultRef.map({ $0 == "refs/workjet/\(record.runID)" }) ?? true else {
+              record.resultRef.map({ $0 == "refs/workjet/\(record.runID)" }) ?? true,
+              Self.validLocalWorkspacePaths(record.localWorktreePath, record.localRepositoryPath) else {
             throw WorkspaceResultError.invalidRecord
         }
         try lock.withLock {
@@ -594,6 +598,15 @@ public final class RemoteWorkspaceRunStore: @unchecked Sendable {
 
     private func recordFile(_ runID: String) -> URL {
         paths.remoteWorkspaceRunsDirectory.appendingPathComponent("\(runID).json")
+    }
+
+    private static func validLocalWorkspacePaths(_ worktree: String?, _ repository: String?) -> Bool {
+        switch (worktree, repository) {
+        case (nil, nil): return true
+        case let (.some(worktree), .some(repository)):
+            return [worktree, repository].allSatisfy { $0.hasPrefix("/") && !$0.contains("\0") }
+        default: return false
+        }
     }
 
     private func ensurePrivateDirectory(_ directory: URL) throws {

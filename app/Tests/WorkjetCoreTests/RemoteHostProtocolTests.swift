@@ -158,10 +158,11 @@ final class RemoteHostProtocolTests: XCTestCase {
             RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .openAI, displayName: "Account", endpoint: "https://api.openai.com/v1", authentication: .bearerToken, secret: sentinel)
         ])
         let launch = RemoteHarnessLaunch(harnessID: "codex-cli", model: "gpt", reasoning: "high", sandbox: false, input: Data("brief".utf8))
-        let request = RemoteHostRequest(operation: .start, launch: launch, ownerID: "owner", providerExecution: execution)
+        let request = RemoteHostRequest(operation: .start, launch: launch, ownerID: "owner", providerExecution: execution, turnTimeoutSeconds: 321)
         let encoded = try JSONEncoder().encode(request)
         XCTAssertEqual(try JSONDecoder().decode(RemoteHostRequest.self, from: encoded), request)
         XCTAssertTrue(String(decoding: encoded, as: UTF8.self).contains(sentinel), "the credential exists only in the encrypted SSH request body")
+        XCTAssertTrue(String(decoding: encoded, as: UTF8.self).contains("\"turnTimeoutSeconds\":321"))
 
         let events = try JSONEncoder().encode(RemoteHostRequest(operation: .events, runID: "run-1", afterSequence: 0))
         XCTAssertFalse(String(decoding: events, as: UTF8.self).contains("providerExecution"))
