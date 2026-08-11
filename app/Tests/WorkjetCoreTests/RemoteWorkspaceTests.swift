@@ -10,6 +10,13 @@ final class RemoteWorkspaceTests: XCTestCase {
         let repository: URL
     }
 
+    private struct SubmoduleFixture {
+        let root: URL
+        let repository: URL
+        let submodules: [URL]
+        let commits: [String]
+    }
+
     private actor CapturingRunner: CommandRunning {
         private var commands: [CommandSpec] = []
         var response: CommandResult
@@ -46,6 +53,35 @@ final class RemoteWorkspaceTests: XCTestCase {
         _ = try git(["add", "."], cwd: repository)
         _ = try git(["commit", "-m", "initial"], cwd: repository)
         return RepositoryFixture(root: root, repository: repository)
+    }
+
+    private func repositoryWithSubmodules(count: Int = 1) throws -> SubmoduleFixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-submodule-tests-\(UUID().uuidString)", isDirectory: true)
+        let repository = root.appendingPathComponent("parent", isDirectory: true)
+        try FileManager.default.createDirectory(at: repository, withIntermediateDirectories: true)
+        _ = try git(["init"], cwd: repository)
+        try Data("parent\n".utf8).write(to: repository.appendingPathComponent("tracked.txt"))
+        _ = try git(["add", "tracked.txt"], cwd: repository)
+        _ = try git(["commit", "-m", "parent"], cwd: repository)
+        var submodules: [URL] = [], commits: [String] = []
+        for index in 0..<count {
+            let source = root.appendingPathComponent("source-\(index)", isDirectory: true)
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            _ = try git(["init"], cwd: source)
+            try Data("submodule \(index) old\n".utf8).write(to: source.appendingPathComponent("module.txt"))
+            _ = try git(["add", "module.txt"], cwd: source)
+            _ = try git(["commit", "-m", "submodule old"], cwd: source)
+            try Data("submodule \(index) pinned\n".utf8).write(to: source.appendingPathComponent("module.txt"))
+            _ = try git(["commit", "-am", "submodule pinned"], cwd: source)
+            let name = "module-\(index)"
+            _ = try git(["-c", "protocol.file.allow=always", "submodule", "add", source.path, name], cwd: repository)
+            let checkout = repository.appendingPathComponent(name, isDirectory: true)
+            _ = try git(["remote", "set-url", "origin", "ssh://credential-required@127.0.0.1:1/unreachable.git"], cwd: checkout)
+            submodules.append(checkout)
+            commits.append(try git(["rev-parse", "HEAD"], cwd: source))
+        }
+        _ = try git(["commit", "-am", "add pinned submodules"], cwd: repository)
+        return SubmoduleFixture(root: root, repository: repository, submodules: submodules, commits: commits)
     }
 
     private func git(_ arguments: [String], cwd: URL, input: Data = Data()) throws -> String {
@@ -113,8 +149,19 @@ final class RemoteWorkspaceTests: XCTestCase {
         let worktree = root.appendingPathComponent("materialized")
         try snapshot.bundle.write(to: bundle)
         _ = try git(["init", "--bare", bare.path], cwd: root)
-        _ = try git(["--git-dir=\(bare.path)", "fetch", "--no-tags", bundle.path, snapshot.manifest.snapshotCommitOID], cwd: root)
+        let heads = try git(["bundle", "list-heads", bundle.path], cwd: root)
+        let parentRef = try XCTUnwrap(heads.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix(snapshot.manifest.snapshotCommitOID + " ") })?.split(separator: " ", maxSplits: 1).last.map(String.init))
+        var fetch = ["--git-dir=\(bare.path)", "fetch", "--no-tags", bundle.path, "\(parentRef):refs/workjet/snapshot"]
+        for (index, submodule) in snapshot.manifest.submodules.enumerated() {
+            fetch.append("\(submodule.bundleRef):refs/workjet/submodule/\(index)")
+        }
+        _ = try git(fetch, cwd: root)
         _ = try git(["--git-dir=\(bare.path)", "worktree", "add", "--detach", worktree.path, snapshot.manifest.snapshotCommitOID], cwd: root)
+        for submodule in snapshot.manifest.submodules {
+            let destination = worktree.appendingPathComponent(submodule.path, isDirectory: true)
+            try FileManager.default.removeItem(at: destination)
+            _ = try git(["--git-dir=\(bare.path)", "worktree", "add", "--detach", destination.path, submodule.commitOID], cwd: root)
+        }
         return worktree
     }
 
@@ -229,10 +276,68 @@ final class RemoteWorkspaceTests: XCTestCase {
             XCTAssertEqual(error, .bundleTooLarge(limit: 128))
         }
 
+        let foreignOversized = try repositoryWithSubmodules(); defer { try? FileManager.default.removeItem(at: foreignOversized.root) }
+        try Data((0..<4096).map { UInt8(($0 * 17) % 251) }).write(to: foreignOversized.submodules[0].appendingPathComponent("foreign-large.bin"))
+        _ = try git(["add", "foreign-large.bin"], cwd: foreignOversized.submodules[0])
+        _ = try git(["commit", "-m", "large pinned payload"], cwd: foreignOversized.submodules[0])
+        _ = try git(["add", "module-0"], cwd: foreignOversized.repository)
+        _ = try git(["commit", "-m", "pin large submodule"], cwd: foreignOversized.repository)
+        do {
+            _ = try await GitWorkspaceSnapshotPreparer(maximumBundleBytes: 128).prepare(from: foreignOversized.repository)
+            XCTFail("expected foreign object oversize rejection")
+        } catch let error as WorkspaceSnapshotError {
+            XCTAssertEqual(error, .bundleTooLarge(limit: 128))
+        }
+
         let gitlink = try repository(); defer { try? FileManager.default.removeItem(at: gitlink.root) }
-        let head = try git(["rev-parse", "HEAD"], cwd: gitlink.repository)
-        _ = try git(["update-index", "--add", "--cacheinfo", "160000,\(head),submodule"], cwd: gitlink.repository)
-        await assertSnapshotCase(at: gitlink.repository) { if case .gitlink = $0 { return true }; return false }
+        let missing = String(repeating: "a", count: 40)
+        _ = try git(["update-index", "--add", "--cacheinfo", "160000,\(missing),submodule"], cwd: gitlink.repository)
+        await assertSnapshotCase(at: gitlink.repository) {
+            $0 == .submoduleUnavailable(path: "submodule", commitOID: missing)
+        }
+    }
+
+    func testSnapshotBundlesInitializedPinnedSubmodulesOfflineAndDeterministically() async throws {
+        let fixture = try repositoryWithSubmodules(count: 2)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let parentBefore = try state(fixture.repository)
+        let submoduleHeads = try fixture.submodules.map { try git(["rev-parse", "HEAD"], cwd: $0) }
+        let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: fixture.repository)
+
+        XCTAssertEqual(snapshot.manifest.schemaVersion, 2)
+        XCTAssertEqual(snapshot.manifest.submodules.map(\.path), ["module-0", "module-1"])
+        XCTAssertEqual(snapshot.manifest.submodules.map(\.commitOID), fixture.commits)
+        XCTAssertEqual(try state(fixture.repository), parentBefore)
+        XCTAssertEqual(try fixture.submodules.map { try git(["rev-parse", "HEAD"], cwd: $0) }, submoduleHeads)
+        let headsRoot = fixture.root.appendingPathComponent("heads", isDirectory: true).creatingDirectory()
+        let bundle = headsRoot.appendingPathComponent("snapshot.bundle")
+        try snapshot.bundle.write(to: bundle)
+        let advertised = try git(["bundle", "list-heads", bundle.path], cwd: headsRoot)
+        for submodule in snapshot.manifest.submodules {
+            XCTAssertTrue(advertised.contains("\(submodule.commitOID) \(submodule.bundleRef)"))
+        }
+
+        let materialized = try materialize(snapshot, under: fixture.root.appendingPathComponent("offline", isDirectory: true).creatingDirectory())
+        for index in 0..<2 {
+            let submodule = materialized.appendingPathComponent("module-\(index)", isDirectory: true)
+            XCTAssertEqual(try String(contentsOf: submodule.appendingPathComponent("module.txt"), encoding: .utf8), "submodule \(index) pinned\n")
+            XCTAssertEqual(try git(["rev-parse", "HEAD"], cwd: submodule), fixture.commits[index])
+            XCTAssertEqual(try git(["rev-parse", "--abbrev-ref", "HEAD"], cwd: submodule), "HEAD")
+        }
+
+        let refsBeforeFailure = try git(["for-each-ref", "--format=%(refname) %(objectname)"], cwd: fixture.repository)
+        do {
+            _ = try await GitWorkspaceSnapshotPreparer(runner: BundleFailureRunner()).prepare(from: fixture.repository)
+            XCTFail("expected submodule bundle failure")
+        } catch let error as WorkspaceSnapshotError {
+            guard case .gitFailed = error else { return XCTFail("unexpected error \(error)") }
+        }
+        XCTAssertEqual(try git(["for-each-ref", "--format=%(refname) %(objectname)"], cwd: fixture.repository), refsBeforeFailure)
+
+        _ = try git(["submodule", "deinit", "-f", "module-0"], cwd: fixture.repository)
+        await assertSnapshotCase(at: fixture.repository) {
+            $0 == .submoduleUnavailable(path: "module-0", commitOID: fixture.commits[0])
+        }
     }
 
     private func restoreEnvironment(_ name: String, to value: String?) {
@@ -290,6 +395,19 @@ final class RemoteWorkspaceTests: XCTestCase {
         }
         let missingCommands = await missing.recorded()
         XCTAssertTrue(missingCommands.isEmpty)
+
+        var gitlinkSnapshot = snapshot
+        gitlinkSnapshot.manifest.schemaVersion = 2
+        gitlinkSnapshot.manifest.submodules = [WorkspaceSnapshotSubmodule(path: "module", commitOID: String(repeating: "d", count: 40), bundleRef: "refs/workjet/submodules/test/0")]
+        let insufficient = CapturingRunner(response: CommandResult(exitCode: 0, standardOutput: line))
+        do {
+            _ = try await RemoteHostClient(computer: computer, runner: insufficient).importWorkspace(gitlinkSnapshot, verifiedCapabilities: ["workspace-git-v1"])
+            XCTFail("expected gitlink capability rejection")
+        } catch let error as RemoteHostProtocolError {
+            XCTAssertEqual(error, .missingCapability("workspace-gitlinks-v1"))
+        }
+        let insufficientCommands = await insufficient.recorded()
+        XCTAssertTrue(insufficientCommands.isEmpty)
     }
 
     func testGeneratedHostImportsBundleCreatesDistinctHarnessWorktreesAndRejectsTampering() async throws {
@@ -383,6 +501,74 @@ final class RemoteWorkspaceTests: XCTestCase {
         XCTAssertFalse(source.contains("git pull"))
         XCTAssertFalse(source.contains("remote fetch"))
         XCTAssertTrue(source.contains("GIT_TERMINAL_PROMPT: \"0\""))
+    }
+
+    func testRemoteHostMaterializesPinnedSubmodulesOfflineCapturesParentEditRejectsSubmoduleMutationAndCleansUp() async throws {
+        let fixture = try repositoryWithSubmodules(count: 2)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let snapshot = try await GitWorkspaceSnapshotPreparer().prepare(from: fixture.repository)
+        let identity = try await GitRepositoryInspector().inspect(root: fixture.repository, expectedRepoID: snapshot.manifest.repoID)
+        let home = fixture.root.appendingPathComponent("host-home").creatingDirectory()
+        let release = fixture.root.appendingPathComponent(String(repeating: "6", count: 64)).creatingDirectory()
+        let host = release.appendingPathComponent("workjet-host.mjs")
+        try Data(RemotePiBootstrap.hostRuntimeSource.utf8).write(to: host)
+        let bin = home.appendingPathComponent(".local/lib/workjet/harnesses/npm/bin").creatingDirectory()
+        let claude = bin.appendingPathComponent("claude")
+        let makeExecutable: (String) throws -> Void = { body in
+            try Data(body.utf8).write(to: claude)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: claude.path)
+            _ = try self.commandData("/usr/bin/xattr", ["-c", claude.path])
+        }
+        try makeExecutable("#!/bin/sh\ncat module-0/module.txt module-1/module.txt > observed-submodules.txt\nprintf 'remote parent edit\\n' > tracked.txt\n")
+
+        let probe = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .probe))
+        XCTAssertTrue(probe.capabilities.contains("workspace-gitlinks-v1"))
+        XCTAssertTrue(try hostImport(host: host, home: home, bin: bin, snapshot: snapshot).ok)
+        let ownerID = "workjet-worker-00000000-0000-0000-0000-000000000666"
+        let route = RemoteProviderExecution(displayName: "Offline", candidates: [
+            RemoteProviderExecutionCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Offline", endpoint: "https://example.invalid/", authentication: .none, secret: nil)
+        ])
+        let launch = RemoteHarnessLaunch(harnessID: "claude-code", model: "test", reasoning: nil, sandbox: false, input: Data("edit parent".utf8), allowedTools: ["Read", "Write", "Edit", "Grep", "Glob", "Bash"], workspace: snapshot.manifest.descriptor)
+        let started = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, ownerID: ownerID, providerExecution: route))
+        let runID = try XCTUnwrap(started.runID, started.error ?? "start failed")
+        XCTAssertTrue(try waitForTerminal(host: host, home: home, bin: bin, runID: runID).state.isTerminal)
+        let worktree = home.appendingPathComponent(".local/state/workjet/host/worktrees/\(runID)")
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("observed-submodules.txt"), encoding: .utf8), "submodule 0 pinned\nsubmodule 1 pinned\n")
+        for index in 0..<2 {
+            let submodule = worktree.appendingPathComponent("module-\(index)", isDirectory: true)
+            XCTAssertEqual(try git(["rev-parse", "HEAD"], cwd: submodule), fixture.commits[index])
+            XCTAssertTrue(FileManager.default.fileExists(atPath: submodule.appendingPathComponent(".git").path))
+            XCTAssertFalse((try git(["remote"], cwd: submodule)).contains("origin"), "Workjet-owned nested checkout must not retain the caller origin")
+        }
+
+        let request = RemoteWorkspaceResultRequest(runID: runID, ownerID: ownerID, repoID: snapshot.manifest.repoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID)
+        let result = try hostResult(host: host, home: home, bin: bin, request: request)
+        let paths = WorkjetPaths(homeDirectory: fixture.root, stateDirectory: fixture.root.appendingPathComponent("local-state"))
+        let record = RemoteWorkspaceRunRecord(runID: runID, sourceRepositoryRoot: fixture.repository.path, computerID: UUID(), ownerID: ownerID, repoID: snapshot.manifest.repoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID, repositoryIdentity: identity)
+        let imported = try await LocalWorkspaceResultImporter().importResult(result, for: record, temporaryRoot: paths.remoteWorkspaceImportsDirectory)
+        XCTAssertEqual(try git(["show", "\(imported.resultRef):tracked.txt"], cwd: fixture.repository), "remote parent edit")
+        XCTAssertEqual(try git(["ls-tree", imported.resultRef, "module-0"], cwd: fixture.repository), "160000 commit \(fixture.commits[0])\tmodule-0")
+        _ = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .workspaceFinalize, runID: runID, ownerID: ownerID, workspaceDisposition: .integrated))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: worktree.path))
+
+        let previousSubmoduleOID = try git(["rev-parse", "HEAD^"], cwd: fixture.submodules[0])
+        let mutations = [
+            ("content", "#!/bin/sh\nprintf 'changed\\n' > module-0/module.txt\n"),
+            ("head", "#!/bin/sh\n/usr/bin/git -C module-0 checkout --detach HEAD^ >/dev/null 2>&1\n"),
+            ("gitlink", "#!/bin/sh\n/usr/bin/git update-index --cacheinfo 160000,\(previousSubmoduleOID),module-0\n")
+        ]
+        for (mutationIndex, mutation) in mutations.enumerated() {
+            let (suffix, script) = mutation
+            try makeExecutable(script)
+            let mutationOwner = "workjet-worker-00000000-0000-0000-0000-00000000066\(7 + mutationIndex)"
+            let mutationStart = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .start, launch: launch, ownerID: mutationOwner, providerExecution: route))
+            let mutationRunID = try XCTUnwrap(mutationStart.runID, mutationStart.error ?? "mutation start failed")
+            XCTAssertTrue(try waitForTerminal(host: host, home: home, bin: bin, runID: mutationRunID).state.isTerminal)
+            let mutationRequest = RemoteWorkspaceResultRequest(runID: mutationRunID, ownerID: mutationOwner, repoID: snapshot.manifest.repoID, snapshotCommitOID: snapshot.manifest.snapshotCommitOID)
+            XCTAssertEqual(try hostResultFailure(host: host, home: home, bin: bin, request: mutationRequest), "workspace_result_submodule_changed", suffix)
+            _ = try hostCall(host: host, home: home, bin: bin, request: RemoteHostRequest(operation: .workspaceFinalize, runID: mutationRunID, ownerID: mutationOwner, workspaceDisposition: .abandoned))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent(".local/state/workjet/host/worktrees/\(mutationRunID)").path))
+        }
     }
 
     func testHostCachesUnsafeSnapshotButRejectsItBeforeCreatingWorktree() throws {

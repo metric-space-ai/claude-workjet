@@ -12,19 +12,57 @@ public struct RemoteWorkspaceDescriptor: Codable, Equatable, Sendable {
     }
 }
 
+public struct WorkspaceSnapshotSubmodule: Codable, Equatable, Sendable {
+    public var path: String
+    public var commitOID: String
+    public var bundleRef: String
+
+    public init(path: String, commitOID: String, bundleRef: String) {
+        self.path = path
+        self.commitOID = commitOID
+        self.bundleRef = bundleRef
+    }
+}
+
 public struct WorkspaceSnapshotManifest: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var repoID: String
     public var snapshotCommitOID: String
     public var bundleSHA256: String
     public var byteSize: Int
+    public var submodules: [WorkspaceSnapshotSubmodule]
 
-    public init(schemaVersion: Int = 1, repoID: String, snapshotCommitOID: String, bundleSHA256: String, byteSize: Int) {
+    public init(schemaVersion: Int = 1, repoID: String, snapshotCommitOID: String, bundleSHA256: String, byteSize: Int, submodules: [WorkspaceSnapshotSubmodule] = []) {
         self.schemaVersion = schemaVersion
         self.repoID = repoID
         self.snapshotCommitOID = snapshotCommitOID
         self.bundleSHA256 = bundleSHA256
         self.byteSize = byteSize
+        self.submodules = submodules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, repoID, snapshotCommitOID, bundleSHA256, byteSize, submodules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
+        repoID = try values.decode(String.self, forKey: .repoID)
+        snapshotCommitOID = try values.decode(String.self, forKey: .snapshotCommitOID)
+        bundleSHA256 = try values.decode(String.self, forKey: .bundleSHA256)
+        byteSize = try values.decode(Int.self, forKey: .byteSize)
+        submodules = try values.decodeIfPresent([WorkspaceSnapshotSubmodule].self, forKey: .submodules) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(repoID, forKey: .repoID)
+        try values.encode(snapshotCommitOID, forKey: .snapshotCommitOID)
+        try values.encode(bundleSHA256, forKey: .bundleSHA256)
+        try values.encode(byteSize, forKey: .byteSize)
+        if !submodules.isEmpty { try values.encode(submodules, forKey: .submodules) }
     }
 
     public var descriptor: RemoteWorkspaceDescriptor {
@@ -55,6 +93,9 @@ public enum WorkspaceSnapshotError: LocalizedError, Equatable, Sendable {
     case unsafePath(String)
     case nestedRepository(String)
     case gitlink(String)
+    case submoduleUnavailable(path: String, commitOID: String)
+    case submoduleModified(String)
+    case recursiveSubmodule(String)
     case lfsManaged(String)
     case symlink(String)
     case gitUnavailable
@@ -70,8 +111,11 @@ public enum WorkspaceSnapshotError: LocalizedError, Equatable, Sendable {
         case .unbornRepository: return "Das Git-Repository braucht mindestens einen Commit."
         case .unsafeRepositoryPath: return "Das Git-Repository liegt an einem unsicheren Dateisystempfad."
         case .unsafePath: return "Das Git-Repository enthält einen unsicheren Pfad."
-        case .nestedRepository: return "Verschachtelte Git-Repositories werden noch nicht unterstützt."
-        case .gitlink: return "Submodule und Gitlinks werden noch nicht unterstützt."
+        case .nestedRepository: return "Nicht deklarierte verschachtelte Git-Repositories werden nicht unterstützt."
+        case .gitlink: return "Dieser Gitlink kann nicht sicher als initialisiertes Submodule übernommen werden."
+        case let .submoduleUnavailable(path, commitOID): return "Das Submodule \(path) ist nicht initialisiert oder der angeheftete Commit \(commitOID) fehlt lokal. Initialisiere es ohne den Commit zu ändern und versuche es erneut."
+        case let .submoduleModified(path): return "Das Submodule \(path) enthält Änderungen oder ist nicht am angehefteten Commit ausgecheckt. Stelle einen sauberen Zustand her und versuche es erneut."
+        case let .recursiveSubmodule(path): return "Rekursive Submodule werden noch nicht unterstützt (\(path))."
         case .lfsManaged: return "Git-LFS-Inhalte werden für Remote-Workspaces noch nicht unterstützt."
         case .symlink: return "Symlinks werden für Remote-Workspaces aus Sicherheitsgründen nicht übernommen."
         case .gitUnavailable: return "Git ist auf diesem Mac nicht verfügbar."
@@ -88,9 +132,15 @@ public protocol WorkspaceSnapshotPreparing: Sendable {
 
 /// Creates a commit and bundle from the caller's current Git worktree without
 /// touching its branch, HEAD, primary index, stash, files, or durable refs.
-/// V1 deliberately caps a bundle at 64 MiB.
+/// Every snapshot schema deliberately caps the complete bundle at 64 MiB.
 public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable {
     public static let maximumBundleBytes = 64 * 1_024 * 1_024
+
+    private struct Gitlink: Equatable, Sendable {
+        var path: String
+        var commitOID: String
+        var repository: URL
+    }
 
     private let runner: any CommandRunning
     private let gitExecutable: String
@@ -128,10 +178,11 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
         let headOID = text(headResult.standardOutput)
         guard Self.validOID(headOID) else { throw WorkspaceSnapshotError.unbornRepository }
 
-        try rejectNestedRepositories(in: root)
+        let trackedGitlinks = try await gitlinks(root: root, environment: nil)
+        let submodules = try await validateSubmodules(trackedGitlinks, root: root)
+        try rejectNestedRepositories(in: root, allowedRepositories: Set(submodules.map(\.path)))
         let paths = try await repositoryPaths(root: root)
         try validatePaths(paths, root: root)
-        try await rejectGitlinks(root: root, environment: nil)
         try await rejectLFS(paths: paths, root: root)
 
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("workjet-workspace-\(UUID().uuidString)", isDirectory: true)
@@ -150,20 +201,33 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
         environment["GIT_AUTHOR_DATE"] = "@\(text(timestamp.standardOutput)) +0000"
         environment["GIT_COMMITTER_DATE"] = "@\(text(timestamp.standardOutput)) +0000"
 
-        var refCreated = false
+        var createdRefs: [(ref: String, oid: String)] = []
         do {
             _ = try await git(["read-tree", headOID], cwd: root.path, environment: environment)
             _ = try await git(["add", "-A", "--", "."], cwd: root.path, environment: environment, timeout: 120)
-            try await rejectGitlinks(root: root, environment: environment)
+            let stagedGitlinks = try await gitlinks(root: root, environment: environment)
+            guard Dictionary(uniqueKeysWithValues: stagedGitlinks.map { ($0.path, $0.commitOID) })
+                    == Dictionary(uniqueKeysWithValues: submodules.map { ($0.path, $0.commitOID) }) else {
+                throw WorkspaceSnapshotError.gitlink("staged gitlink changed")
+            }
             let tree = text(try await git(["write-tree"], cwd: root.path, environment: environment).standardOutput)
             guard Self.validOID(tree) else { throw WorkspaceSnapshotError.gitFailed("invalid tree") }
             let commit = text(try await git(["commit-tree", tree, "-p", headOID], cwd: root.path, environment: environment, input: Data("Workjet immutable workspace snapshot\n".utf8)).standardOutput)
             guard Self.validOID(commit) else { throw WorkspaceSnapshotError.gitFailed("invalid commit") }
             _ = try await git(["update-ref", temporaryRef, commit, String(repeating: "0", count: commit.count)], cwd: root.path, environment: environment)
-            refCreated = true
-            _ = try await git(["bundle", "create", bundleURL.path, temporaryRef], cwd: root.path, environment: environment, timeout: 180)
-            try await removeTemporaryRef(temporaryRef, root: root, oid: commit)
-            refCreated = false
+            createdRefs.append((temporaryRef, commit))
+
+            let namespace = UUID().uuidString.lowercased()
+            var manifestSubmodules: [WorkspaceSnapshotSubmodule] = []
+            for (index, submodule) in submodules.enumerated() {
+                let bundleRef = "refs/workjet/submodules/\(namespace)/\(index)"
+                _ = try await git(["fetch", "--no-write-fetch-head", "--no-tags", "--no-recurse-submodules", submodule.repository.path, "\(submodule.commitOID):\(bundleRef)"], cwd: root.path, environment: environment, timeout: 120)
+                createdRefs.append((bundleRef, submodule.commitOID))
+                manifestSubmodules.append(WorkspaceSnapshotSubmodule(path: submodule.path, commitOID: submodule.commitOID, bundleRef: bundleRef))
+            }
+            _ = try await git(["bundle", "create", bundleURL.path] + createdRefs.map(\.ref), cwd: root.path, environment: environment, timeout: 180)
+            for created in createdRefs.reversed() { try await removeTemporaryRef(created.ref, root: root, oid: created.oid) }
+            createdRefs.removeAll()
 
             let attributes = try FileManager.default.attributesOfItem(atPath: bundleURL.path)
             guard let number = attributes[.size] as? NSNumber else { throw WorkspaceSnapshotError.malformedBundle }
@@ -177,12 +241,12 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
             guard !roots.isEmpty else { throw WorkspaceSnapshotError.unbornRepository }
             let repoID = Self.sha256(Data(("workjet-repo-v1\0" + roots).utf8))
             return WorkspaceSnapshot(
-                manifest: WorkspaceSnapshotManifest(repoID: repoID, snapshotCommitOID: commit, bundleSHA256: Self.sha256(bundle), byteSize: byteSize),
+                manifest: WorkspaceSnapshotManifest(schemaVersion: manifestSubmodules.isEmpty ? 1 : 2, repoID: repoID, snapshotCommitOID: commit, bundleSHA256: Self.sha256(bundle), byteSize: byteSize, submodules: manifestSubmodules),
                 bundle: bundle,
                 sourceRepositoryRoot: root
             )
         } catch {
-            if refCreated { try? await removeTemporaryRef(temporaryRef, root: root, oid: nil) }
+            for created in createdRefs.reversed() { try? await removeTemporaryRef(created.ref, root: root, oid: nil) }
             throw error
         }
     }
@@ -207,7 +271,7 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
         }
     }
 
-    private func rejectNestedRepositories(in root: URL) throws {
+    private func rejectNestedRepositories(in root: URL, allowedRepositories: Set<String>) throws {
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey], options: []) else {
             throw WorkspaceSnapshotError.unsafeRepositoryPath
         }
@@ -215,6 +279,8 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
             if item.lastPathComponent == ".git" {
                 let parent = item.deletingLastPathComponent().resolvingSymlinksInPath().standardizedFileURL
                 if parent == root { enumerator.skipDescendants(); continue }
+                let relative = parent.path.hasPrefix(root.path + "/") ? String(parent.path.dropFirst(root.path.count + 1)) : ""
+                if allowedRepositories.contains(relative) { enumerator.skipDescendants(); continue }
                 throw WorkspaceSnapshotError.nestedRepository(item.path)
             }
             let values = try item.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -222,15 +288,54 @@ public struct GitWorkspaceSnapshotPreparer: WorkspaceSnapshotPreparing, Sendable
         }
     }
 
-    private func rejectGitlinks(root: URL, environment: [String: String]?) async throws {
+    private func gitlinks(root: URL, environment: [String: String]?) async throws -> [Gitlink] {
         let result = try await git(["ls-files", "--stage", "-z"], cwd: root.path, environment: environment, stdoutLimit: 16 * 1_024 * 1_024)
+        var links: [Gitlink] = []
         for entry in result.standardOutput.split(separator: 0) {
             let value = String(decoding: entry, as: UTF8.self)
-            if value.hasPrefix("160000 ") {
-                let path = value.split(separator: "\t", maxSplits: 1).last.map(String.init) ?? "gitlink"
+            guard value.hasPrefix("160000 ") else { continue }
+            let fields = value.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2 else { throw WorkspaceSnapshotError.gitlink("malformed gitlink") }
+            let metadata = fields[0].split(separator: " ")
+            let path = String(fields[1])
+            guard metadata.count == 3, metadata[0] == "160000", metadata[2] == "0", Self.validOID(String(metadata[1])) else {
                 throw WorkspaceSnapshotError.gitlink(path)
             }
+            let components = path.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 1, !path.isEmpty, !path.hasPrefix("/"), !path.contains("\0"),
+                  !path.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }),
+                  !components.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else {
+                throw WorkspaceSnapshotError.gitlink(path)
+            }
+            links.append(Gitlink(path: path, commitOID: String(metadata[1]), repository: root.appendingPathComponent(path, isDirectory: true).standardizedFileURL))
         }
+        return links.sorted { $0.path < $1.path }
+    }
+
+    private func validateSubmodules(_ links: [Gitlink], root: URL) async throws -> [Gitlink] {
+        guard links.count <= 256 else { throw WorkspaceSnapshotError.gitlink("too many top-level submodules") }
+        for link in links {
+            let repository = link.repository.resolvingSymlinksInPath().standardizedFileURL
+            guard repository.path == root.appendingPathComponent(link.path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL.path,
+                  repository.path.hasPrefix(root.path + "/"), isDirectory(repository) else {
+                throw WorkspaceSnapshotError.submoduleUnavailable(path: link.path, commitOID: link.commitOID)
+            }
+            let top = try await gitRaw(["rev-parse", "--show-toplevel"], cwd: repository.path, allowFailure: true)
+            let head = try await gitRaw(["rev-parse", "--verify", "HEAD^{commit}"], cwd: repository.path, allowFailure: true)
+            let pinned = try await gitRaw(["cat-file", "-e", "\(link.commitOID)^{commit}"], cwd: repository.path, allowFailure: true)
+            guard top.exitCode == 0, URL(fileURLWithPath: text(top.standardOutput), isDirectory: true).resolvingSymlinksInPath().standardizedFileURL == repository,
+                  head.exitCode == 0, text(head.standardOutput) == link.commitOID, pinned.exitCode == 0 else {
+                throw WorkspaceSnapshotError.submoduleUnavailable(path: link.path, commitOID: link.commitOID)
+            }
+            let status = try await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd: repository.path, environment: nil, stdoutLimit: 16 * 1_024 * 1_024)
+            guard status.standardOutput.isEmpty else { throw WorkspaceSnapshotError.submoduleModified(link.path) }
+            let nested = try await gitlinks(root: repository, environment: nil)
+            guard nested.isEmpty else { throw WorkspaceSnapshotError.recursiveSubmodule(link.path + "/" + nested[0].path) }
+            let paths = try await repositoryPaths(root: repository)
+            try validatePaths(paths, root: repository)
+            try await rejectLFS(paths: paths, root: repository)
+        }
+        return links
     }
 
     private func rejectLFS(paths: [String], root: URL) async throws {
@@ -447,6 +552,7 @@ public enum WorkspaceResultError: LocalizedError, Equatable, Sendable {
     case runNotTerminal
     case integratedBeforeImport
     case dispositionConflict
+    case submoduleChanged(String)
     case localPersistenceAfterRemoteCleanup
 
     public var errorDescription: String? {
@@ -466,6 +572,7 @@ public enum WorkspaceResultError: LocalizedError, Equatable, Sendable {
         case .runNotTerminal: return "Der Remote-Run ist noch nicht terminal."
         case .integratedBeforeImport: return "Ein Run kann erst nach einem verifizierten Ergebnis-Import als integriert markiert werden."
         case .dispositionConflict: return "Der Run wurde bereits mit einer anderen Lifecycle-Markierung abgeschlossen."
+        case let .submoduleChanged(path): return "Das angeheftete Submodule \(path) wurde im Worker-Workspace verändert. Submodule sind schreibgeschützt; das Ergebnis wurde verworfen."
         case .localPersistenceAfterRemoteCleanup: return "Der Remote-Workspace wurde bereinigt, aber die lokale Lifecycle-Markierung konnte nicht gespeichert werden. Wiederhole den Befehl."
         }
     }

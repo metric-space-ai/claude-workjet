@@ -3117,7 +3117,7 @@ public struct LocalRunService: Sendable {
                 finalExitCode = 1
                 finalState = "error"
                 sequence += 1
-                try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "result-error", text: "local workspace result could not be published", exitCode: finalExitCode), directory: directory)
+                try appendEvent(RemoteHostEvent(sequence: sequence, timestamp: ISO8601DateFormatter().string(from: Date()), kind: "result-error", text: error.localizedDescription, exitCode: finalExitCode), directory: directory)
             }
         }
         sequence += 1
@@ -3128,9 +3128,17 @@ public struct LocalRunService: Sendable {
 
     private func materializeWorkspace(_ context: LocalWorkspaceContext, runID: String, runDirectory: URL) throws -> URL {
         let snapshot = context.snapshot
+        let submodulePaths = snapshot.manifest.submodules.map(\.path)
+        let submoduleRefs = snapshot.manifest.submodules.map(\.bundleRef)
         guard let sourceRoot = snapshot.sourceRepositoryRoot,
+              snapshot.manifest.schemaVersion == (snapshot.manifest.submodules.isEmpty ? 1 : 2),
+              snapshot.manifest.submodules.count <= 256,
+              Set(submodulePaths).count == submodulePaths.count,
+              Set(submoduleRefs).count == submoduleRefs.count,
               GitRepositoryInspector.validDigest(snapshot.manifest.repoID),
               GitRepositoryInspector.validOID(snapshot.manifest.snapshotCommitOID),
+              snapshot.manifest.byteSize > 0,
+              snapshot.manifest.byteSize <= GitWorkspaceSnapshotPreparer.maximumBundleBytes,
               snapshot.bundle.count == snapshot.manifest.byteSize,
               GitRepositoryInspector.sha256(snapshot.bundle) == snapshot.manifest.bundleSHA256 else {
             throw WorkspaceResultError.resultMismatch
@@ -3152,15 +3160,38 @@ public struct LocalRunService: Sendable {
         let bundle = runDirectory.appendingPathComponent("snapshot.bundle")
         try AtomicFile.write(snapshot.bundle, to: bundle, directoryMode: 0o700, fileMode: 0o600)
         let heads = try runGit(["bundle", "list-heads", bundle.path], cwd: sourceRoot)
-        let advertisedRef = heads.split(whereSeparator: \Character.isNewline).compactMap { line -> String? in
+        let advertisedHeads = Dictionary(uniqueKeysWithValues: heads.split(whereSeparator: \Character.isNewline).compactMap { line -> (String, String)? in
             let fields = line.split(separator: " ", maxSplits: 1).map(String.init)
-            return fields.count == 2 && fields[0] == snapshot.manifest.snapshotCommitOID ? fields[1] : nil
-        }.first
-        guard let advertisedRef, advertisedRef.hasPrefix("refs/workjet/input-") else { throw WorkspaceResultError.resultMismatch }
+            return fields.count == 2 ? (fields[1], fields[0]) : nil
+        })
+        guard let advertisedRef = advertisedHeads.first(where: { $0.value == snapshot.manifest.snapshotCommitOID && $0.key.hasPrefix("refs/workjet/input-") })?.key else {
+            throw WorkspaceResultError.resultMismatch
+        }
+        guard snapshot.manifest.submodules.allSatisfy({ submodule in
+            advertisedHeads[submodule.bundleRef] == submodule.commitOID
+                && safeTopLevelGitlinkPath(submodule.path)
+                && GitRepositoryInspector.validOID(submodule.commitOID)
+                && submodule.bundleRef.hasPrefix("refs/workjet/submodules/")
+        }) else { throw WorkspaceResultError.resultMismatch }
         let snapshotRef = "refs/workjet/snapshots/\(runID)"
-        _ = try runGit(["--git-dir=\(repository.path)", "fetch", "--no-tags", bundle.path, "\(advertisedRef):\(snapshotRef)"], cwd: paths.stateDirectory)
+        var fetchArguments = ["--git-dir=\(repository.path)", "fetch", "--no-tags", bundle.path, "\(advertisedRef):\(snapshotRef)"]
+        for (index, submodule) in snapshot.manifest.submodules.enumerated() {
+            fetchArguments.append("\(submodule.bundleRef):refs/workjet/submodules/\(runID)/\(index)")
+        }
+        _ = try runGit(fetchArguments, cwd: paths.stateDirectory)
+        let expectedGitlinks = Dictionary(uniqueKeysWithValues: snapshot.manifest.submodules.map { ($0.path, $0.commitOID) })
+        guard try snapshotGitlinks(repository: repository, commitOID: snapshot.manifest.snapshotCommitOID) == expectedGitlinks else {
+            throw WorkspaceResultError.resultMismatch
+        }
         _ = try runGit(["--git-dir=\(repository.path)", "worktree", "add", "--detach", worktree.path, snapshot.manifest.snapshotCommitOID], cwd: paths.stateDirectory)
         try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+        do {
+            try materializePinnedSubmodules(expectedGitlinks, repository: repository, worktree: worktree)
+        } catch {
+            try? removePinnedSubmodules(expectedGitlinks, repository: repository, worktree: worktree)
+            _ = try? runGit(["--git-dir=\(repository.path)", "worktree", "remove", "--force", worktree.path], cwd: paths.stateDirectory)
+            throw error
+        }
         try? FileManager.default.removeItem(at: bundle)
 
         let record = RemoteWorkspaceRunRecord(
@@ -3190,9 +3221,14 @@ public struct LocalRunService: Sendable {
         guard worktree == repoWorktrees.appendingPathComponent(runID, isDirectory: true).standardizedFileURL else { throw WorkspaceResultError.repositoryUnsafe }
         try requireOwnedDirectory(repository, beneath: paths.localWorkspaceRepositoriesDirectory)
         try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+        let expectedGitlinks = try snapshotGitlinks(repository: repository, commitOID: snapshotOID)
+        let currentIndexGitlinks = try stagedGitlinks(runGit(["ls-files", "--stage", "-z"], cwd: worktree))
+        guard currentIndexGitlinks == expectedGitlinks else { throw WorkspaceResultError.submoduleChanged("gitlink") }
+        try validatePinnedSubmodules(expectedGitlinks, repository: repository, worktree: worktree)
         _ = try runGit(["add", "-A", "--", "."], cwd: worktree)
-        let staged = try runGit(["ls-files", "--stage"], cwd: worktree)
-        guard !staged.split(whereSeparator: \Character.isNewline).contains(where: { $0.hasPrefix("120000 ") || $0.hasPrefix("160000 ") }) else {
+        let staged = try runGit(["ls-files", "--stage", "-z"], cwd: worktree)
+        guard try stagedGitlinks(staged) == expectedGitlinks,
+              !staged.split(separator: "\0").contains(where: { $0.hasPrefix("120000 ") }) else {
             throw WorkspaceResultError.repositoryUnsafe
         }
         let tree = try runGit(["write-tree"], cwd: worktree).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3228,8 +3264,106 @@ public struct LocalRunService: Sendable {
         try requireOwnedDirectory(repoWorktrees, beneath: paths.localWorktreesDirectory)
         if FileManager.default.fileExists(atPath: worktree.path) {
             try requireOwnedDirectory(worktree, beneath: repoWorktrees)
+            let gitlinks = try snapshotGitlinks(repository: repository, commitOID: record.snapshotCommitOID)
+            try removePinnedSubmodules(gitlinks, repository: repository, worktree: worktree)
             _ = try runGit(["--git-dir=\(repository.path)", "worktree", "remove", "--force", worktree.path], cwd: paths.stateDirectory)
             guard !FileManager.default.fileExists(atPath: worktree.path) else { throw WorkspaceResultError.repositoryUnsafe }
+        }
+    }
+
+    private func safeTopLevelGitlinkPath(_ value: String) -> Bool {
+        !value.isEmpty && !value.hasPrefix("/") && !value.contains("\0") && !value.contains("/")
+            && value != "." && value != ".."
+            && !value.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f })
+    }
+
+    private func snapshotGitlinks(repository: URL, commitOID: String) throws -> [String: String] {
+        let listing = try runGit(["--git-dir=\(repository.path)", "ls-tree", "-r", "-z", "--full-tree", commitOID], cwd: paths.stateDirectory)
+        var result: [String: String] = [:]
+        for entry in listing.split(separator: "\0") {
+            let fields = entry.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            guard fields.count == 2 else { throw WorkspaceResultError.repositoryUnsafe }
+            let metadata = fields[0].split(separator: " ")
+            guard metadata.count == 3 else { throw WorkspaceResultError.repositoryUnsafe }
+            if metadata[0] == "160000" {
+                let path = String(fields[1]), oid = String(metadata[2])
+                guard metadata[1] == "commit", safeTopLevelGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
+                    throw WorkspaceResultError.repositoryUnsafe
+                }
+                result[path] = oid
+            } else if metadata[0] == "120000" {
+                throw WorkspaceResultError.repositoryUnsafe
+            }
+        }
+        return result
+    }
+
+    private func stagedGitlinks(_ listing: String) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for entry in listing.split(separator: "\0") where entry.hasPrefix("160000 ") {
+            let fields = entry.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let metadata = fields.first?.split(separator: " ") ?? []
+            guard fields.count == 2, metadata.count == 3, metadata[0] == "160000", metadata[2] == "0" else {
+                throw WorkspaceResultError.repositoryUnsafe
+            }
+            let path = String(fields[1]), oid = String(metadata[1])
+            guard safeTopLevelGitlinkPath(path), GitRepositoryInspector.validOID(oid), result[path] == nil else {
+                throw WorkspaceResultError.repositoryUnsafe
+            }
+            result[path] = oid
+        }
+        return result
+    }
+
+    private func materializePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
+        for path in gitlinks.keys.sorted() {
+            guard let oid = gitlinks[path], safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            let destination = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
+            guard destination.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            if FileManager.default.fileExists(atPath: destination.path) {
+                let contents = try FileManager.default.contentsOfDirectory(atPath: destination.path)
+                guard contents.isEmpty else { throw WorkspaceResultError.repositoryUnsafe }
+                try FileManager.default.removeItem(at: destination)
+            }
+            _ = try runGit(["--git-dir=\(repository.path)", "worktree", "add", "--detach", destination.path, oid], cwd: paths.stateDirectory)
+            try requireOwnedDirectory(destination, beneath: worktree)
+            let head = try runGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd: destination).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard head == oid else { throw WorkspaceResultError.repositoryUnsafe }
+        }
+    }
+
+    private func validatePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
+        for path in gitlinks.keys.sorted() {
+            guard let oid = gitlinks[path], safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            let submodule = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
+            guard submodule.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            try requireOwnedDirectory(submodule, beneath: worktree)
+            var gitFileInfo = stat()
+            guard lstat(submodule.appendingPathComponent(".git").path, &gitFileInfo) == 0,
+                  (gitFileInfo.st_mode & S_IFMT) == S_IFREG, gitFileInfo.st_uid == geteuid() else {
+                throw WorkspaceResultError.submoduleChanged(path)
+            }
+            let gitDirectoryText = try runGit(["rev-parse", "--absolute-git-dir"], cwd: submodule).trimmingCharacters(in: .whitespacesAndNewlines)
+            let gitDirectory = URL(fileURLWithPath: gitDirectoryText, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
+            let worktreeMetadataRoot = repository.appendingPathComponent("worktrees", isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
+            guard gitDirectory.path.hasPrefix(worktreeMetadataRoot.path + "/") else { throw WorkspaceResultError.submoduleChanged(path) }
+            try requireOwnedDirectory(gitDirectory, beneath: worktreeMetadataRoot)
+            let head = try runGit(["rev-parse", "--verify", "HEAD^{commit}"], cwd: submodule).trimmingCharacters(in: .whitespacesAndNewlines)
+            let status = try runGit(["status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd: submodule)
+            guard head == oid, status.isEmpty else { throw WorkspaceResultError.submoduleChanged(path) }
+        }
+    }
+
+    private func removePinnedSubmodules(_ gitlinks: [String: String], repository: URL, worktree: URL) throws {
+        for path in gitlinks.keys.sorted().reversed() {
+            guard safeTopLevelGitlinkPath(path) else { throw WorkspaceResultError.repositoryUnsafe }
+            let submodule = worktree.appendingPathComponent(path, isDirectory: true).standardizedFileURL
+            guard submodule.deletingLastPathComponent() == worktree else { throw WorkspaceResultError.repositoryUnsafe }
+            if FileManager.default.fileExists(atPath: submodule.path) {
+                try requireOwnedDirectory(submodule, beneath: worktree)
+                _ = try runGit(["--git-dir=\(repository.path)", "worktree", "remove", "--force", submodule.path], cwd: paths.stateDirectory)
+                guard !FileManager.default.fileExists(atPath: submodule.path) else { throw WorkspaceResultError.repositoryUnsafe }
+            }
         }
     }
 

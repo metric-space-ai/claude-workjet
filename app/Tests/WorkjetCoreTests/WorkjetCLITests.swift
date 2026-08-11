@@ -601,6 +601,17 @@ final class WorkjetCLITests: XCTestCase {
         try Data("committed\n".utf8).write(to: repository.appendingPathComponent("tracked.txt"))
         _ = try fixtureGit(["add", "tracked.txt"], cwd: repository)
         _ = try fixtureGit(["commit", "-m", "fixture"], cwd: repository)
+        let submoduleSource = root.appendingPathComponent("submodule-source", isDirectory: true)
+        try FileManager.default.createDirectory(at: submoduleSource, withIntermediateDirectories: true)
+        _ = try fixtureGit(["init"], cwd: submoduleSource)
+        try Data("pinned local submodule\n".utf8).write(to: submoduleSource.appendingPathComponent("module.txt"))
+        _ = try fixtureGit(["add", "module.txt"], cwd: submoduleSource)
+        _ = try fixtureGit(["commit", "-m", "submodule fixture"], cwd: submoduleSource)
+        let submoduleOID = try fixtureGit(["rev-parse", "HEAD"], cwd: submoduleSource)
+        _ = try fixtureGit(["-c", "protocol.file.allow=always", "submodule", "add", submoduleSource.path, "module"], cwd: repository)
+        _ = try fixtureGit(["commit", "-am", "add submodule"], cwd: repository)
+        let callerSubmodule = repository.appendingPathComponent("module", isDirectory: true)
+        let callerSubmoduleStatus = try fixtureGit(["status", "--porcelain=v1"], cwd: callerSubmodule)
         let originalHead = try fixtureGit(["rev-parse", "HEAD"], cwd: repository)
         let originalBranch = try fixtureGit(["symbolic-ref", "--short", "HEAD"], cwd: repository)
         try Data("caller dirty\n".utf8).write(to: repository.appendingPathComponent("tracked.txt"))
@@ -611,6 +622,7 @@ final class WorkjetCLITests: XCTestCase {
         let script = """
         #!/bin/sh
         printf '%s' 'isolated worker' > worker-output.txt
+        cat module/module.txt > worker-submodule.txt
         printf '%s' 'early-output'
         sleep 1
         printf '%s' 'final-partial'
@@ -656,16 +668,25 @@ final class WorkjetCLITests: XCTestCase {
         let record = try RemoteWorkspaceRunStore(paths: paths).load(runID: runID)
         let worktree = URL(fileURLWithPath: try XCTUnwrap(record.localWorktreePath), isDirectory: true)
         XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("worker-output.txt"), encoding: .utf8), "isolated worker")
+        XCTAssertEqual(try String(contentsOf: worktree.appendingPathComponent("worker-submodule.txt"), encoding: .utf8), "pinned local submodule\n")
+        let isolatedSubmodule = worktree.appendingPathComponent("module", isDirectory: true)
+        XCTAssertEqual(try fixtureGit(["rev-parse", "HEAD"], cwd: isolatedSubmodule), submoduleOID)
+        XCTAssertEqual(try fixtureGit(["rev-parse", "--abbrev-ref", "HEAD"], cwd: isolatedSubmodule), "HEAD")
+        XCTAssertFalse((try fixtureGit(["remote"], cwd: isolatedSubmodule)).contains("origin"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: repository.appendingPathComponent("worker-output.txt").path))
         XCTAssertEqual(try String(contentsOf: repository.appendingPathComponent("tracked.txt"), encoding: .utf8), "caller dirty\n")
         XCTAssertEqual(try String(contentsOf: repository.appendingPathComponent("caller-untracked.txt"), encoding: .utf8), "caller untracked\n")
         XCTAssertEqual(try fixtureGit(["status", "--porcelain=v1"], cwd: repository), originalStatus)
         XCTAssertEqual(try fixtureGit(["rev-parse", "HEAD"], cwd: repository), originalHead)
         XCTAssertEqual(try fixtureGit(["symbolic-ref", "--short", "HEAD"], cwd: repository), originalBranch)
+        XCTAssertEqual(try fixtureGit(["rev-parse", "HEAD"], cwd: callerSubmodule), submoduleOID)
+        XCTAssertEqual(try fixtureGit(["status", "--porcelain=v1"], cwd: callerSubmodule), callerSubmoduleStatus)
 
         let imported = try await service.importResult(runID: runID)
         XCTAssertEqual(imported.resultRef, "refs/workjet/\(runID)")
         XCTAssertEqual(try fixtureGit(["show", "\(imported.resultRef):worker-output.txt"], cwd: repository), "isolated worker")
+        XCTAssertEqual(try fixtureGit(["show", "\(imported.resultRef):worker-submodule.txt"], cwd: repository), "pinned local submodule")
+        XCTAssertEqual(try fixtureGit(["ls-tree", imported.resultRef, "module"], cwd: repository), "160000 commit \(submoduleOID)\tmodule")
         let repeatedImport = try await service.importResult(runID: runID)
         XCTAssertEqual(repeatedImport, imported)
         let integrated = try service.mark(runID: runID, disposition: .integrated)
@@ -676,6 +697,8 @@ final class WorkjetCLITests: XCTestCase {
             XCTAssertEqual($0 as? WorkspaceResultError, .dispositionConflict)
         }
 
+        try Data("#!/bin/sh\nprintf 'mutated\\n' > module/module.txt\n".utf8).write(to: harness)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: harness.path)
         let abandonedResponse = try service.start(worker: worker, route: ResolvedProviderRuntimeRoute(displayName: "Fixture", candidates: [
             ProviderRuntimeCandidate(kind: .directAccount, providerID: UUID(), modelProvider: .anthropic, displayName: "Fixture", endpoint: "https://example.invalid", authentication: .none, credentialReference: nil)
         ]), brief: Data("discard".utf8), workspace: context, turnTimeoutSeconds: 10, supervisorExecutable: builtWorkjetCLI)
@@ -683,6 +706,10 @@ final class WorkjetCLITests: XCTestCase {
         let abandonedRC = paths.runsDirectory.appendingPathComponent(abandonedRunID).appendingPathComponent("rc")
         let abandonedDeadline = Date().addingTimeInterval(15)
         while !FileManager.default.fileExists(atPath: abandonedRC.path), Date() < abandonedDeadline { try await Task.sleep(for: .milliseconds(25)) }
+        let rejectedSubmoduleResult = try XCTUnwrap(service.events(runID: abandonedRunID, after: 0))
+        XCTAssertEqual(rejectedSubmoduleResult.state, .error)
+        XCTAssertTrue(rejectedSubmoduleResult.events.contains(where: { $0.kind == "result-error" && $0.text?.contains("schreibgeschützt") == true }))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.runsDirectory.appendingPathComponent(abandonedRunID).appendingPathComponent("result-manifest.json").path))
         XCTAssertThrowsError(try service.mark(runID: abandonedRunID, disposition: .integrated)) {
             XCTAssertEqual($0 as? WorkspaceResultError, .integratedBeforeImport)
         }

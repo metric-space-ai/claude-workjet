@@ -881,7 +881,7 @@ const healthyCommandAvailable = (command, arguments_) => {
 const gitExecutable = ["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"].find(candidate => {
   try { fs.accessSync(candidate, fs.constants.X_OK); return fs.lstatSync(candidate).isFile(); } catch { return false; }
 });
-const gitEnvironment = () => ({HOME: os.homedir(), PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C", GIT_TERMINAL_PROMPT: "0"});
+const gitEnvironment = () => ({HOME: os.homedir(), PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin", LC_ALL: "C", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1"});
 const validRepoID = value => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 const validOID = value => typeof value === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
 const safeOwnedDirectory = (directory, parent) => {
@@ -1542,7 +1542,15 @@ const importWorkspace = async () => {
   let manifest;
   try { manifest = JSON.parse(input.subarray(0, newline).toString("utf8")); } catch { reject("workspace_manifest_invalid"); }
   const keys = Object.keys(manifest).sort().join(",");
-  if (keys !== "bundleSHA256,byteSize,repoID,schemaVersion,snapshotCommitOID" || manifest.schemaVersion !== 1 || !validRepoID(manifest.repoID) || !validOID(manifest.snapshotCommitOID) || !/^[0-9a-f]{64}$/.test(manifest.bundleSHA256) || !Number.isSafeInteger(manifest.byteSize) || manifest.byteSize < 1 || manifest.byteSize > limit) reject("workspace_manifest_invalid");
+  const baseKeys = "bundleSHA256,byteSize,repoID,schemaVersion,snapshotCommitOID";
+  const gitlinkKeys = "bundleSHA256,byteSize,repoID,schemaVersion,snapshotCommitOID,submodules";
+  const safeTopLevelGitlinkPath = value => typeof value === "string" && value.length > 0 && !value.includes("/") && safeGitPath(value);
+  const submodules = Array.isArray(manifest.submodules) ? manifest.submodules : [];
+  const validSubmodules = submodules.length > 0 && submodules.length <= 256 && submodules.every(value => {
+    if (!value || Object.keys(value).sort().join(",") !== "bundleRef,commitOID,path" || !safeTopLevelGitlinkPath(value.path) || !validOID(value.commitOID) || typeof value.bundleRef !== "string" || !/^refs\/workjet\/submodules\/[a-z0-9-]+\/[0-9]+$/.test(value.bundleRef)) return false;
+    return true;
+  }) && new Set(submodules.map(value => value.path)).size === submodules.length && new Set(submodules.map(value => value.bundleRef)).size === submodules.length;
+  if (!validRepoID(manifest.repoID) || !validOID(manifest.snapshotCommitOID) || !/^[0-9a-f]{64}$/.test(manifest.bundleSHA256) || !Number.isSafeInteger(manifest.byteSize) || manifest.byteSize < 1 || manifest.byteSize > limit || !((keys === baseKeys && manifest.schemaVersion === 1) || (keys === gitlinkKeys && manifest.schemaVersion === 2 && validSubmodules))) reject("workspace_manifest_invalid");
   const bundle = input.subarray(newline + 1);
   if (bundle.length !== manifest.byteSize) reject("workspace_size_mismatch");
   if (crypto.createHash("sha256").update(bundle).digest("hex") !== manifest.bundleSHA256) reject("workspace_hash_mismatch");
@@ -1555,20 +1563,29 @@ const importWorkspace = async () => {
     if (!safeOwnedDirectory(cache, reposRoot)) reject("workspace_cache_unsafe");
   }
   const temporary = path.join(importsRoot, `${manifest.repoID}-${process.pid}-${Date.now()}.bundle`);
+  let importError;
   try {
     fs.writeFileSync(temporary, bundle, {mode: 0o600, flag: "wx"});
     execFileSync(gitExecutable, ["bundle", "verify", temporary], {cwd: cache, env: gitEnvironment(), timeout: 60000, stdio: ["ignore", "ignore", "pipe"]});
     const heads = execFileSync(gitExecutable, ["bundle", "list-heads", temporary], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 65536});
-    if (!heads.split(/\r?\n/).some(line => line.startsWith(`${manifest.snapshotCommitOID} `))) reject("workspace_commit_not_in_bundle");
+    const advertised = new Map(heads.split(/\r?\n/).filter(Boolean).map(line => { const split = line.indexOf(" "); return split > 0 ? [line.slice(split + 1), line.slice(0, split)] : ["", ""]; }));
+    const snapshotHead = [...advertised].find(([, oid]) => oid === manifest.snapshotCommitOID)?.[0];
+    if (!snapshotHead || submodules.some(value => advertised.get(value.bundleRef) !== value.commitOID)) throw new Error("workspace_commit_not_in_bundle");
     const destination = `refs/workjet/snapshots/${manifest.snapshotCommitOID}`;
-    execFileSync(gitExecutable, ["fetch", "--no-tags", temporary, `${manifest.snapshotCommitOID}:${destination}`], {cwd: cache, env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
+    const fetchArguments = ["fetch", "--no-tags", temporary, `${snapshotHead}:${destination}`];
+    submodules.forEach((value, index) => fetchArguments.push(`${value.bundleRef}:refs/workjet/submodules/${manifest.snapshotCommitOID}/${index}`));
+    execFileSync(gitExecutable, fetchArguments, {cwd: cache, env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
     execFileSync(gitExecutable, ["cat-file", "-e", `${manifest.snapshotCommitOID}^{commit}`], {cwd: cache, env: gitEnvironment(), timeout: 30000, stdio: "ignore"});
+    submodules.forEach(value => execFileSync(gitExecutable, ["cat-file", "-e", `${value.commitOID}^{commit}`], {cwd: cache, env: gitEnvironment(), timeout: 30000, stdio: "ignore"}));
+    const importedGitlinks = snapshotGitlinks(cache, manifest.snapshotCommitOID);
+    if (importedGitlinks.size !== submodules.length || submodules.some(value => importedGitlinks.get(value.path) !== value.commitOID)) throw new Error("workspace_gitlink_manifest_mismatch");
   } catch (error) {
-    reject("workspace_import_failed");
+    importError = ["workspace_commit_not_in_bundle", "workspace_gitlink_manifest_mismatch"].includes(error.message) ? error.message : "workspace_import_failed";
   } finally {
     try { fs.unlinkSync(temporary); } catch {}
   }
-  response({capabilities: ["workspace-git-v1"]});
+  if (importError) reject(importError);
+  response({capabilities: ["workspace-git-v1", "workspace-gitlinks-v1"]});
 };
 const createRunWorkspace = (descriptor, runID) => {
   if (!gitExecutable || !validRepoID(descriptor?.repoID) || !validOID(descriptor?.snapshotCommitOID) || !safeRunID(runID)) throw new Error("workspace_required");
@@ -1576,13 +1593,31 @@ const createRunWorkspace = (descriptor, runID) => {
   if (!safeOwnedDirectory(cache, reposRoot)) throw new Error("workspace_cache_missing");
   try { execFileSync(gitExecutable, ["cat-file", "-e", `${descriptor.snapshotCommitOID}^{commit}`], {cwd: cache, env: gitEnvironment(), timeout: 30000, stdio: "ignore"}); }
   catch { throw new Error("workspace_commit_missing"); }
-  validateSnapshotTree(cache, descriptor.snapshotCommitOID);
+  const gitlinks = validateSnapshotTree(cache, descriptor.snapshotCommitOID);
   const worktree = path.join(worktreesRoot, runID);
   if (fs.existsSync(worktree)) throw new Error("workspace_path_exists");
+  const createdSubmodules = [];
+  let parentCreated = false;
   try {
     execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "add", "--detach", worktree, descriptor.snapshotCommitOID], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
-  } catch { throw new Error("workspace_creation_failed"); }
-  if (!safeOwnedDirectory(worktree, worktreesRoot) || path.basename(worktree) !== runID) throw new Error("workspace_path_unsafe");
+    parentCreated = true;
+    if (!safeOwnedDirectory(worktree, worktreesRoot) || path.basename(worktree) !== runID) throw new Error("workspace_path_unsafe");
+    for (const [submodulePath, oid] of [...gitlinks].sort(([left], [right]) => left.localeCompare(right))) {
+      const destination = path.join(worktree, submodulePath);
+      if (path.dirname(destination) !== worktree) throw new Error("workspace_submodule_path_unsafe");
+      if (fs.existsSync(destination)) {
+        if (!safeOwnedDirectory(destination, worktree) || fs.readdirSync(destination).length !== 0) throw new Error("workspace_submodule_path_unsafe");
+        fs.rmdirSync(destination);
+      }
+      execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "add", "--detach", destination, oid], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
+      createdSubmodules.push(destination);
+      if (!safeOwnedDirectory(destination, worktree)) throw new Error("workspace_submodule_path_unsafe");
+    }
+  } catch (error) {
+    for (const destination of createdSubmodules.reverse()) { try { execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", destination], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]}); } catch {} }
+    if (parentCreated) { try { execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", worktree], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]}); } catch {} }
+    throw error.message?.startsWith("workspace_") ? error : new Error("workspace_creation_failed");
+  }
   return worktree;
 };
 
@@ -1595,7 +1630,16 @@ const safeGitPath = value => {
   const parts = value.split("/");
   return parts.every(part => part && part !== "." && part !== "..");
 };
-const validateWorkspaceFilesystem = (worktree, runID) => {
+const indexedGitlinks = staged => {
+  const result = new Map();
+  for (const value of staged.filter(entry => entry.startsWith("160000 "))) {
+    const match = /^160000 ([0-9a-f]{40,64}) 0\t([^\0]+)$/.exec(value);
+    if (!match || !safeGitPath(match[2]) || match[2].includes("/") || result.has(match[2])) throw new Error("workspace_result_tree_unsafe");
+    result.set(match[2], match[1]);
+  }
+  return result;
+};
+const validateWorkspaceFilesystem = (worktree, runID, allowedGitlinks) => {
   if (!safeOwnedDirectory(worktree, worktreesRoot) || path.basename(worktree) !== runID) throw new Error("workspace_path_unsafe");
   const queue = [worktree];
   while (queue.length) {
@@ -1607,7 +1651,8 @@ const validateWorkspaceFilesystem = (worktree, runID) => {
       const info = fs.lstatSync(item);
       if (info.isSymbolicLink()) throw new Error("workspace_symlink_rejected");
       if (entry.name === ".git") {
-        if (current !== worktree || !info.isFile()) throw new Error("workspace_nested_repository_rejected");
+        const repositoryRelative = path.relative(worktree, current);
+        if ((current !== worktree && !allowedGitlinks.has(repositoryRelative)) || !info.isFile()) throw new Error("workspace_nested_repository_rejected");
         continue;
       }
       if (!safeGitPath(relative)) throw new Error("workspace_path_rejected");
@@ -1616,25 +1661,49 @@ const validateWorkspaceFilesystem = (worktree, runID) => {
     }
   }
 };
-const validateCommitTree = (cache, commitOID, errorPrefix) => {
+const commitTreeEntries = (cache, commitOID, errorPrefix) => {
   const listing = execFileSync(gitExecutable, ["ls-tree", "-r", "-z", "--full-tree", commitOID], {cwd: cache, env: gitEnvironment(), timeout: 60000, maxBuffer: 16 * 1024 * 1024});
-  const entries = listing.toString("utf8").split("\0").filter(Boolean);
-  if (entries.length > RESULT_TREE_ENTRY_LIMIT) throw new Error(`${errorPrefix}_tree_too_large`);
-  let total = 0;
-  for (const entry of entries) {
+  return listing.toString("utf8").split("\0").filter(Boolean).map(entry => {
     const match = /^(\d{6}) ([a-z]+) ([0-9a-f]{40,64})\t([\s\S]+)$/.exec(entry);
-    if (!match || match[1] === "120000" || match[1] === "160000" || match[2] !== "blob" || !safeGitPath(match[4])) throw new Error(`${errorPrefix}_tree_unsafe`);
-    const size = Number(execFileSync(gitExecutable, ["cat-file", "-s", match[3]], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024}).trim());
-    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${errorPrefix}_object_invalid`);
-    total += size;
-    if (total > RESULT_LIMIT) throw new Error(`${errorPrefix}_objects_too_large`);
-  }
+    if (!match || !safeGitPath(match[4])) throw new Error(`${errorPrefix}_tree_unsafe`);
+    return {mode: match[1], type: match[2], oid: match[3], path: match[4]};
+  });
 };
-const validateSnapshotTree = (cache, snapshotOID) => validateCommitTree(cache, snapshotOID, "workspace_snapshot");
+const validateCommitTree = (cache, commitOID, errorPrefix, allowedGitlinks = new Map(), budget = {entries: 0, bytes: 0}) => {
+  const entries = commitTreeEntries(cache, commitOID, errorPrefix);
+  budget.entries += entries.length;
+  if (budget.entries > RESULT_TREE_ENTRY_LIMIT) throw new Error(`${errorPrefix}_tree_too_large`);
+  const observedGitlinks = new Map();
+  for (const entry of entries) {
+    if (entry.mode === "160000") {
+      if (entry.type !== "commit" || entry.path.includes("/") || allowedGitlinks.get(entry.path) !== entry.oid || observedGitlinks.has(entry.path)) throw new Error(`${errorPrefix}_tree_unsafe`);
+      observedGitlinks.set(entry.path, entry.oid);
+      continue;
+    }
+    if (entry.mode === "120000" || entry.type !== "blob") throw new Error(`${errorPrefix}_tree_unsafe`);
+    const size = Number(execFileSync(gitExecutable, ["cat-file", "-s", entry.oid], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024}).trim());
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${errorPrefix}_object_invalid`);
+    budget.bytes += size;
+    if (budget.bytes > RESULT_LIMIT) throw new Error(`${errorPrefix}_objects_too_large`);
+  }
+  if (observedGitlinks.size !== allowedGitlinks.size) throw new Error(`${errorPrefix}_tree_unsafe`);
+  return budget;
+};
+const snapshotGitlinks = (cache, snapshotOID) => new Map(commitTreeEntries(cache, snapshotOID, "workspace_snapshot").filter(entry => entry.mode === "160000").map(entry => {
+  if (entry.type !== "commit" || entry.path.includes("/")) throw new Error("workspace_snapshot_tree_unsafe");
+  return [entry.path, entry.oid];
+}));
+const validateSnapshotTree = (cache, snapshotOID) => {
+  const gitlinks = snapshotGitlinks(cache, snapshotOID);
+  const budget = validateCommitTree(cache, snapshotOID, "workspace_snapshot", gitlinks);
+  for (const oid of gitlinks.values()) validateCommitTree(cache, oid, "workspace_snapshot_submodule", new Map(), budget);
+  return gitlinks;
+};
 const validateResultTree = (cache, snapshotOID, resultOID) => {
   try { execFileSync(gitExecutable, ["merge-base", "--is-ancestor", snapshotOID, resultOID], {cwd: cache, env: gitEnvironment(), timeout: 30000, stdio: "ignore"}); }
   catch { throw new Error("workspace_result_not_descendant"); }
-  validateCommitTree(cache, resultOID, "workspace_result");
+  const gitlinks = snapshotGitlinks(cache, snapshotOID);
+  validateCommitTree(cache, resultOID, "workspace_result", gitlinks);
 };
 const capturedWorkspaceResult = (request, directory, state, launch) => {
   const manifestFile = path.join(directory, "result.json");
@@ -1651,9 +1720,29 @@ const capturedWorkspaceResult = (request, directory, state, launch) => {
   }
   try { fs.unlinkSync(bundleFile); } catch {}
   const worktree = path.join(worktreesRoot, request.runID);
-  validateWorkspaceFilesystem(worktree, request.runID);
   const cache = path.join(reposRoot, `${request.repoID}.git`);
   if (!safeOwnedDirectory(cache, reposRoot)) throw new Error("workspace_cache_missing");
+  const gitlinks = snapshotGitlinks(cache, request.snapshotCommitOID);
+  validateWorkspaceFilesystem(worktree, request.runID, gitlinks);
+  const currentIndex = execFileSync(gitExecutable, ["ls-files", "--stage", "-z"], {cwd: worktree, env: gitEnvironment(), timeout: 60000, maxBuffer: 16 * 1024 * 1024}).toString("utf8").split("\0").filter(Boolean);
+  const currentIndexGitlinks = indexedGitlinks(currentIndex);
+  if (currentIndexGitlinks.size !== gitlinks.size || [...gitlinks].some(([submodulePath, oid]) => currentIndexGitlinks.get(submodulePath) !== oid)) throw new Error("workspace_result_submodule_changed");
+  for (const [submodulePath, oid] of gitlinks) {
+    const submodule = path.join(worktree, submodulePath);
+    if (path.dirname(submodule) !== worktree || !safeOwnedDirectory(submodule, worktree)) throw new Error("workspace_result_submodule_changed");
+    let head, status;
+    try {
+      const gitFileInfo = fs.lstatSync(path.join(submodule, ".git"));
+      if (!gitFileInfo.isFile() || gitFileInfo.isSymbolicLink() || gitFileInfo.uid !== process.geteuid()) throw new Error("unsafe git file");
+      const gitDirectory = fs.realpathSync(execFileSync(gitExecutable, ["rev-parse", "--absolute-git-dir"], {cwd: submodule, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 4096}).trim());
+      const metadataRoot = fs.realpathSync(path.join(cache, "worktrees"));
+      const gitDirectoryInfo = fs.lstatSync(gitDirectory);
+      if (path.dirname(gitDirectory) !== metadataRoot || !gitDirectoryInfo.isDirectory() || gitDirectoryInfo.isSymbolicLink() || gitDirectoryInfo.uid !== process.geteuid()) throw new Error("unsafe git directory");
+      head = execFileSync(gitExecutable, ["rev-parse", "--verify", "HEAD^{commit}"], {cwd: submodule, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024}).trim();
+      status = execFileSync(gitExecutable, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {cwd: submodule, env: gitEnvironment(), timeout: 60000, maxBuffer: 16 * 1024 * 1024});
+    } catch { throw new Error("workspace_result_submodule_changed"); }
+    if (head !== oid || status.length !== 0) throw new Error("workspace_result_submodule_changed");
+  }
   const resultRef = `refs/workjet/results/${request.runID}`;
   let resultOID;
   try { resultOID = execFileSync(gitExecutable, ["rev-parse", "--verify", `${resultRef}^{commit}`], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024, stdio: ["ignore", "pipe", "pipe"]}).trim(); } catch {}
@@ -1662,12 +1751,14 @@ const capturedWorkspaceResult = (request, directory, state, launch) => {
     const index = path.join(directory, `result-index-${process.pid}-${Date.now()}`);
     const environment = {...gitEnvironment(), GIT_INDEX_FILE: index, GIT_OPTIONAL_LOCKS: "0"};
     try {
+      execFileSync(gitExecutable, ["read-tree", request.snapshotCommitOID], {cwd: worktree, env: environment, timeout: 30000, stdio: ["ignore", "ignore", "pipe"]});
       const paths = execFileSync(gitExecutable, ["ls-files", "-co", "--exclude-standard", "-z"], {cwd: worktree, env: environment, timeout: 60000, maxBuffer: 16 * 1024 * 1024}).toString("utf8").split("\0").filter(Boolean);
       if (paths.length > RESULT_TREE_ENTRY_LIMIT || paths.some(value => !safeGitPath(value))) throw new Error("workspace_result_paths_unsafe");
-      execFileSync(gitExecutable, ["read-tree", request.snapshotCommitOID], {cwd: worktree, env: environment, timeout: 30000, stdio: ["ignore", "ignore", "pipe"]});
       execFileSync(gitExecutable, ["add", "-A", "--", "."], {cwd: worktree, env: environment, timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
       const staged = execFileSync(gitExecutable, ["ls-files", "--stage", "-z"], {cwd: worktree, env: environment, timeout: 60000, maxBuffer: 16 * 1024 * 1024}).toString("utf8").split("\0").filter(Boolean);
-      if (staged.some(value => value.startsWith("120000 ") || value.startsWith("160000 "))) throw new Error("workspace_result_tree_unsafe");
+      if (staged.some(value => value.startsWith("120000 "))) throw new Error("workspace_result_tree_unsafe");
+      const stagedGitlinks = indexedGitlinks(staged);
+      if (stagedGitlinks.size !== gitlinks.size || [...gitlinks].some(([submodulePath, oid]) => stagedGitlinks.get(submodulePath) !== oid)) throw new Error("workspace_result_submodule_changed");
       const tree = execFileSync(gitExecutable, ["write-tree"], {cwd: worktree, env: environment, encoding: "utf8", timeout: 60000, maxBuffer: 1024}).trim();
       const snapshotTree = execFileSync(gitExecutable, ["rev-parse", `${request.snapshotCommitOID}^{tree}`], {cwd: cache, env: gitEnvironment(), encoding: "utf8", timeout: 30000, maxBuffer: 1024}).trim();
       if (tree === snapshotTree) resultOID = request.snapshotCommitOID;
@@ -1755,7 +1846,7 @@ if (request.operation === "probe") {
   if (executableAt(harnessDefinitions["codex-cli"].candidates)) capabilities.push("codex-cli");
   if (executableAt(harnessDefinitions.opencode.candidates)) capabilities.push("opencode");
   if (inspectManagedSkill("greppy").state === "installed") capabilities.push("greppy");
-  if (gitExecutable) capabilities.push("workspace-git-v1", "workspace-result-v1");
+  if (gitExecutable) capabilities.push("workspace-git-v1", "workspace-gitlinks-v1", "workspace-result-v1");
   response({hostVersion: HOST_VERSION, capabilities});
 } else if (["harness-inspect", "harness-install", "harness-update", "harness-remove"].includes(request.operation)) {
   if (request.executable !== undefined || request.arguments !== undefined || request.argv !== undefined || request.command !== undefined) reject("client commands are forbidden");
@@ -1854,8 +1945,18 @@ if (request.operation === "probe") {
     if (!safeOwnedDirectory(worktree, worktreesRoot) || path.basename(worktree) !== request.runID) reject("workspace path unsafe");
     const cache = path.join(reposRoot, `${launch.workspace.repoID}.git`);
     if (!safeOwnedDirectory(cache, reposRoot)) reject("workspace cache missing");
-    try { execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", worktree], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]}); }
-    catch { reject("workspace cleanup failed"); }
+    try {
+      const gitlinks = snapshotGitlinks(cache, launch.workspace.snapshotCommitOID);
+      for (const submodulePath of [...gitlinks.keys()].sort().reverse()) {
+        const submodule = path.join(worktree, submodulePath);
+        if (path.dirname(submodule) !== worktree) throw new Error("unsafe submodule path");
+        if (fs.existsSync(submodule)) {
+          if (!safeOwnedDirectory(submodule, worktree)) throw new Error("unsafe submodule checkout");
+          execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", submodule], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
+        }
+      }
+      execFileSync(gitExecutable, [`--git-dir=${cache}`, "worktree", "remove", "--force", worktree], {env: gitEnvironment(), timeout: 120000, stdio: ["ignore", "ignore", "pipe"]});
+    } catch { reject("workspace cleanup failed"); }
     if (fs.existsSync(worktree)) reject("workspace cleanup incomplete");
   }
   if (!state.workspaceDisposition) setState(directory, state.state, {workspaceDisposition: request.workspaceDisposition, workspaceFinalizedAt: new Date().toISOString()});

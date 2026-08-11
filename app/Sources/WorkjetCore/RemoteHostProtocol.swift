@@ -620,6 +620,9 @@ public struct RemoteHostClient: RemoteHostCalling, Sendable {
         if let verifiedCapabilities { capabilities = verifiedCapabilities }
         else { capabilities = try await probe().capabilities }
         guard capabilities.contains("workspace-git-v1") else { throw RemoteHostProtocolError.missingCapability("workspace-git-v1") }
+        if !snapshot.manifest.submodules.isEmpty, !capabilities.contains("workspace-gitlinks-v1") {
+            throw RemoteHostProtocolError.missingCapability("workspace-gitlinks-v1")
+        }
         guard snapshot.bundle.count == snapshot.manifest.byteSize,
               snapshot.manifest.byteSize > 0,
               snapshot.manifest.byteSize <= GitWorkspaceSnapshotPreparer.maximumBundleBytes else {
