@@ -42,10 +42,11 @@ public enum TailscaleDeviceError: LocalizedError, Equatable {
 
 public enum TailscaleDeviceParser {
     public static func parse(_ data: Data) throws -> [TailscaleDevice] {
-        guard data.count <= 1_048_576,
-              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw data.count > 1_048_576 ? TailscaleDeviceError.outputTooLarge : TailscaleDeviceError.malformedStatus
-        }
+        guard data.count <= 1_048_576 else { throw TailscaleDeviceError.outputTooLarge }
+        let value: Any
+        do { value = try JSONSerialization.jsonObject(with: data) }
+        catch { throw TailscaleDeviceError.malformedStatus }
+        guard let root = value as? [String: Any] else { throw TailscaleDeviceError.malformedStatus }
         if let state = root["BackendState"] as? String, state.caseInsensitiveCompare("Running") != .orderedSame {
             throw TailscaleDeviceError.notConnected(state)
         }
@@ -109,6 +110,17 @@ public struct TailscaleDeviceDiscovery: Sendable {
         guard let executable = locator.executablePath(), AllowlistedTailscaleLocator.allowedPaths.contains(executable) else {
             throw TailscaleDeviceError.unavailable
         }
+        do {
+            return try await discover(executable: executable)
+        } catch TailscaleDeviceError.malformedStatus {
+            // A local Tailscale process can occasionally exit successfully
+            // while stdout capture is empty or partial. Retry exactly once;
+            // every semantic or transport failure still fails immediately.
+            return try await discover(executable: executable)
+        }
+    }
+
+    private func discover(executable: String) async throws -> [TailscaleDevice] {
         let result: CommandResult
         do {
             result = try await runner.run(CommandSpec(executable: executable, arguments: ["status", "--json"], timeout: 3, stdoutLimit: 1_048_576, stderrLimit: 16_384))

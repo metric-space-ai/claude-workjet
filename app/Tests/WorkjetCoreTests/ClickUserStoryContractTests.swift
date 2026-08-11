@@ -250,6 +250,9 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.contains("try model.confirmRemoteHostKey(candidate, for: target)"))
         XCTAssertTrue(computer.contains("deploymentDetail = \"Host-Key wurde bestätigt und privat gespeichert. Einrichtung wird erneut versucht.\"\n            deploy()"))
         XCTAssertFalse(computer.contains("Button(isDeploying ? \"Wird eingerichtet …\" : \"Einrichten & speichern\") { deploy() }"))
+        XCTAssertTrue(computer.contains("Button(persistenceOperationInFlight ? \"Wird gespeichert …\" : \"Für später speichern\") { saveConnectionForLater() }"))
+        XCTAssertTrue(computer.contains("let template = preferredRemoteDefaults"))
+        XCTAssertTrue(computer.contains("draft.identityFilePath = template.identityFilePath"))
     }
 
     func testProviderDeletionRequiresConfirmationUsesDurableAsyncAPIAndBlocksDuplicateActions() throws {

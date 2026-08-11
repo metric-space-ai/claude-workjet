@@ -20,6 +20,7 @@ struct ComputerEditorView: View {
     @State private var pendingHostKey: RemoteHostKeyCandidate?
     @State private var isScanningHostKey = false
     @State private var persistenceOperationInFlight = false
+    @State private var reusedConnectionDefaultsFrom: String?
 
     init(computer: Computer?, onClose: @escaping () -> Void) {
         self.computer = computer
@@ -75,6 +76,10 @@ struct ComputerEditorView: View {
                 Button(persistenceOperationInFlight ? "Wird gespeichert …" : "Speichern") { saveAndClose() }
                     .buttonStyle(.borderedProminent).controlSize(.small)
                     .disabled(computer?.isLocal == true || persistenceOperationInFlight || isDeploying)
+            } else if deploymentStatus == .failed || deploymentStatus == .blocked {
+                Button(persistenceOperationInFlight ? "Wird gespeichert …" : "Für später speichern") { saveConnectionForLater() }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(persistenceOperationInFlight || isDeploying)
             }
             Button(action: onClose) { Image(systemName: "xmark") }
                 .buttonStyle(WJIconButtonStyle())
@@ -124,6 +129,11 @@ struct ComputerEditorView: View {
                     Button("Zurücksetzen") { draft.identityFilePath = "" }.buttonStyle(.bordered).controlSize(.mini)
                 }
                 Button("Wählen …") { chooseIdentityFile() }.buttonStyle(.bordered).controlSize(.mini)
+            }
+            if let reusedConnectionDefaultsFrom {
+                Text("Die SSH-Voreinstellungen wurden von „\(reusedConnectionDefaultsFrom)“ übernommen. Du kannst sie ändern.")
+                    .font(.system(size: 9))
+                    .foregroundStyle(WJTheme.secondaryText)
             }
         }
     }
@@ -259,7 +269,7 @@ struct ComputerEditorView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 7).fill(WJTheme.surface))
         } else {
-            Text("Workjet prüft zuerst die Identität des Ziel-Computers. Vor deiner Bestätigung wird nichts gespeichert.")
+            Text("Workjet prüft zuerst die Identität des Ziel-Computers. Remote-Zugriff und Host-Key werden erst nach deiner Bestätigung eingerichtet; eine nicht erreichbare Verbindung kannst du für später speichern.")
                 .font(.system(size: 10))
                 .foregroundStyle(WJTheme.secondaryText)
         }
@@ -347,6 +357,16 @@ struct ComputerEditorView: View {
     }
 
     private func prepareDefaults() {
+        if computer == nil,
+           let template = preferredRemoteDefaults {
+            if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                draft.user = template.user
+            }
+            if draft.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                draft.identityFilePath = template.identityFilePath
+            }
+            reusedConnectionDefaultsFrom = template.name
+        }
         if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft.user = NSUserName()
         }
@@ -358,6 +378,10 @@ struct ComputerEditorView: View {
             prepareKnownHostsDefault()
         }
         restoreTailscaleSelection(from: model.tailscaleDevices)
+    }
+
+    private var preferredRemoteDefaults: Computer? {
+        ComputerDraft.preferredConnectionDefaults(in: model.computers, transport: draft.transport)
     }
 
     private func prepareKnownHostsDefault() {
@@ -379,11 +403,35 @@ struct ComputerEditorView: View {
                 pendingHostKey = try await model.scanRemoteHostKey(for: target)
                 deploymentStatus = .blocked
                 deploymentDetail = "Schritt 2: SHA256-Fingerabdruck prüfen und ausdrücklich bestätigen."
+            } catch let error as RemotePiBootstrapError {
+                deploymentStatus = error.isBlocked ? .blocked : .failed
+                deploymentDetail = error.localizedDescription
             } catch {
                 deploymentStatus = .failed
                 deploymentDetail = error.localizedDescription
             }
             isScanningHostKey = false
+        }
+    }
+
+    private func saveConnectionForLater() {
+        guard computer == nil, !persistenceOperationInFlight, !isDeploying else { return }
+        validationMessage = validationMessageForSave()
+        guard validationMessage == nil, var saved = draft.applied(to: workingComputer) else { return }
+        saved.deploymentStatus = deploymentStatus == .checking ? .notConfigured : deploymentStatus
+        saved.deploymentDetail = deploymentDetail.isEmpty ? "Noch nicht eingerichtet." : deploymentDetail
+        saved.installedContentHash = nil
+        saved.installedSidecarVersion = nil
+        persistenceOperationInFlight = true
+        Task {
+            let result = await model.saveComputerDurably(saved)
+            persistenceOperationInFlight = false
+            switch result {
+            case .succeeded:
+                onClose()
+            case let .failed(message):
+                validationMessage = message
+            }
         }
     }
 

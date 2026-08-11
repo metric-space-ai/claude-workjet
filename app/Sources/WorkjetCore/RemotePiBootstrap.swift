@@ -8,6 +8,8 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
     case invalidPort
     case missingKnownHosts
     case hostKeyScanFailed(String)
+    case sshServiceUnavailable(host: String, port: Int)
+    case sshConnectionTimedOut(host: String, port: Int)
     case invalidHostKeyScan
     case hostKeyConfirmationMismatch
     case hostKeyUnknown
@@ -24,7 +26,15 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
         case .invalidUser: return "Der Benutzername fehlt oder ist ungültig."
         case .invalidPort: return "Der Verbindungsport ist ungültig."
         case .missingKnownHosts: return "Bestätige zuerst die Identität dieses Computers."
-        case .hostKeyScanFailed: return "Die Identität des Computers konnte nicht geladen werden. Prüfe Adresse und Erreichbarkeit."
+        case let .hostKeyScanFailed(detail):
+            let cleanDetail = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            return cleanDetail.isEmpty
+                ? "Die SSH-Identität des Computers konnte nicht geladen werden."
+                : "Die SSH-Identität des Computers konnte nicht geladen werden. Technischer Grund: \(cleanDetail)"
+        case let .sshServiceUnavailable(host, port):
+            return "\(host) ist erreichbar, aber auf Port \(port) antwortet kein SSH-Dienst. Aktiviere auf dem Ziel-Computer OpenSSH oder – bei einer Tailscale-Verbindung – Tailscale SSH (`sudo tailscale set --ssh`) und prüfe erneut."
+        case let .sshConnectionTimedOut(host, port):
+            return "SSH auf \(host):\(port) antwortet nicht. Prüfe den SSH-Dienst, die Tailscale-ACL und den eingestellten Port."
         case .invalidHostKeyScan: return "Die Identität des Computers konnte nicht sicher geprüft werden. Es wurde nichts gespeichert."
         case .hostKeyConfirmationMismatch: return "Die bestätigte Identität gehört nicht zu diesem Computer. Es wurde nichts gespeichert."
         case .hostKeyUnknown: return "Die Identität dieses Computers wurde noch nicht bestätigt. Bestätige sie und richte den Computer danach erneut ein."
@@ -271,6 +281,18 @@ public struct RemotePiBootstrap: Sendable {
         guard result.exitCode == 0, !result.stdoutTruncated, !result.stderrTruncated else {
             let detail = String(decoding: result.standardError.prefix(2_048), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let normalized = detail.lowercased()
+            if normalized.contains("connection refused")
+                || normalized.contains("broken pipe")
+                || normalized.contains("connection reset")
+                || normalized.contains("connection closed") {
+                throw RemotePiBootstrapError.sshServiceUnavailable(host: computer.host, port: computer.port)
+            }
+            if normalized.contains("timed out")
+                || normalized.contains("no route to host")
+                || normalized.contains("network is unreachable") {
+                throw RemotePiBootstrapError.sshConnectionTimedOut(host: computer.host, port: computer.port)
+            }
             throw RemotePiBootstrapError.hostKeyScanFailed(detail.isEmpty ? "ssh-keyscan endete mit Status \(result.exitCode)." : detail)
         }
         return try Self.parseHostKeyScan(result.standardOutput, expectedHost: computer.host, expectedPort: computer.port)
@@ -447,7 +469,13 @@ public struct RemotePiBootstrap: Sendable {
             if stderr.localizedCaseInsensitiveContains("permission denied")
                 || stderr.localizedCaseInsensitiveContains("no identities")
                 || stderr.localizedCaseInsensitiveContains("load key") {
-                throw RemotePiBootstrapError.commandFailed("SSH-Anmeldung fehlgeschlagen. Prüfe Benutzer und SSH-Schlüssel.")
+                let selectedIdentity = computer.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines)
+                let identityDescription = selectedIdentity.isEmpty
+                    ? "der automatischen Schlüsselauswahl"
+                    : "„\(URL(fileURLWithPath: selectedIdentity).lastPathComponent)“"
+                throw RemotePiBootstrapError.commandFailed(
+                    "SSH läuft, aber die Anmeldung als „\(computer.user)“ mit \(identityDescription) wurde abgelehnt. Wähle den richtigen Benutzer/Schlüssel oder hinterlege dessen öffentlichen Schlüssel auf dem Ziel-Computer."
+                )
             }
             if stderr.localizedCaseInsensitiveContains("could not resolve hostname")
                 || stderr.localizedCaseInsensitiveContains("connection timed out")
@@ -2244,10 +2272,10 @@ private struct PreflightFacts {
     var bubblewrapExecutable: String?
 }
 
-private extension RemotePiBootstrapError {
+public extension RemotePiBootstrapError {
     var isBlocked: Bool {
         switch self {
-        case .preflightBlocked, .tailscaleUnavailable, .missingKnownHosts: return true
+        case .preflightBlocked, .tailscaleUnavailable, .missingKnownHosts, .sshServiceUnavailable, .sshConnectionTimedOut: return true
         default: return false
         }
     }

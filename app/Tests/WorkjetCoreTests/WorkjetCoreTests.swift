@@ -898,10 +898,14 @@ final class CLIProxyTests: XCTestCase {
 
 final class TailscaleDeviceTests: XCTestCase {
     private actor Runner: CommandRunning {
-        var result: CommandResult
+        var results: [CommandResult]
         var commands: [CommandSpec] = []
-        init(_ result: CommandResult) { self.result = result }
-        func run(_ command: CommandSpec) async throws -> CommandResult { commands.append(command); return result }
+        init(_ result: CommandResult) { self.results = [result] }
+        init(_ results: [CommandResult]) { self.results = results }
+        func run(_ command: CommandSpec) async throws -> CommandResult {
+            commands.append(command)
+            return results.count > 1 ? results.removeFirst() : results[0]
+        }
         func recorded() -> [CommandSpec] { commands }
     }
     private struct Locator: TailscaleLocating { var path: String?; func executablePath() -> String? { path } }
@@ -937,6 +941,57 @@ final class TailscaleDeviceTests: XCTestCase {
         XCTAssertThrowsError(try TailscaleDeviceParser.parse(Data(#"{"BackendState":"Stopped","Peer":{}}"#.utf8))) {
             XCTAssertEqual($0 as? TailscaleDeviceError, .notConnected("Stopped"))
         }
+    }
+
+    func testMalformedStatusIsTypedInsteadOfLeakingFoundationDecodeCopy() throws {
+        XCTAssertThrowsError(try TailscaleDeviceParser.parse(Data("{partial".utf8))) {
+            XCTAssertEqual($0 as? TailscaleDeviceError, .malformedStatus)
+            XCTAssertEqual($0.localizedDescription, "Die Tailscale-Geräteliste konnte nicht geladen werden. Versuche es erneut.")
+        }
+    }
+
+    func testDiscoveryRetriesOneIncompleteSuccessfulStatusRead() async throws {
+        let valid = Data(#"{"BackendState":"Running","Self":{"ID":"self"},"Peer":{"gpu":{"ID":"gpu","HostName":"gpu1-a6000","TailscaleIPs":["100.87.204.48"],"Online":true,"OS":"linux"}}}"#.utf8)
+        let runner = Runner([
+            CommandResult(exitCode: 0, standardOutput: Data("{partial".utf8)),
+            CommandResult(exitCode: 0, standardOutput: valid)
+        ])
+
+        let devices = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/usr/bin/tailscale")).discover()
+
+        XCTAssertEqual(devices.map(\.hostname), ["gpu1-a6000"])
+        let commandCount = await runner.recorded().count
+        XCTAssertEqual(commandCount, 2)
+    }
+
+    func testDiscoveryRetriesMalformedStatusOnlyOnce() async throws {
+        let runner = Runner([
+            CommandResult(exitCode: 0, standardOutput: Data()),
+            CommandResult(exitCode: 0, standardOutput: Data("not-json".utf8))
+        ])
+
+        do {
+            _ = try await TailscaleDeviceDiscovery(runner: runner, locator: Locator(path: "/usr/bin/tailscale")).discover()
+            XCTFail("Dauerhaft ungültiger Status darf nicht als leere Geräteliste gelten.")
+        } catch {
+            XCTAssertEqual(error as? TailscaleDeviceError, .malformedStatus)
+        }
+        let commandCount = await runner.recorded().count
+        XCTAssertEqual(commandCount, 2)
+    }
+
+    func testInstalledTailscaleStatusIsParseableThroughProductionRunnerWhenAvailable() async throws {
+        let executable = "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+        guard FileManager.default.isExecutableFile(atPath: executable) else {
+            throw XCTSkip("Tailscale ist auf diesem Test-Rechner nicht installiert.")
+        }
+
+        let devices = try await TailscaleDeviceDiscovery(
+            runner: ProcessCommandRunner(),
+            locator: Locator(path: executable)
+        ).discover()
+
+        XCTAssertTrue(devices.allSatisfy { !$0.id.isEmpty && !$0.hostname.isEmpty })
     }
 }
 
@@ -1045,6 +1100,22 @@ final class RemotePiBootstrapTests: XCTestCase {
         XCTAssertEqual(result.deploymentDetail, "Bestätige zuerst die Identität dieses Computers.")
         let commands = await runner.commands()
         XCTAssertTrue(commands.isEmpty)
+    }
+
+    func testRejectedSSHLoginNamesTheSelectedUserAndIdentityWithoutClaimingReachabilityFailure() async {
+        let runner = Runner([
+            CommandResult(exitCode: 255, standardError: Data("workjet@pi.example.test: Permission denied (publickey).\n".utf8))
+        ])
+        var computer = sshComputer()
+        computer.identityFilePath = "/Users/test/.ssh/id_ed25519_workjet"
+
+        let result = await RemotePiBootstrap(runner: runner, files: Files(), tailscaleLocator: Locator(path: nil)).deploy(computer)
+
+        XCTAssertEqual(result.deploymentStatus, .failed)
+        XCTAssertTrue(result.deploymentDetail.contains("Anmeldung als „workjet“"))
+        XCTAssertTrue(result.deploymentDetail.contains("id_ed25519_workjet"))
+        XCTAssertTrue(result.deploymentDetail.contains("öffentlichen Schlüssel"))
+        XCTAssertFalse(result.deploymentDetail.contains("nicht erreichbar"))
     }
 
     func testInvalidBundleSymlinkAndInjectedWrongOwnerAreRejected() async throws {

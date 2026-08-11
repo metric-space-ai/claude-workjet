@@ -146,6 +146,41 @@ final class RemoteHostOnboardingTests: XCTestCase {
         XCTAssertFalse(command.arguments.contains("ssh"), "the Tailscale CLI must not become a second SSH policy")
     }
 
+    func testHostKeyScanReportsRefusedSSHServiceAsActionableBlockedPrerequisite() async throws {
+        let runner = Runner([
+            CommandResult(exitCode: 1, standardError: Data("connect to host 100.87.204.48 port 22: Connection refused\n".utf8))
+        ])
+        let bootstrap = RemotePiBootstrap(runner: runner)
+        var target = tailscaleComputer
+        target.host = "100.87.204.48"
+
+        do {
+            _ = try await bootstrap.scanHostKey(for: target)
+            XCTFail("Ein abgelehnter SSH-Port darf nicht als unspezifischer Identitätsfehler erscheinen.")
+        } catch let error as RemotePiBootstrapError {
+            XCTAssertEqual(error, .sshServiceUnavailable(host: "100.87.204.48", port: 22))
+            XCTAssertTrue(error.isBlocked)
+            XCTAssertTrue(error.localizedDescription.contains("kein SSH-Dienst"))
+            XCTAssertTrue(error.localizedDescription.contains("tailscale set --ssh"))
+        }
+    }
+
+    func testHostKeyScanClassifiesBrokenPipeAsUnavailableSSHService() async throws {
+        let runner = Runner([
+            CommandResult(exitCode: 1, standardError: Data("write (100.87.204.48): Broken pipe\n".utf8))
+        ])
+        let bootstrap = RemotePiBootstrap(runner: runner)
+        var target = tailscaleComputer
+        target.host = "100.87.204.48"
+
+        do {
+            _ = try await bootstrap.scanHostKey(for: target)
+            XCTFail("Ein sofort geschlossener SSH-Port muss als fehlender SSH-Dienst erklärt werden.")
+        } catch let error as RemotePiBootstrapError {
+            XCTAssertEqual(error, .sshServiceUnavailable(host: "100.87.204.48", port: 22))
+        }
+    }
+
     func testComputerDraftPersistsSelectedSSHIdentity() throws {
         var original = computer
         original.identityFilePath = "/Users/test/.ssh/id_ed25519_workjet"
@@ -155,6 +190,34 @@ final class RemoteHostOnboardingTests: XCTestCase {
 
         XCTAssertEqual(draft.identityFilePath, original.identityFilePath)
         XCTAssertEqual(reopened.identityFilePath, original.identityFilePath)
+    }
+
+    func testNewComputerDefaultsReuseTheNewestInstalledComputerOnTheSameTransport() throws {
+        var older = tailscaleComputer
+        older.name = "gpu-old"
+        older.user = "old-user"
+        older.identityFilePath = "/Users/test/.ssh/old"
+        older.deploymentStatus = .installed
+        older.lastSuccessfulDeploymentAt = Date(timeIntervalSince1970: 100)
+        var newest = older
+        newest.id = UUID()
+        newest.name = "gpu3-a4500"
+        newest.user = "metricspace"
+        newest.identityFilePath = "/Users/test/.ssh/id_ed25519_ctox"
+        newest.lastSuccessfulDeploymentAt = Date(timeIntervalSince1970: 200)
+        var wrongTransport = newest
+        wrongTransport.id = UUID()
+        wrongTransport.transport = .ssh
+        wrongTransport.lastSuccessfulDeploymentAt = Date(timeIntervalSince1970: 300)
+
+        let preferred = try XCTUnwrap(ComputerDraft.preferredConnectionDefaults(
+            in: [WorkjetDefaults.localComputer, older, wrongTransport, newest],
+            transport: .tailscale
+        ))
+
+        XCTAssertEqual(preferred.name, "gpu3-a4500")
+        XCTAssertEqual(preferred.user, "metricspace")
+        XCTAssertEqual(preferred.identityFilePath, "/Users/test/.ssh/id_ed25519_ctox")
     }
 
     func testConfirmingChangedKeyAtomicallyReplacesOnlyThatHostEntry() throws {

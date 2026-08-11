@@ -153,6 +153,19 @@ public struct ComputerDraft: Equatable {
         self.identityFilePath = computer?.identityFilePath ?? ""
     }
 
+    public static func preferredConnectionDefaults(in computers: [Computer], transport: ComputerTransport) -> Computer? {
+        computers
+            .filter {
+                !$0.isLocal
+                    && $0.transport == transport
+                    && $0.deploymentStatus == .installed
+                    && !$0.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            .max {
+                ($0.lastSuccessfulDeploymentAt ?? .distantPast) < ($1.lastSuccessfulDeploymentAt ?? .distantPast)
+            }
+    }
+
     public var isValid: Bool {
         !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
