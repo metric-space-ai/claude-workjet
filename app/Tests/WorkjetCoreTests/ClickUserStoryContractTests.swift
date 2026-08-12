@@ -223,7 +223,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertFalse(computer.contains("model.removeComputer(id: computer.id)"))
     }
 
-    func testRemoteEditorsProvisionBeforeDurableSaveAndKeepFailuresVisible() throws {
+    func testRemoteWorkerSavePersistsBeforeBackgroundProvisioningWhileComputerSetupStaysTransactional() throws {
         let worker = try sourceText("Sources/WorkjetApp/WorkerEditorView.swift")
         let computer = try sourceText("Sources/WorkjetApp/ComputerEditorView.swift")
         let model = try sourceText("Sources/WorkjetCore/ViewModel.swift")
@@ -231,9 +231,10 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(worker.contains("if selectedComputer?.isLocal == false"))
         XCTAssertTrue(worker.contains("startDurableSave()\n            return"))
         XCTAssertTrue(worker.contains("let result = await model.saveWorkerDurably(saved)"))
-        XCTAssertTrue(model.contains("let provisioning = await provisionRemoteWorker(worker, on: computer)"))
-        XCTAssertTrue(model.contains("if let failure = provisioning.failure"))
-        XCTAssertTrue(model.contains("return await performDurableConfigurationMutation"))
+        XCTAssertTrue(model.contains("let result = await performDurableConfigurationMutation"))
+        XCTAssertTrue(model.contains("Remote-Komponenten werden im Hintergrund eingerichtet."))
+        XCTAssertTrue(model.contains("_ = await self.provisionRemoteWorker(worker, on: computer)"))
+        XCTAssertTrue(model.range(of: "let result = await performDurableConfigurationMutation")!.lowerBound < model.range(of: "_ = await self.provisionRemoteWorker(worker, on: computer)")!.lowerBound)
 
         XCTAssertTrue(computer.contains("let provisioning = await model.provisionConfiguredWorkers(on: deployed)"))
         XCTAssertTrue(computer.contains("deploymentStatus = .failed"))
@@ -256,8 +257,10 @@ final class ClickUserStoryContractTests: XCTestCase {
         XCTAssertTrue(computer.contains("Button(persistenceOperationInFlight ? \"Wird gespeichert …\" : \"Für später speichern\") { saveConnectionForLater() }"))
         XCTAssertTrue(computer.contains("let template = preferredRemoteDefaults"))
         XCTAssertTrue(computer.contains("draft.identityFilePath = template.identityFilePath"))
-        XCTAssertTrue(computer.contains("Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität"))
-        XCTAssertTrue(computer.contains("field(label: \"Linux-Konto\""))
+        XCTAssertTrue(computer.contains("Tailscale übernimmt Schlüssel und Geräteidentität"))
+        XCTAssertTrue(computer.contains("label: \"Linux-Konto\""))
+        XCTAssertTrue(computer.contains("!usesManagedTailscaleSSH,"))
+        XCTAssertTrue(computer.contains("Workjet übernimmt es nicht von einem anderen Computer"))
         XCTAssertTrue(computer.contains("Button(\"Auf Tailscale SSH umstellen\")"))
     }
 

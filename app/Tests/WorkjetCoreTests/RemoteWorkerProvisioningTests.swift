@@ -203,7 +203,7 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
     }
 
     @MainActor
-    func testRemoteDurableSaveProvisionsBeforePersistenceAndKeepsFailureOutOfConfiguration() async {
+    func testRemoteDurableSavePersistsImmediatelyAndReportsBackgroundProvisioningFailure() async {
         var configuration = WorkjetDefaults.configuration()
         let computer = remoteComputer()
         configuration.computers.append(computer)
@@ -221,19 +221,96 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
 
         let saved = await model.saveWorkerDurably(worker)
         XCTAssertEqual(saved, .succeeded)
-        XCTAssertEqual(service.events, ["provision", "save"])
         XCTAssertEqual(model.workers.map(\.id), [worker.id])
+        for _ in 0..<50 where !service.events.contains("provision") { await Task.yield() }
+        XCTAssertEqual(service.events.first, "save")
+        XCTAssertTrue(service.events.contains("provision"))
 
         worker.name = "Failed replacement"
         let failedComponent = RemoteProvisioningComponent(kind: .managedSkill, id: "greppy", state: .broken, detail: "Digest stimmt nicht.")
         service.provisioningResult = RemoteWorkerProvisioningResult(workerIDs: [worker.id], computerID: computer.id, components: [failedComponent], failure: RemoteProvisioningFailure(component: failedComponent))
-        let failed = await model.saveWorkerDurably(worker)
+        let replacement = await model.saveWorkerDurably(worker)
 
-        guard case let .failed(message) = failed else { return XCTFail("Expected provisioning failure") }
-        XCTAssertTrue(message.contains("Skill greppy"))
-        XCTAssertEqual(service.events, ["provision", "save", "provision"])
-        XCTAssertNotEqual(model.workers.first?.name, "Failed replacement")
+        XCTAssertEqual(replacement, .succeeded)
+        XCTAssertEqual(model.workers.first?.name, "Failed replacement")
+        for _ in 0..<50 where model.workerProvisioningFailures[worker.id] == nil { await Task.yield() }
         XCTAssertEqual(model.workerProvisioningFailures[worker.id]?.component.id, "greppy")
+        XCTAssertTrue(model.workerProvisioningFailures[worker.id]?.userVisibleDetail.contains("Digest") == true)
+    }
+
+    /// Opt-in production-path smoke test. The gate contains host, Linux user,
+    /// and optionally `greppy` on a third line. Its configuration is isolated
+    /// in a disposable home, while provisioning talks to the real Workjet host.
+    @MainActor
+    func testLiveRemoteWorkerSaveProvisionsAndDeletesCleanly() async throws {
+        let gate = URL(fileURLWithPath: "/tmp/workjet-live-remote-worker-test")
+        guard let contents = try? String(contentsOf: gate, encoding: .utf8) else {
+            throw XCTSkip("Live-Remote-Worker-Test ist nur mit explizitem Ziel aktiv.")
+        }
+        let values = contents.split(whereSeparator: \.isNewline).map(String.init)
+        guard values.count >= 2 else {
+            return XCTFail("Gate benötigt Tailscale-Host und Linux-Konto auf zwei Zeilen.")
+        }
+        let testsGreppy = values.dropFirst(2).contains("greppy")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("workjet-live-worker-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = WorkjetPaths(homeDirectory: root)
+        let computer = Computer(
+            name: "Live Remote Test",
+            transport: .tailscale,
+            host: values[0],
+            user: values[1],
+            deploymentStatus: .installed,
+            deploymentDetail: "Live-Testziel ist eingerichtet.",
+            installedSidecarVersion: PiSidecarRuntime.version,
+            tailscaleSSHEnabled: true,
+            tailscaleExecutablePath: "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+            bubblewrapExecutablePath: "/usr/bin/bwrap"
+        )
+        var configuration = WorkjetDefaults.configuration()
+        configuration.computers.append(computer)
+        configuration.workers = []
+        configuration.selectedComputerID = computer.id
+        try JSONConfigurationStore(fileURL: paths.configurationFile).save(configuration)
+
+        let bootstrap = WorkjetBootstrap.live(paths: paths)
+        let model = WorkjetViewModel(configuration: bootstrap.configuration, service: bootstrap.service, persistenceDelay: 0)
+        let worker = Worker(
+            name: "Workjet Live Remote Smoke Test",
+            harness: .claudeCode,
+            model: "grok-4.5",
+            instructions: "Reply only with hi.",
+            reasoningEffort: .medium,
+            computerID: computer.id,
+            providerPool: .xAI,
+            skillOverrides: [
+                WorkerSkillCatalog.greppyID: testsGreppy,
+                WorkerSkillCatalog.webResearchID: false
+            ],
+            invocation: HarnessAdapterRegistry.descriptor(for: .claudeCode).defaultInvocation
+        )
+
+        let startedAt = Date()
+        let saveResult = await model.saveWorkerDurably(worker)
+        XCTAssertEqual(saveResult, .succeeded)
+        XCTAssertLessThan(Date().timeIntervalSince(startedAt), 5, "Speichern darf nicht auf Remote-Installationen warten.")
+        XCTAssertEqual(try JSONConfigurationStore(fileURL: paths.configurationFile).load()?.workers.map(\.id), [worker.id])
+
+        let timeout: TimeInterval = testsGreppy ? 3_900 : 180
+        let deadline = Date().addingTimeInterval(timeout)
+        while model.harnessStatus(.claudeCode, on: computer.id).state == .checking,
+              model.workerProvisioningFailures[worker.id] == nil,
+              Date() < deadline {
+            try await Task.sleep(for: .seconds(1))
+        }
+        let status = model.harnessStatus(.claudeCode, on: computer.id)
+        XCTAssertEqual(status.state, .installed, status.detail)
+        XCTAssertNil(model.workerProvisioningFailures[worker.id])
+
+        let deletionResult = await model.deleteWorker(id: worker.id)
+        XCTAssertEqual(deletionResult, .deleted)
+        XCTAssertTrue(try XCTUnwrap(JSONConfigurationStore(fileURL: paths.configurationFile).load()).workers.isEmpty)
     }
 
     private func remoteComputer(name: String = "gpu3-a4500") -> Computer {

@@ -436,7 +436,21 @@ public final class WorkjetViewModel: ObservableObject {
         }
         if let failure = result.failure {
             remoteHostErrors[computer.id] = failure.userVisibleDetail
-            for worker in workers { workerProvisioningFailures[worker.id] = failure }
+            for worker in workers {
+                workerProvisioningFailures[worker.id] = failure
+                if harnessStatus(worker.harness, on: computer.id).state == .checking {
+                    setHarnessStatus(
+                        HarnessComputerStatus(
+                            state: .broken,
+                            detail: "Remote-Bereitstellung fehlgeschlagen. \(failure.userVisibleDetail)",
+                            action: .check,
+                            actions: [.check]
+                        ),
+                        harness: worker.harness,
+                        computerID: computer.id
+                    )
+                }
+            }
         } else {
             remoteHostErrors[computer.id] = nil
             for worker in workers { workerProvisioningFailures[worker.id] = nil }
@@ -734,18 +748,24 @@ public final class WorkjetViewModel: ObservableObject {
         guard let computer = computers.first(where: { $0.id == worker.computerID }) else {
             return .failed("„\(worker.name)“ wurde nicht gespeichert. Der ausgewählte Computer ist nicht mehr vorhanden.")
         }
-        if !computer.isLocal {
-            let provisioning = await provisionRemoteWorker(worker, on: computer)
-            if let failure = provisioning.failure {
-                return .failed("„\(worker.name)“ wurde nicht gespeichert. Die Remote-Bereitstellung ist fehlgeschlagen. \(failure.userVisibleDetail)")
-            }
-        }
-        return await performDurableConfigurationMutation(
+        let result = await performDurableConfigurationMutation(
             failureMessage: { failure in
                 "„\(worker.name)“ wurde nicht gespeichert. Die vorherige Konfiguration wurde wiederhergestellt. Persistenzfehler: \(failure)"
             },
             mutation: { upsertWorker(worker) }
         )
+        guard result == .succeeded, !computer.isLocal else { return result }
+
+        setHarnessStatus(
+            HarnessComputerStatus(state: .checking, detail: "Remote-Komponenten werden im Hintergrund eingerichtet.", action: .check),
+            harness: worker.harness,
+            computerID: computer.id
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.provisionRemoteWorker(worker, on: computer)
+        }
+        return result
     }
 
     public func workerDeletionBlockReason(id: UUID) -> String? {

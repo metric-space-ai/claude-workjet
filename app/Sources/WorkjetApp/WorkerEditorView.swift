@@ -716,9 +716,10 @@ struct WorkerEditorView: View {
             return
         }
         if selectedComputer?.isLocal == false {
-            // Remote Save owns dependency provisioning. Missing harnesses and
-            // enabled managed skills are installed and verified before the
-            // durable worker mutation is allowed to run.
+            // Persist the declaration first. Missing harnesses and managed
+            // skills are installed and verified in the background so a first
+            // source build (for example Greppy) cannot trap this sheet in a
+            // misleading "saving" state.
             startDurableSave()
             return
         }

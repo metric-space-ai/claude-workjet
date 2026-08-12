@@ -220,6 +220,7 @@ final class RemoteHostOnboardingTests: XCTestCase {
         XCTAssertEqual(result.deploymentStatus, .blocked)
         XCTAssertEqual(result.remoteSetupIssue, .tailscaleAccessDenied)
         XCTAssertTrue(result.deploymentDetail.contains("workjet"))
+        XCTAssertTrue(result.deploymentDetail.contains("pi.tailnet.ts.net"))
         XCTAssertTrue(result.deploymentDetail.contains("SSH-Policy"))
     }
 

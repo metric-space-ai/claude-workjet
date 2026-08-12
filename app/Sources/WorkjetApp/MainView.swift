@@ -145,10 +145,11 @@ struct MainView: View {
 
 /// Header: "Workjet" title, then directly clickable independent computer
 /// buttons with visible gaps (Local always present), plus a separate `+`
-/// button at the end. No dropdown, no segmented-control shell; horizontal
-/// scrolling without an overflow arrow.
+/// button at the end. No dropdown or segmented-control shell; explicit arrows
+/// keep every remote computer reachable when the horizontal row overflows.
 struct HeaderView: View {
     @EnvironmentObject private var model: WorkjetViewModel
+    @State private var remoteViewportIndex = 0
     let onOpenHealthRecovery: () -> Void
     let onAddComputer: () -> Void
     let onEditComputer: (Computer) -> Void
@@ -167,16 +168,46 @@ struct HeaderView: View {
                 if let local = model.computers.first(where: \.isLocal) {
                     computerChoice(local)
                 }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(model.computers.filter { !$0.isLocal }) { computer in
-                            computerChoice(computer)
+                let remoteComputers = model.computers.filter { !$0.isLocal }
+                ScrollViewReader { proxy in
+                    HStack(spacing: 4) {
+                        if remoteComputers.count > 1 {
+                            computerScrollButton(systemName: "chevron.left", label: "Vorherige Computer anzeigen") {
+                                let targetIndex = min(remoteComputers.count - 1, max(0, remoteViewportIndex - 1))
+                                remoteViewportIndex = targetIndex
+                                withAnimation { proxy.scrollTo(remoteComputers[targetIndex].id, anchor: .leading) }
+                            }
+                            .disabled(remoteViewportIndex == 0)
+                            .accessibilityIdentifier("header.computer-scroll.left")
+                        }
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(remoteComputers) { computer in
+                                    computerChoice(computer)
+                                        .id(computer.id)
+                                }
+                            }
+                            .padding(.vertical, 1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .accessibilityIdentifier("header.computer-scroll")
+                        if remoteComputers.count > 1 {
+                            computerScrollButton(systemName: "chevron.right", label: "Weitere Computer anzeigen") {
+                                let targetIndex = min(remoteComputers.count - 1, remoteViewportIndex + 1)
+                                remoteViewportIndex = targetIndex
+                                withAnimation { proxy.scrollTo(remoteComputers[targetIndex].id, anchor: .trailing) }
+                            }
+                            .disabled(remoteViewportIndex >= remoteComputers.count - 1)
+                            .accessibilityIdentifier("header.computer-scroll.right")
                         }
                     }
-                    .padding(.vertical, 1)
+                    .onChange(of: model.selectedComputerID) { _, selectedID in
+                        guard let index = remoteComputers.firstIndex(where: { $0.id == selectedID }) else { return }
+                        remoteViewportIndex = index
+                        withAnimation { proxy.scrollTo(selectedID, anchor: .center) }
+                    }
                 }
                 .frame(maxWidth: .infinity)
-                .accessibilityIdentifier("header.computer-scroll")
                 Button(action: onAddComputer) {
                     Image(systemName: "plus")
                 }
@@ -189,6 +220,16 @@ struct HeaderView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func computerScrollButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .frame(width: 16, height: 24)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .help(label)
     }
 
     private func computerChoice(_ computer: Computer) -> some View {

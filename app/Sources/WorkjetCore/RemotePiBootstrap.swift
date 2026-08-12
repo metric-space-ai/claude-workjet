@@ -65,6 +65,7 @@ public enum RemotePiBootstrapError: LocalizedError, Equatable {
 /// can replace the target, URL, version, or digest.
 public enum RemoteManagedSkillArtifact {
     public static let greppyVersion = "0.3.1"
+    public static let greppyRustToolchain = "1.95.0"
     public static let greppyCommit = "547705051d2c69481955e218f62f404e75e974ed"
     public static let greppySourceURL = "https://github.com/metric-space-ai/greppy/archive/547705051d2c69481955e218f62f404e75e974ed.tar.gz"
     public static let greppySourceSHA256 = "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d"
@@ -750,17 +751,19 @@ const runsRoot = path.join(stateRoot, "runs");
 const reposRoot = path.join(stateRoot, "repos");
 const worktreesRoot = path.join(stateRoot, "worktrees");
 const importsRoot = path.join(stateRoot, "imports");
+const claudeConfigRoot = path.join(stateRoot, "claude-config");
 const harnessesRoot = path.join(os.homedir(), ".local", "lib", "workjet", "harnesses");
 const managedNPMRoot = path.join(harnessesRoot, "npm");
 const managedNPMBin = path.join(managedNPMRoot, "bin");
 const managedSkillsRoot = path.join(os.homedir(), ".local", "lib", "workjet", "skills");
 const managedSkillsBin = path.join(managedSkillsRoot, "bin");
 const GREPPY_VERSION = "0.3.1";
+const GREPPY_RUST_TOOLCHAIN = "1.95.0";
 const GREPPY_COMMIT = "547705051d2c69481955e218f62f404e75e974ed";
 const GREPPY_SOURCE_URL = "https://github.com/metric-space-ai/greppy/archive/547705051d2c69481955e218f62f404e75e974ed.tar.gz";
 const GREPPY_SOURCE_SHA256 = "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d";
 process.umask(0o077);
-for (const directory of [stateRoot, runsRoot, reposRoot, worktreesRoot, importsRoot]) {
+for (const directory of [stateRoot, runsRoot, reposRoot, worktreesRoot, importsRoot, claudeConfigRoot]) {
   fs.mkdirSync(directory, {recursive: true, mode: 0o700});
   const info = fs.lstatSync(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.geteuid()) throw new Error("unsafe host state directory");
@@ -1228,6 +1231,104 @@ const inspectManagedSkill = (skillID, action = "inspect") => {
   }
   return {skillID, action, state: "installed", version, detail: `Greppy ${version} ist verwaltet installiert und bereit.`};
 };
+const cBuildToolchainReady = () => {
+  const compiler = executableAt(["/usr/bin/cc", "/usr/bin/gcc"]);
+  if (!compiler || !fs.existsSync("/usr/include/stdio.h") || !fs.existsSync("/usr/include/limits.h")) return false;
+  for (const artifact of ["crtbeginS.o", "liblto_plugin.so"]) {
+    const located = runLifecycleCommand(compiler, [`-print-file-name=${artifact}`], 10000, {}, 4096, 4096);
+    const candidate = located.output.trim().split(/\r?\n/).at(-1) ?? "";
+    if (!located.ok || !path.isAbsolute(candidate) || !fs.existsSync(candidate)) return false;
+  }
+  return true;
+};
+const repairSteamOSBuildToolchain = () => {
+  let operatingSystem = "";
+  try { operatingSystem = fs.readFileSync("/etc/os-release", "utf8"); } catch {}
+  if (!/^ID=steamos$/m.test(operatingSystem)) return false;
+  const sudo = executableAt(["/usr/bin/sudo"]);
+  const readonly = executableAt(["/usr/bin/steamos-readonly"]);
+  const pacman = executableAt(["/usr/bin/pacman"]);
+  const pacmanKey = executableAt(["/usr/bin/pacman-key"]);
+  if (!sudo || !readonly || !pacman || !pacmanKey) return false;
+  if (!runLifecycleCommand(sudo, ["-n", "true"], 10000).ok) return false;
+  const disabled = runLifecycleCommand(sudo, ["-n", readonly, "disable"], 30000, {}, 65536, 65536);
+  if (!disabled.ok) return false;
+  let repaired = false;
+  try {
+    if (!fs.existsSync("/etc/pacman.d/gnupg/pubring.gpg")) {
+      if (!runLifecycleCommand(sudo, ["-n", pacmanKey, "--init"], 120000, {}, 65536, 131072).ok) return false;
+      if (!runLifecycleCommand(sudo, ["-n", pacmanKey, "--populate", "archlinux", "holo"], 120000, {}, 65536, 131072).ok) return false;
+    }
+    if (!runLifecycleCommand(sudo, ["-n", pacman, "-Sy", "--noconfirm"], 180000, {}, 65536, 131072).ok) return false;
+    const packages = ["gcc", "glibc", "linux-api-headers"];
+    let installed = runLifecycleCommand(sudo, ["-n", pacman, "-S", "--noconfirm", "--needed", ...packages], 600000, {}, 131072, 262144);
+    // SteamOS images can contain a deliberately stripped, unowned compiler
+    // surface. In that exact state pacman must adopt those files before the
+    // missing headers and linker support can be restored.
+    if (!installed.ok && installed.output.includes("exists in filesystem")) {
+      installed = runLifecycleCommand(sudo, ["-n", pacman, "-S", "--noconfirm", "--needed", "--overwrite", "*", ...packages], 600000, {}, 131072, 262144);
+    }
+    repaired = installed.ok;
+  } finally {
+    runLifecycleCommand(sudo, ["-n", readonly, "enable"], 30000, {}, 65536, 65536);
+  }
+  return repaired && cBuildToolchainReady();
+};
+const resolveCudaBuildEnvironment = () => {
+  const home = os.homedir();
+  const direct = executableAt([
+    "/usr/local/cuda/bin/nvcc",
+    "/opt/cuda/bin/nvcc",
+    path.join(home, ".local/cuda/bin/nvcc")
+  ]);
+  let nvcc = direct;
+  if (!nvcc) {
+    const find = executableAt(["/usr/bin/find"]);
+    const applications = path.join(home, "Applications");
+    if (find && fs.existsSync(applications)) {
+      const discovered = runLifecycleCommand(
+        find,
+        [applications, "-maxdepth", "10", "-type", "f", "-path", "*/site-packages/nvidia/cu*/bin/nvcc", "-print", "-quit"],
+        30000,
+        {},
+        4096,
+        4096
+      );
+      const candidate = discovered.output.trim().split(/\r?\n/).at(-1) ?? "";
+      if (discovered.ok && candidate.startsWith(home + path.sep) && executableAt([candidate])) nvcc = candidate;
+    }
+  }
+  if (!nvcc) return null;
+  const cudaHome = path.dirname(path.dirname(nvcc));
+  const library = [path.join(cudaHome, "lib64"), path.join(cudaHome, "lib")]
+    .find(candidate => ["libcublas_static.a", "libcublasLt_static.a", "libculibos.a"]
+      .every(file => fs.existsSync(path.join(candidate, file))));
+  // A pip-provided nvcc alone is not a complete Greppy CUDA SDK. Greppy's
+  // native backend deliberately links the static cuBLAS surface; fall back to
+  // its supported CPU feature instead of wasting minutes on a doomed build.
+  if (!library) return null;
+  let cudaArchList = "";
+  const nvidiaSMI = executableAt(["/usr/bin/nvidia-smi", "/usr/local/bin/nvidia-smi"]);
+  if (nvidiaSMI) {
+    const computeCapabilities = runLifecycleCommand(nvidiaSMI, ["--query-gpu=compute_cap", "--format=csv,noheader"], 10000, {}, 4096, 4096);
+    if (computeCapabilities.ok) {
+      cudaArchList = [...new Set(computeCapabilities.output
+        .split(/\r?\n/)
+        .map(value => value.trim())
+        .filter(value => /^\d+\.\d+$/.test(value))
+        .map(value => value.replace(".", "")))]
+        .join(",");
+    }
+  }
+  return {
+    NVCC: nvcc,
+    CUDA_HOME: cudaHome,
+    ...(cudaArchList ? {CUDA_ARCH_LIST: cudaArchList} : {}),
+    PATH: `${path.dirname(nvcc)}${path.delimiter}${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`,
+    LIBRARY_PATH: `${library}${path.delimiter}${process.env.LIBRARY_PATH ?? ""}`,
+    LD_LIBRARY_PATH: `${library}${path.delimiter}${process.env.LD_LIBRARY_PATH ?? ""}`
+  };
+};
 const installManagedSkill = (skillID, action) => {
   const definition = managedSkillDefinitions[skillID];
   if (!definition) return null;
@@ -1240,6 +1341,7 @@ const installManagedSkill = (skillID, action) => {
   const tar = executableAt(["/usr/bin/tar"]);
   if (!curl || !tar) return {skillID, action, state: "unavailable", detail: "Für die sichere Greppy-Installation fehlen /usr/bin/curl oder /usr/bin/tar."};
   let temporary;
+  let buildFailureOutput = "";
   var phase = "Vorbereitung";
   try {
     ensureManagedSkillDirectories();
@@ -1266,6 +1368,25 @@ const installManagedSkill = (skillID, action) => {
     for (const required of ["Cargo.toml", "Cargo.lock", "crates/cli"]) if (!fs.existsSync(path.join(sourceRoot, required))) throw new Error("source contents invalid");
     const cargo = executableAt([path.join(os.homedir(), ".cargo/bin/cargo"), "/usr/bin/cargo"]);
     if (!cargo) throw new Error("cargo unavailable");
+    const rustup = executableAt([path.join(os.homedir(), ".cargo/bin/rustup")]);
+    let cargoToolchainArguments = [];
+    if (rustup) {
+      const installedToolchains = runLifecycleCommand(rustup, ["toolchain", "list"], 10000, {}, 65536, 65536);
+      if (!installedToolchains.ok) throw new Error("rust toolchain unavailable");
+      const exactToolchain = new RegExp(`^${GREPPY_RUST_TOOLCHAIN.replaceAll(".", "\\.")}(-|$)`, "m");
+      if (!exactToolchain.test(installedToolchains.output)) {
+        phase = "Rust-Toolchain";
+        const installed = runLifecycleCommand(rustup, ["toolchain", "install", GREPPY_RUST_TOOLCHAIN, "--profile", "minimal"], 600000, {}, 65536, 131072);
+        if (!installed.ok) throw new Error("rust toolchain unavailable");
+      }
+      cargoToolchainArguments = [`+${GREPPY_RUST_TOOLCHAIN}`];
+    } else {
+      const cargoVersion = runLifecycleCommand(cargo, ["--version"], 10000, {}, 4096, 4096);
+      const parsedCargo = /cargo\s+(\d+)\.(\d+)\./.exec(cargoVersion.output);
+      if (!cargoVersion.ok || !parsedCargo || Number(parsedCargo[1]) !== 1 || Number(parsedCargo[2]) < 95) throw new Error("cargo incompatible");
+    }
+    phase = "Build-Werkzeuge";
+    if (!cBuildToolchainReady() && !repairSteamOSBuildToolchain()) throw new Error("c build toolchain unavailable");
     const assetManifestPath = path.join(sourceRoot, "crates/cli/assets/MODEL_ASSETS.json");
     const sha256sum = executableAt(["/usr/bin/sha256sum"]);
     if (!sha256sum || !fs.existsSync(assetManifestPath)) throw new Error("model asset tooling unavailable");
@@ -1297,23 +1418,29 @@ const installManagedSkill = (skillID, action) => {
     fs.mkdirSync(cargoHome, {mode: 0o700});
     if (!safeOwnedDirectory(cargoTarget, temporary) || !safeOwnedDirectory(cargoHome, temporary)) throw new Error("unsafe cargo directory");
     phase = "Rust-Build";
+    const cudaEnvironment = resolveCudaBuildEnvironment();
+    const buildFeatures = cudaEnvironment ? [] : ["--features", "cpu-only"];
     const compiled = runLifecycleCommand(
       cargo,
       // Cargo's normal progress stream can exceed execFileSync's bounded
       // capture buffer on a clean host and abort an otherwise healthy build.
       // Quiet mode keeps failures visible while making the managed install
       // independent of dependency count and terminal verbosity.
-      ["build", "--quiet", "--manifest-path", path.join(sourceRoot, "Cargo.toml"), "--release", "--locked", "--target-dir", cargoTarget, "--bin", "greppy"],
+      [...cargoToolchainArguments, "build", "--quiet", "--manifest-path", path.join(sourceRoot, "Cargo.toml"), "--release", "--locked", "--target-dir", cargoTarget, "--bin", "greppy", ...buildFeatures],
       // A clean Linux CUDA build embeds both model payloads and compiles the
       // native kernels. On a busy worker this legitimately takes longer than
       // 15 minutes; timing it out discards a healthy build just before link.
       3600000,
       {
         CARGO_HOME: cargoHome,
-        PATH: `${path.dirname(cargo)}${path.delimiter}${process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`
+        ...(cudaEnvironment ?? {}),
+        PATH: `${path.dirname(cargo)}${path.delimiter}${cudaEnvironment?.PATH ?? process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin"}`
       }
     );
-    if (!compiled.ok) throw new Error("cargo build failed");
+    if (!compiled.ok) {
+      buildFailureOutput = compiled.output.slice(-65536);
+      throw new Error("cargo build failed");
+    }
     const source = path.join(cargoTarget, "release", "greppy");
     const sourceInfo = fs.lstatSync(source);
     if (!sourceInfo.isFile() || sourceInfo.isSymbolicLink() || sourceInfo.uid !== process.geteuid()) throw new Error("compiled executable invalid");
@@ -1331,11 +1458,25 @@ const installManagedSkill = (skillID, action) => {
     }
     fs.renameSync(staged, destination);
   } catch (error) {
+    if (buildFailureOutput) {
+      try {
+        ensureDirectory(stateRoot);
+        const buildLog = path.join(stateRoot, "greppy-build.log");
+        fs.writeFileSync(buildLog, buildFailureOutput, {encoding: "utf8", mode: 0o600});
+        fs.chmodSync(buildLog, 0o600);
+      } catch {}
+    }
     if (temporary) try { fs.rmSync(temporary, {recursive: true, force: true}); } catch {}
     const reason = error.message === "digest mismatch"
       ? "Der Greppy-Download hat nicht die erwartete SHA-256-Prüfsumme. Es wurde nichts aktiviert."
       : error.message === "cargo unavailable"
         ? "Greppy 0.3.1 muss auf Linux aus dem gepinnten Quellstand gebaut werden; eine Rustup-Cargo-Toolchain wurde nicht gefunden."
+        : error.message === "cargo incompatible" || error.message === "rust toolchain unavailable"
+          ? `Greppy 0.3.1 benötigt Rust ${GREPPY_RUST_TOOLCHAIN}. Die passende verwaltete Toolchain konnte nicht eingerichtet werden.`
+        : error.message === "c build toolchain unavailable"
+          ? "Greppy 0.3.1 benötigt einen vollständigen C-Buildsatz (Compiler, libc-Header und Linker-Plugin). Workjet konnte ihn auf diesem Computer nicht automatisch einrichten."
+        : buildFailureOutput.includes("no GPU backend for this target")
+          ? "Greppy 0.3.1 fand kein nutzbares GPU-Backend. Workjet hat den vorgesehenen CPU-Build versucht; Details stehen in ~/.local/state/workjet/host/greppy-build.log."
         : `Greppy 0.3.1 konnte in der Phase „${phase}“ nicht sicher installiert werden. Die bisherige Installation blieb unverändert.`;
     return {skillID, action, state: "broken", detail: reason};
   }
@@ -1465,6 +1606,14 @@ const providerEnvironment = (harnessID, launch, candidate, secret) => {
     environment.XAI_BASE_URL = candidate.endpoint;
     if (candidate.authentication !== "Ohne Zugang") environment.XAI_API_KEY = secret;
   }
+  if (harnessID === "claude-code") {
+    // A remote computer may already use Claude Code with personal settings or
+    // a different local gateway. Those settings must never override the route
+    // selected by Workjet for this run. Keep Workjet's headless harness state
+    // private and independent from ~/.claude.
+    environment.CLAUDE_CONFIG_DIR = claudeConfigRoot;
+    environment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
+  }
   if (launch.webResearch === true) {
     if (candidate.kind !== "gatewayPool") throw new Error("Web Research benötigt auf diesem Computer eine Workjet-Gateway-Route");
     environment.WORKJET_WEB_RESEARCH_BASE_URL = webResearchBaseURL(candidate.endpoint);
@@ -1531,11 +1680,19 @@ const redactingRecorder = (kind, secrets, accept) => {
 };
 const readEphemeralProviderExecution = async () => {
   let data = Buffer.alloc(0);
-  for await (const chunk of process.stdin) {
-    data = Buffer.concat([data, chunk]);
-    if (data.length > 600000) throw new Error("provider credential delivery is too large");
+  const systemdDelivery = process.env.WORKJET_EPHEMERAL_PROVIDER_EXECUTION;
+  delete process.env.WORKJET_EPHEMERAL_PROVIDER_EXECUTION;
+  if (systemdDelivery != null) {
+    if (systemdDelivery.length > 800000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(systemdDelivery)) throw new Error("provider credential delivery is invalid");
+    data = Buffer.from(systemdDelivery, "base64");
+    if (data.toString("base64") !== systemdDelivery) throw new Error("provider credential delivery is invalid");
+  } else {
+    for await (const chunk of process.stdin) {
+      data = Buffer.concat([data, chunk]);
+      if (data.length > 600000) throw new Error("provider credential delivery is too large");
+    }
   }
-  if (!data.length) throw new Error("provider credentials were not delivered");
+  if (!data.length || data.length > 600000) throw new Error("provider credentials were not delivered");
   return validateProviderExecution(JSON.parse(data.toString("utf8")));
 };
 
@@ -2015,9 +2172,56 @@ if (request.operation === "probe") {
     credentialDelivery: "required"
   });
   const monitorBasePath = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
-  const monitorProcess = spawn(process.execPath, [process.argv[1], "--monitor", runID], {cwd: release, detached: true, stdio: ["pipe", "ignore", "ignore"], env: {HOME: process.env.HOME ?? "", PATH: `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${monitorBasePath}`}});
-  monitorProcess.stdin.end(JSON.stringify(providerExecution));
-  monitorProcess.unref();
+  const systemdRun = executableAt(["/usr/bin/systemd-run"]);
+  let systemdRuntime = process.env.XDG_RUNTIME_DIR;
+  if (!systemdRuntime && typeof process.geteuid === "function") {
+    const candidate = `/run/user/${process.geteuid()}`;
+    const bus = path.join(candidate, "bus");
+    try {
+      const runtimeInfo = fs.lstatSync(candidate);
+      const busInfo = fs.lstatSync(bus);
+      if (runtimeInfo.isDirectory() && !runtimeInfo.isSymbolicLink() && runtimeInfo.uid === process.geteuid()
+          && busInfo.isSocket() && !busInfo.isSymbolicLink() && busInfo.uid === process.geteuid()) systemdRuntime = candidate;
+    } catch {}
+  }
+  if (systemdRun && systemdRuntime) {
+    // Tailscale SSH reaps every process in its session, including detached
+    // children. A transient user service gives the monitor an actual lifecycle
+    // outside that session. The credential is transferred only in systemd's
+    // in-memory environment and the collected unit disappears on monitor exit.
+    const encodedProviderExecution = Buffer.from(JSON.stringify(providerExecution), "utf8").toString("base64");
+    const started = runLifecycleCommand(
+      systemdRun,
+      ["--user", "--quiet", "--collect", "--property", "Type=exec", "--unit", `workjet-monitor-${runID}`, "--setenv=WORKJET_EPHEMERAL_PROVIDER_EXECUTION", process.execPath, process.argv[1], "--monitor", runID],
+      30000,
+      {
+        WORKJET_EPHEMERAL_PROVIDER_EXECUTION: encodedProviderExecution,
+        XDG_RUNTIME_DIR: systemdRuntime,
+        ...(process.env.DBUS_SESSION_BUS_ADDRESS ? {DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS} : {})
+      },
+      4096,
+      65536
+    );
+    if (!started.ok) reject("provider monitor service could not be started");
+  } else {
+    const monitorProcess = spawn(process.execPath, [process.argv[1], "--monitor", runID], {cwd: release, detached: true, stdio: ["pipe", "ignore", "ignore"], env: {HOME: process.env.HOME ?? "", PATH: `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${monitorBasePath}`}});
+    try {
+      await new Promise((resolve, reject) => {
+        const fail = () => reject(new Error("provider credential delivery failed"));
+        monitorProcess.once("error", fail);
+        monitorProcess.stdin.once("error", fail);
+        monitorProcess.stdin.end(JSON.stringify(providerExecution), () => {
+          monitorProcess.off("error", fail);
+          monitorProcess.stdin.off("error", fail);
+          resolve();
+        });
+      });
+    } catch {
+      try { monitorProcess.kill("SIGKILL"); } catch {}
+      reject("provider credential delivery failed");
+    }
+    monitorProcess.unref();
+  }
   response({runID, state: "starting", cursor: 0, metadata: persistedRunMetadata(directory, readState(directory))});
 } else if (request.operation === "events") {
   if (!safeRunID(request.runID)) reject("invalid run id");

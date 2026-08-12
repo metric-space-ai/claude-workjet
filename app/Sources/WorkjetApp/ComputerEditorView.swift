@@ -126,12 +126,19 @@ struct ComputerEditorView: View {
                 field(label: "Host", placeholder: "devbox.example.test", text: $draft.host)
             }
             if usesManagedTailscaleSSH {
+                field(
+                    label: "Linux-Konto",
+                    placeholder: "z. B. deck",
+                    text: $draft.user,
+                    accessibilityIdentifier: "computer.tailscale.user"
+                )
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "checkmark.shield")
                         .foregroundStyle(WJTheme.accent)
-                    Text("Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität. Workjet verwendet automatisch das hinterlegte Linux-Konto.")
+                    Text("Tailscale übernimmt Schlüssel und Geräteidentität. Linux benötigt trotzdem ein vorhandenes Zielkonto; Workjet übernimmt es nicht von einem anderen Computer.")
                         .font(.system(size: 10))
                         .foregroundStyle(WJTheme.secondaryText)
+                        .accessibilityIdentifier("computer.tailscale.account.help")
                 }
             } else {
                 field(label: "SSH-Benutzer", placeholder: "z. B. workjet", text: $draft.user)
@@ -190,9 +197,6 @@ struct ComputerEditorView: View {
                             draft.name = device.hostname
                             pendingHostKey = nil
                             remoteSetupIssue = nil
-                            if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                draft.user = NSUserName()
-                            }
                         } label: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
@@ -331,11 +335,6 @@ struct ComputerEditorView: View {
                     Text("Workjet akzeptiert nur den ausdrücklich bestätigten Schlüssel dieses Computers.")
                         .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
                 }
-                if usesManagedTailscaleSSH {
-                    field(label: "Linux-Konto", placeholder: "z. B. workjet", text: $draft.user)
-                    Text("Tailscale authentifiziert die Verbindung. Das Konto muss auf dem Linux-Ziel bereits existieren; Workjet übernimmt es automatisch von deiner letzten Remote-Konfiguration.")
-                        .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
-                }
                 Text("Pi Code \(PiSidecarRuntime.version) ist in Workjet enthalten.")
                     .font(.system(size: 9)).foregroundStyle(WJTheme.secondaryText)
                 if let current = model.computer(for: draft.id), let hash = current.installedContentHash {
@@ -411,17 +410,18 @@ struct ComputerEditorView: View {
 
     private func prepareDefaults() {
         if computer == nil,
+           !usesManagedTailscaleSSH,
            let template = preferredRemoteDefaults {
             if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 draft.user = template.user
             }
-            if !usesManagedTailscaleSSH,
-               draft.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if draft.identityFilePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 draft.identityFilePath = template.identityFilePath
             }
             reusedConnectionDefaultsFrom = template.name
         }
-        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !usesManagedTailscaleSSH,
+           draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             draft.user = NSUserName()
         }
         if draft.sidecarBundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -602,7 +602,11 @@ struct ComputerEditorView: View {
     private func validationMessageForSave() -> String? {
         if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Wähle einen Computer oder gib einen Namen ein." }
         if draft.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Wähle einen Computer oder gib einen Host ein." }
-        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Gib den SSH-Benutzer dieses Computers ein." }
+        if draft.user.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return usesManagedTailscaleSSH
+                ? "Gib das Linux-Konto auf diesem Zielcomputer ein. Tailscale authentifiziert die Verbindung, ersetzt aber kein lokales Linux-Konto."
+                : "Gib den SSH-Benutzer dieses Computers ein."
+        }
         if !(1...65535).contains(draft.port) { return "Der SSH-Port muss zwischen 1 und 65535 liegen." }
         return nil
     }
@@ -668,15 +672,15 @@ struct ComputerEditorView: View {
             )
         case .tailscaleAccessDenied:
             return TailscaleRecovery(
-                title: "Tailscale SSH verweigert den Zugriff",
-                explanation: "Der Computer ist erreichbar. Entweder existiert das Linux-Konto „\(draft.user)“ dort nicht oder die SSH-Policy des Tailnets erlaubt diesen Zugriff nicht.",
+                title: "\(draft.user)@\(target) wurde abgelehnt",
+                explanation: "Tailscale SSH hat genau diese Anmeldung abgelehnt. Netzwerk und Computer sind erreichbar; Workjet hat den Benutzer nicht erfolgreich angemeldet.",
                 steps: [
-                    "Prüfe auf \(target), dass das Linux-Konto „\(draft.user)“ existiert.",
-                    "Erlaube in der Tailscale-SSH-Policy den Zugriff auf dieses Konto und diesen Computer.",
+                    "Ändere oben „Linux-Konto“, falls auf \(target) ein anderer Benutzer verwendet wird.",
+                    "Falls „\(draft.user)“ korrekt ist: Prüfe, dass das Konto existiert und die Tailscale-SSH-Policy genau diesen Zugriff erlaubt.",
                     "Klicke danach auf „Erneut prüfen & einrichten“."
                 ],
                 command: "id \(draft.user)",
-                action: .showLinuxAccount
+                action: nil
             )
         case .tailscaleNotInstalled:
             return TailscaleRecovery(
@@ -794,11 +798,23 @@ struct ComputerEditorView: View {
         NSPasteboard.general.setString(value, forType: .string)
     }
 
-    private func field(label: String, placeholder: String, text: Binding<String>) -> some View {
+    @ViewBuilder
+    private func field(
+        label: String,
+        placeholder: String,
+        text: Binding<String>,
+        accessibilityIdentifier: String? = nil
+    ) -> some View {
         HStack(spacing: 8) {
             Text(label).font(.system(size: 12)).foregroundStyle(WJTheme.secondaryText).frame(width: 90, alignment: .leading)
-            TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 13)).fieldSurface()
-                .onChange(of: text.wrappedValue) { validationMessage = nil }
+            if let accessibilityIdentifier {
+                TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 13)).fieldSurface()
+                    .onChange(of: text.wrappedValue) { validationMessage = nil }
+                    .accessibilityIdentifier(accessibilityIdentifier)
+            } else {
+                TextField(placeholder, text: text).textFieldStyle(.plain).font(.system(size: 13)).fieldSurface()
+                    .onChange(of: text.wrappedValue) { validationMessage = nil }
+            }
         }
     }
 }

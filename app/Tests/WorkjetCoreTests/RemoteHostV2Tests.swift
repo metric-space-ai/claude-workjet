@@ -87,7 +87,7 @@ else if (behavior.includes("ctx:%s:%s:%s:%s")) {
   process.stdout.write("split-secret-");
   setTimeout(() => line("sentinel"), 1000);
 } else if (behavior === "web-research-environment") {
-  line(`web:${process.env.WORKJET_WEB_RESEARCH_BACKEND}:${process.env.WORKJET_WEB_RESEARCH_BASE_URL}:${process.env.WORKJET_WEB_RESEARCH_API_KEY}:${process.env.GREPPY_STORE_DIR}:${process.execPath}`);
+  line(`web:${process.env.WORKJET_WEB_RESEARCH_BACKEND}:${process.env.WORKJET_WEB_RESEARCH_BASE_URL}:${process.env.WORKJET_WEB_RESEARCH_API_KEY}:${process.env.GREPPY_STORE_DIR}:${process.env.CLAUDE_CONFIG_DIR}:${process.execPath}`);
 } else if (behavior.includes("HTTP 429 rate limit")) {
   if (token === "first-secret") { errorLine("HTTP 429 rate limit"); process.exitCode = 1; } else line("used-second");
 } else if (behavior.includes("tests failed")) {
@@ -365,6 +365,7 @@ else if (behavior.includes("greppy 0.3.1")) {
         let output = terminal.events.compactMap(\.text).joined()
         XCTAssertTrue(output.contains("web:codex:http://127.0.0.1:48123/v1:[REDACTED]"))
         XCTAssertTrue(output.contains(fixture.home.appendingPathComponent(".local/state/workjet/host/greppy").path))
+        XCTAssertTrue(output.contains(fixture.home.appendingPathComponent(".local/state/workjet/host/claude-config").path))
         XCTAssertFalse(output.contains("gateway-token"))
     }
 
@@ -848,11 +849,23 @@ server.listen(socketPath);
         XCTAssertFalse(RemoteManagedSkillArtifact.supportsGreppy(os: "linux", architecture: "aarch64"))
         XCTAssertFalse(RemoteManagedSkillArtifact.validatesGreppySourceArchive(Data("not the pinned release".utf8)))
         XCTAssertEqual(RemoteManagedSkillArtifact.greppyVersion, "0.3.1")
+        XCTAssertEqual(RemoteManagedSkillArtifact.greppyRustToolchain, "1.95.0")
         XCTAssertEqual(RemoteManagedSkillArtifact.greppyCommit, "547705051d2c69481955e218f62f404e75e974ed")
         XCTAssertEqual(RemoteManagedSkillArtifact.greppySourceSHA256, "4d23d1db0f5b9accc2066ac3b430c03c46a904437b6d7456edec21665231907d")
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("cargo build failed"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("--locked"))
-        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("[\"build\", \"--quiet\", \"--manifest-path\""))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("[...cargoToolchainArguments, \"build\", \"--quiet\", \"--manifest-path\""))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("[\"toolchain\", \"install\", GREPPY_RUST_TOOLCHAIN, \"--profile\", \"minimal\"]"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("const cBuildToolchainReady"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("const repairSteamOSBuildToolchain"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("\"gcc\", \"glibc\", \"linux-api-headers\""))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("c build toolchain unavailable"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("const resolveCudaBuildEnvironment"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("[\"--features\", \"cpu-only\"]"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("greppy-build.log"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("workjet-monitor-${runID}"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("WORKJET_EPHEMERAL_PROVIDER_EXECUTION"))
+        XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("Tailscale SSH reaps every process in its session"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("3600000"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains(".cargo/bin/cargo"))
         XCTAssertTrue(RemotePiBootstrap.hostRuntimeSource.contains("path.dirname(cargo)"))

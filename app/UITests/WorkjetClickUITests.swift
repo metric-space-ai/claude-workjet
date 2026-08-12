@@ -99,9 +99,9 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(greppyVersion.label, "Greppy verwaltete Version 0.3.1")
         let webResearch = app.switches["worker.editor.skill.web-research"]
         scrollToHittable(webResearch)
-        XCTAssertEqual(webResearch.value as? String, "Deaktiviert")
+        XCTAssertEqual((webResearch.value as? NSNumber)?.intValue, 0)
         webResearch.click()
-        XCTAssertEqual(webResearch.value as? String, "Aktiviert")
+        XCTAssertEqual((webResearch.value as? NSNumber)?.intValue, 1)
 
         scrollToHittable(app.textFields["worker.editor.name"])
         replaceText(in: app.textFields["worker.editor.name"], with: "Sol · Completion UI")
@@ -123,7 +123,7 @@ final class WorkjetClickUITests: XCTestCase {
         XCTAssertEqual(reopenedInstructions.value as? String, "Persistierte Aufgabe aus dem echten Klicktest.")
         let reopenedWebResearch = app.switches["worker.editor.skill.web-research"]
         scrollToHittable(reopenedWebResearch)
-        XCTAssertEqual(reopenedWebResearch.value as? String, "Aktiviert")
+        XCTAssertEqual((reopenedWebResearch.value as? NSNumber)?.intValue, 1)
 
         // The production provider sheet must expose the masked, non-secret
         // account identity and allow a selected route to be cleared again.
@@ -399,7 +399,10 @@ final class WorkjetClickUITests: XCTestCase {
         addComputer.click()
 
         XCTAssertTrue(app.staticTexts["Computer einrichten"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["Tailscale übernimmt Schlüssel, Anmeldung und Geräteidentität. Workjet verwendet automatisch das hinterlegte Linux-Konto."].exists)
+        XCTAssertTrue(app.staticTexts["computer.tailscale.account.help"].exists)
+        let linuxAccount = app.textFields["computer.tailscale.user"]
+        XCTAssertTrue(linuxAccount.exists)
+        XCTAssertTrue(((linuxAccount.value as? String) ?? "").isEmpty)
         XCTAssertTrue(app.buttons["computer.tailscale.setup"].exists)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "SSH-Benutzer")).count, 0)
         XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label == %@", "SSH-Schlüssel")).count, 0)
@@ -447,6 +450,11 @@ final class WorkjetClickUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(device.waitForExistence(timeout: 15))
         device.click()
+        let linuxAccount = app.textFields["computer.tailscale.user"]
+        if linuxAccount.exists {
+            linuxAccount.click()
+            linuxAccount.typeText(values.dropFirst().first ?? "deck")
+        }
         let setup = app.buttons["computer.tailscale.setup"]
         scrollToHittable(setup)
         XCTAssertTrue(setup.isHittable)
@@ -469,11 +477,6 @@ final class WorkjetClickUITests: XCTestCase {
         )
         XCTAssertTrue(app.buttons["computer.tailscale.copy-activation-command"].exists)
         XCTAssertTrue(app.links["Tailscale-Anleitung"].exists)
-        let showAccount = app.buttons["Linux-Konto anzeigen"]
-        if showAccount.exists {
-            showAccount.click()
-            XCTAssertTrue(app.staticTexts["Linux-Konto"].exists)
-        }
         XCTAssertEqual(app.buttons["computer.tailscale.setup"].label, "Erneut prüfen & einrichten")
         XCTAssertFalse(app.staticTexts["Der Computer konnte nicht vollständig geprüft werden."].exists)
     }
@@ -698,7 +701,11 @@ final class WorkjetClickUITests: XCTestCase {
     private func assertSettingsJump(button label: String, sectionID: String) {
         let button = app.buttons[label]
         XCTAssertTrue(button.waitForExistence(timeout: 3))
-        button.click()
+        // A horizontally clipped SwiftUI button may still report `isHittable`
+        // while its center lies behind the scroll view's clipping edge. Click
+        // the visible leading portion so this test exercises the button action,
+        // not XCTest's out-of-bounds center-point heuristic.
+        button.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.5)).click()
         XCTAssertTrue(button.isSelected, "Der Schnellsprung \(label) muss seine Auswahl anzeigen.")
         let section = app.descendants(matching: .any)[sectionID]
         XCTAssertTrue(section.waitForExistence(timeout: 3), "Der Abschnitt \(label) muss nach dem Klick existieren.")
@@ -731,12 +738,20 @@ final class WorkjetClickUITests: XCTestCase {
     private func clickComputer(_ label: String) {
         let button = app.buttons[label]
         XCTAssertTrue(button.waitForExistence(timeout: 3))
-        for _ in 0..<8 where !button.isHittable {
-            let scroll = app.scrollViews["header.computer-scroll"]
-            XCTAssertTrue(scroll.exists)
-            scroll.scroll(byDeltaX: -140, deltaY: 0)
+        if label == "Computer Local" {
+            XCTAssertTrue(button.isHittable)
+            button.click()
+            return
         }
-        XCTAssertTrue(button.isHittable)
+        let scroll = app.scrollViews["header.computer-scroll"]
+        for _ in 0..<8 {
+            let visibleWidth = scroll.frame.intersection(button.frame).width
+            if button.isHittable, visibleWidth >= min(24, button.frame.width) { break }
+            let next = app.buttons["header.computer-scroll.right"]
+            XCTAssertTrue(next.exists && next.isEnabled)
+            next.click()
+        }
+        XCTAssertTrue(button.isHittable && scroll.frame.intersection(button.frame).width >= min(24, button.frame.width))
         button.click()
     }
 
