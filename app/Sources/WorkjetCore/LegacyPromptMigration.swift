@@ -96,7 +96,7 @@ public enum LegacyPromptMigration {
     public static func removingKnownLegacyStandardCodingTask(from workers: [Worker]) -> [Worker] {
         workers.filter { worker in
             !(worker.name == "Standard Coding Task"
-                && worker.model == "grok-4.5"
+                && ["grok-4.5", "grok-4.6"].contains(worker.model)
                 && worker.harness == .claudeCode
                 && worker.instructions == "for standard high volume coding tasks"
                 && worker.reasoningEffort == .high

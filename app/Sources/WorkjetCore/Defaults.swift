@@ -155,9 +155,9 @@ public enum WorkjetDefaults {
             ),
             Worker(
                 id: UUID(uuidString: "00000000-0000-0000-0000-000000000015")!,
-                name: "Prototype A · Grok 4.5",
+                name: "Prototype A · Grok 4.6",
                 harness: .claudeCode,
-                model: "grok-4.5",
+                model: "grok-4.6",
                 instructions: ModelPromptCatalog.prototypeDiscoveryPrompt,
                 computerID: localID,
                 invocation: invocation(

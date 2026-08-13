@@ -438,7 +438,7 @@ final class WorkjetCLITests: XCTestCase {
 
         let gateway = Credentials([CLIProxyGatewayCredentialStore.reference: Data("gateway-secret".utf8)])
         let paths = WorkjetPaths(homeDirectory: root, stateDirectory: root.appendingPathComponent("state", isDirectory: true))
-        var worker = Worker(name: "Research-enabled Grok", harness: .claudeCode, model: "grok-4.5", computerID: localID)
+        var worker = Worker(name: "Research-enabled Grok", harness: .claudeCode, model: "grok-4.6", computerID: localID)
         worker.invocation = WorkerInvocation(executable: harness.path, arguments: ["--bare", "-p", "<WORKJET_BRIEF>", "--allowedTools", "Read,Write,Edit,Grep,Glob,Bash"])
         let route = ResolvedProviderRuntimeRoute(displayName: "xAI Gateway", candidates: [
             ProviderRuntimeCandidate(kind: .gatewayPool, providerID: nil, modelProvider: .xAI, displayName: "xAI Gateway", endpoint: "http://127.0.0.1:8317", authentication: .bearerToken, credentialReference: CLIProxyGatewayCredentialStore.reference)

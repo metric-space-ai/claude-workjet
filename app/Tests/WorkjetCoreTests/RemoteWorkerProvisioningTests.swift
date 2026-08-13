@@ -279,7 +279,7 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         let worker = Worker(
             name: "Workjet Live Remote Smoke Test",
             harness: .claudeCode,
-            model: "grok-4.5",
+            model: "grok-4.6",
             instructions: "Reply only with hi.",
             reasoningEffort: .medium,
             computerID: computer.id,

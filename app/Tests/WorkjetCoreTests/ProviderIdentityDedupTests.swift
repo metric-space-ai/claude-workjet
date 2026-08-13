@@ -248,8 +248,8 @@ final class ProviderIdentityDedupTests: XCTestCase {
             provider(id: legacyProviderID, externalID: legacyID, priority: 1),
         ]
         configuration.workers = [
-            Worker(name: "One", harness: .claudeCode, model: "grok-4.5", computerID: WorkjetDefaults.localID, providerID: canonicalProviderID),
-            Worker(name: "Two", harness: .claudeCode, model: "grok-4.5", computerID: WorkjetDefaults.localID, providerID: legacyProviderID),
+            Worker(name: "One", harness: .claudeCode, model: "grok-4.6", computerID: WorkjetDefaults.localID, providerID: canonicalProviderID),
+            Worker(name: "Two", harness: .claudeCode, model: "grok-4.6", computerID: WorkjetDefaults.localID, providerID: legacyProviderID),
         ]
         let paths = WorkjetPaths(homeDirectory: root)
         try JSONConfigurationStore(fileURL: paths.configurationFile).save(configuration)

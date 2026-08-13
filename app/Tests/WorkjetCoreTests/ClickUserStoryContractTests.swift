@@ -499,7 +499,7 @@ final class ClickUserStoryContractTests: XCTestCase {
         )
         configuration.providers = [account]
         configuration.workers[2].providerRoute = .account(account.id)
-        configuration.workers[2].model = "grok-4.5"
+        configuration.workers[2].model = "grok-4.6"
         let offlineModel = WorkjetViewModel(configuration: configuration, persistenceDelay: 60)
         XCTAssertEqual(
             offlineModel.providerRecovery(for: configuration.workers[2]),

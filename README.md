@@ -19,7 +19,7 @@ Claude can already decompose work and decide when to delegate. After that decisi
 The default setup covers two common paths:
 
 - Clear, difficult work goes directly to Sol · Completion with a hard whitelist and exact checks.
-- Unclear work goes first to the same bounded discovery brief on Prototype A (Grok 4.5), B (Luna 5.6), and C (GLM 5.2). Claude compares the three disposable attempts, writes a better production specification, and only then assigns the real implementation to Sol or the appropriate Kimi role.
+- Unclear work goes first to the same bounded discovery brief on Prototype A (Grok 4.6), B (Luna 5.6), and C (GLM 5.2). Claude compares the three disposable attempts, writes a better production specification, and only then assigns the real implementation to Sol or the appropriate Kimi role.
 
 It also includes separate defaults for exhaustive bulk work, online-only Terra research, cybersecurity review, and greenfield UI/UX. These are visible, editable prompts, not hidden routing code.
 

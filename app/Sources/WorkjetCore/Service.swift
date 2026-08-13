@@ -1340,6 +1340,19 @@ public struct WorkjetBootstrap {
             value.skillRules = migration.generalRules
             prompts.merge(migration.modelPrompts) { _, migrated in migrated }
         }
+        // Grok 4.6 replaces the exact former Workjet model ID. Preserve a
+        // customized model prompt while moving it to the new key, and do not
+        // touch other owner-defined Grok variants.
+        if let previousPrompt = prompts.removeValue(forKey: "grok-4.5"),
+           prompts["grok-4.6"] == nil {
+            prompts["grok-4.6"] = previousPrompt
+        }
+        for index in value.workers.indices where value.workers[index].model == "grok-4.5" {
+            value.workers[index].model = "grok-4.6"
+            if value.workers[index].name == "Prototype A · Grok 4.5" {
+                value.workers[index].name = "Prototype A · Grok 4.6"
+            }
+        }
         value.skillRules = LegacyPromptMigration.correctingKnownSkillDefaults(in: value.skillRules)
         value.skillRules = LegacyPromptMigration.removingKnownProgressBoardDefault(from: value.skillRules)
         for worker in value.workers {

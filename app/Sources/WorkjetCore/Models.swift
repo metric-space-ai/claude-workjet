@@ -686,6 +686,7 @@ public enum ModelProvider: String, CaseIterable, Codable, Equatable, Identifiabl
 
     public var requestedModelSuggestions: [String] {
         switch self {
+        case .xAI: return ["grok-4.6"]
         case .miniMax: return ["MiniMax-M3", "MiniMax-M2.7"]
         case .zAI: return ["glm-5.2", "glm-5.1", "glm-5"]
         default: return []
@@ -943,7 +944,7 @@ public struct ProviderProbeResult: Equatable, Sendable {
 }
 
 public enum WorkerModelSuggestions {
-    public static let defaults = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "k3[1m]", "MiniMax-M3"]
+    public static let defaults = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "claude-sonnet-5", "claude-opus-5", "k3[1m]", "MiniMax-M3", "grok-4.6"]
 
     public static func values(providerID: UUID?, providers: [Provider]) -> [String] {
         guard let providerID, let provider = providers.first(where: { $0.id == providerID }) else { return [] }
@@ -983,7 +984,7 @@ public enum ModelPromptCatalog {
         "MiniMax M3": """
         Use MiniMax only for clear, disjoint, counted, fixed-schema repetitive slices. Require coverage counts and explicit outputs, forbid edits to existing files and git use, stop on ambiguity, and independently sample the result afterward.
         """,
-        "grok-4.5": prototypeDiscoveryPrompt,
+        "grok-4.6": prototypeDiscoveryPrompt,
         "gpt-5.6-luna": prototypeDiscoveryPrompt,
         "glm-5.2": prototypeDiscoveryPrompt,
         "gpt-5.6-terra": """

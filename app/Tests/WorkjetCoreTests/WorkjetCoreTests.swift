@@ -21,7 +21,7 @@ final class DefaultsAndLogicTests: XCTestCase {
             "Kimi · Cyber & Review",
             "Kimi · UI/UX",
             "Bulk · Thoroughness",
-            "Prototype A · Grok 4.5",
+            "Prototype A · Grok 4.6",
             "Prototype B · Luna 5.6",
             "Prototype C · GLM 5.2",
             "Web Research · Terra"
@@ -31,7 +31,7 @@ final class DefaultsAndLogicTests: XCTestCase {
             "kimi-k3-256k",
             "kimi-k3-256k",
             "MiniMax-M3",
-            "grok-4.5",
+            "grok-4.6",
             "gpt-5.6-luna",
             "glm-5.2",
             "gpt-5.6-terra"
@@ -92,13 +92,14 @@ final class DefaultsAndLogicTests: XCTestCase {
 
         let prompts = try XCTUnwrap(config.modelPrompts)
         XCTAssertEqual(Set(prompts.keys), [
-            "GPT-5.6 Sol", "Kimi K3", "MiniMax M3", "grok-4.5",
+            "GPT-5.6 Sol", "Kimi K3", "MiniMax M3", "grok-4.6",
             "gpt-5.6-luna", "glm-5.2", "gpt-5.6-terra"
         ])
-        XCTAssertEqual(prompts["grok-4.5"], prototypes[0].instructions)
+        XCTAssertEqual(prompts["grok-4.6"], prototypes[0].instructions)
         XCTAssertEqual(prompts["gpt-5.6-luna"], prototypes[1].instructions)
         XCTAssertEqual(prompts["glm-5.2"], prototypes[2].instructions)
         XCTAssertFalse(prompts.values.joined(separator: "\n").localizedCaseInsensitiveContains("best frontend-development LLM"))
+        XCTAssertEqual(ModelProvider.xAI.requestedModelSuggestions, ["grok-4.6"])
 
         XCTAssertTrue(config.workers[0].instructions.contains("final production solution"))
         XCTAssertTrue(config.workers[1].instructions.contains("confirmed findings"))
@@ -132,6 +133,27 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(normalized.modelPrompts?["Kimi K3"], ModelPromptCatalog.defaults["Kimi K3"])
         XCTAssertNil(normalized.modelPrompts?["MiniMax M3"])
         XCTAssertNil(normalized.modelPrompts?["gpt-5.6-terra"])
+    }
+
+    func testExactGrok45WorkersAndPromptMigrateTo46WithoutTouchingCustomVariants() throws {
+        var configuration = WorkjetDefaults.configuration()
+        configuration.workers[4].name = "Prototype A · Grok 4.5"
+        configuration.workers[4].model = "grok-4.5"
+        var custom = configuration.workers[4]
+        custom.id = UUID()
+        custom.name = "Owner Grok Variant"
+        custom.model = "grok-4.5-custom"
+        configuration.workers.append(custom)
+        configuration.modelPrompts = ["grok-4.5": "OWNER DISCOVERY PROMPT"]
+
+        let normalized = WorkjetBootstrap.normalized(configuration)
+
+        XCTAssertEqual(normalized.workers[4].name, "Prototype A · Grok 4.6")
+        XCTAssertEqual(normalized.workers[4].model, "grok-4.6")
+        XCTAssertEqual(normalized.workers.last?.name, "Owner Grok Variant")
+        XCTAssertEqual(normalized.workers.last?.model, "grok-4.5-custom")
+        XCTAssertEqual(normalized.modelPrompts?["grok-4.6"], "OWNER DISCOVERY PROMPT")
+        XCTAssertNil(normalized.modelPrompts?["grok-4.5"])
     }
 
     func testKnownBrokenClaudeTerraDefaultMigratesToVerifiedCodexWebSearch() throws {

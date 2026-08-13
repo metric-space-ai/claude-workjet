@@ -347,7 +347,7 @@ else if (behavior.includes("greppy 0.3.1")) {
         let relay = RemoteGatewayRelay(id: UUID(), remotePort: 48123)
         let launch = RemoteHarnessLaunch(
             harnessID: "claude-code",
-            model: "grok-4.5",
+            model: "grok-4.6",
             reasoning: "medium",
             sandbox: false,
             input: Data("research".utf8),

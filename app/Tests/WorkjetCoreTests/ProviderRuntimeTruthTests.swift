@@ -566,7 +566,7 @@ final class ProviderRuntimeTruthTests: XCTestCase {
         let worker = Worker(
             name: "Remote prototype",
             harness: .claudeCode,
-            model: "grok-4.5",
+            model: "grok-4.6",
             computerID: WorkjetDefaults.localID,
             providerPool: .xAI,
             invocation: WorkerInvocation(executable: "/usr/bin/true")

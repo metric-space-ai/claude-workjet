@@ -119,7 +119,7 @@ final class ConfigurationMigrationTransactionTests: XCTestCase {
         configuration.workers.append(Worker(
             name: "Standard Coding Task",
             harness: .claudeCode,
-            model: "grok-4.5",
+            model: "grok-4.6",
             instructions: "for standard high volume coding tasks",
             reasoningEffort: .high,
             computerID: WorkjetDefaults.localID,
