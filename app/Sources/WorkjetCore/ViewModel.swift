@@ -341,6 +341,15 @@ public final class WorkjetViewModel: ObservableObject {
             return previous
         }
         setHarnessStatus(status, harness: harness, computerID: computer.id)
+        if status.state == .installed {
+            clearResolvedProvisioningFailures(
+                on: computer.id,
+                matching: { failure in
+                    failure.component.kind == .harness
+                        && Self.harness(forRemoteID: failure.component.id) == harness
+                }
+            )
+        }
         return status
     }
 
@@ -466,6 +475,16 @@ public final class WorkjetViewModel: ObservableObject {
         case "cursor-agent": return .cursorAgent
         case "grok-cli": return .grokCLI
         default: return nil
+        }
+    }
+
+    private func clearResolvedProvisioningFailures(
+        on computerID: UUID,
+        matching predicate: (RemoteProvisioningFailure) -> Bool
+    ) {
+        for worker in workers where worker.computerID == computerID {
+            guard let failure = workerProvisioningFailures[worker.id], predicate(failure) else { continue }
+            workerProvisioningFailures[worker.id] = nil
         }
     }
 
@@ -1524,6 +1543,16 @@ public final class WorkjetViewModel: ObservableObject {
                 do {
                     let response = try await self.service.probeRemoteHost(computer)
                     self.remoteHostProbes[computer.id] = response
+                    self.clearResolvedProvisioningFailures(on: computer.id) { failure in
+                        switch failure.component.kind {
+                        case .host:
+                            return true
+                        case .managedSkill:
+                            return response.capabilities.contains(failure.component.id)
+                        case .harness:
+                            return false
+                        }
+                    }
                     let listed = try await self.service.listRemoteRuns(on: computer, ownerID: nil)
                     let workersByOwner = Dictionary(uniqueKeysWithValues: self.workers
                         .filter { $0.computerID == computer.id }

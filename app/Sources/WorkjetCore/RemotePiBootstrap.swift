@@ -734,6 +734,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import crypto from "node:crypto";
+import net from "node:net";
 import {execFileSync, spawn} from "node:child_process";
 
 const PROTOCOL = 2;
@@ -772,6 +773,7 @@ for (const directory of [stateRoot, runsRoot, reposRoot, worktreesRoot, importsR
 
 const safeRunID = value => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) && !value.includes("..") && !value.includes("@{") && !value.endsWith(".") && !value.endsWith(".lock");
 const runDirectory = runID => path.join(runsRoot, runID);
+const credentialSocketPath = runID => path.join(stateRoot, `credential-${crypto.createHash("sha256").update(runID).digest("hex").slice(0, 20)}.sock`);
 const atomicJSON = (file, value) => {
   const temporary = `${file}.tmp-${process.pid}-${Math.random().toString(16).slice(2)}`;
   const handle = fs.openSync(temporary, "wx", 0o600);
@@ -1678,14 +1680,27 @@ const redactingRecorder = (kind, secrets, accept) => {
     flush() { emit(pending); pending = ""; }
   };
 };
-const readEphemeralProviderExecution = async () => {
+const readEphemeralProviderExecution = async runID => {
   let data = Buffer.alloc(0);
-  const systemdDelivery = process.env.WORKJET_EPHEMERAL_PROVIDER_EXECUTION;
-  delete process.env.WORKJET_EPHEMERAL_PROVIDER_EXECUTION;
-  if (systemdDelivery != null) {
-    if (systemdDelivery.length > 800000 || !/^[A-Za-z0-9+/]*={0,2}$/.test(systemdDelivery)) throw new Error("provider credential delivery is invalid");
-    data = Buffer.from(systemdDelivery, "base64");
-    if (data.toString("base64") !== systemdDelivery) throw new Error("provider credential delivery is invalid");
+  const socketPath = process.env.WORKJET_EPHEMERAL_PROVIDER_SOCKET;
+  delete process.env.WORKJET_EPHEMERAL_PROVIDER_SOCKET;
+  if (socketPath != null) {
+    const expectedPath = credentialSocketPath(runID);
+    if (socketPath !== expectedPath) throw new Error("provider credential socket is invalid");
+    data = await new Promise((resolve, reject) => {
+      let received = Buffer.alloc(0);
+      const socket = net.createConnection({path: socketPath});
+      const timeout = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("provider credential delivery timed out"));
+      }, 10000);
+      socket.on("data", chunk => {
+        received = Buffer.concat([received, chunk]);
+        if (received.length > 600000) socket.destroy(new Error("provider credential delivery is too large"));
+      });
+      socket.once("error", error => { clearTimeout(timeout); reject(error); });
+      socket.once("end", () => { clearTimeout(timeout); resolve(received); });
+    });
   } else {
     for await (const chunk of process.stdin) {
       data = Buffer.concat([data, chunk]);
@@ -1702,7 +1717,7 @@ const monitor = async runID => {
   const launch = readJSON(path.join(directory, "launch.json"));
   let providerExecution;
   try {
-    providerExecution = await readEphemeralProviderExecution();
+    providerExecution = await readEphemeralProviderExecution(runID);
     if (JSON.stringify(providerMetadata(providerExecution)) !== JSON.stringify(launch.providerRoute)) throw new Error("provider credential delivery does not match launch metadata");
   } catch (error) {
     const message = "provider credentials unavailable for this run";
@@ -2187,22 +2202,58 @@ if (request.operation === "probe") {
   if (systemdRun && systemdRuntime) {
     // Tailscale SSH reaps every process in its session, including detached
     // children. A transient user service gives the monitor an actual lifecycle
-    // outside that session. The credential is transferred only in systemd's
-    // in-memory environment and the collected unit disappears on monitor exit.
-    const encodedProviderExecution = Buffer.from(JSON.stringify(providerExecution), "utf8").toString("base64");
-    const started = runLifecycleCommand(
-      systemdRun,
-      ["--user", "--quiet", "--collect", "--property", "Type=exec", "--unit", `workjet-monitor-${runID}`, "--setenv=WORKJET_EPHEMERAL_PROVIDER_EXECUTION", process.execPath, process.argv[1], "--monitor", runID],
-      30000,
-      {
-        WORKJET_EPHEMERAL_PROVIDER_EXECUTION: encodedProviderExecution,
-        XDG_RUNTIME_DIR: systemdRuntime,
-        ...(process.env.DBUS_SESSION_BUS_ADDRESS ? {DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS} : {})
-      },
-      4096,
-      65536
-    );
-    if (!started.ok) reject("provider monitor service could not be started");
+    // outside that session. systemd 249 cannot inherit a named environment
+    // value with `--setenv=NAME`, while putting NAME=value on argv would expose
+    // the provider secret. Transfer it once through a private Unix socket.
+    const providerSocketPath = credentialSocketPath(runID);
+    try { fs.unlinkSync(providerSocketPath); } catch (error) { if (error.code !== "ENOENT") reject("provider credential socket could not be prepared"); }
+    let delivered = false;
+    let deliveryError = null;
+    let deliveryResolve;
+    let deliveryReject;
+    const delivery = new Promise((resolve, reject) => { deliveryResolve = resolve; deliveryReject = reject; });
+    const credentialServer = net.createServer(socket => {
+      if (delivered) { socket.destroy(); return; }
+      delivered = true;
+      socket.once("error", deliveryReject);
+      socket.end(JSON.stringify(providerExecution), deliveryResolve);
+    });
+    credentialServer.once("error", deliveryReject);
+    try {
+      await new Promise((resolve, reject) => {
+        credentialServer.once("error", reject);
+        credentialServer.listen(providerSocketPath, () => {
+          credentialServer.off("error", reject);
+          resolve();
+        });
+      });
+      fs.chmodSync(providerSocketPath, 0o600);
+      const started = runLifecycleCommand(
+        systemdRun,
+        ["--user", "--quiet", "--collect", "--property", "Type=exec", "--unit", `workjet-monitor-${runID}`, `--setenv=WORKJET_EPHEMERAL_PROVIDER_SOCKET=${providerSocketPath}`, process.execPath, process.argv[1], "--monitor", runID],
+        30000,
+        {
+          XDG_RUNTIME_DIR: systemdRuntime,
+          ...(process.env.DBUS_SESSION_BUS_ADDRESS ? {DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS} : {})
+        },
+        4096,
+        65536
+      );
+      if (!started.ok) throw new Error("provider monitor service could not be started");
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("provider credential delivery timed out")), 10000);
+        delivery.then(
+          () => { clearTimeout(timer); resolve(); },
+          error => { clearTimeout(timer); reject(error); }
+        );
+      });
+    } catch (error) {
+      deliveryError = error;
+    } finally {
+      credentialServer.close();
+      try { fs.unlinkSync(providerSocketPath); } catch (error) { if (error.code !== "ENOENT") {} }
+    }
+    if (deliveryError || !delivered) reject("provider credential delivery failed");
   } else {
     const monitorProcess = spawn(process.execPath, [process.argv[1], "--monitor", runID], {cwd: release, detached: true, stdio: ["pipe", "ignore", "ignore"], env: {HOME: process.env.HOME ?? "", PATH: `${managedSkillsBin}${path.delimiter}${managedNPMBin}${path.delimiter}${monitorBasePath}`}});
     try {

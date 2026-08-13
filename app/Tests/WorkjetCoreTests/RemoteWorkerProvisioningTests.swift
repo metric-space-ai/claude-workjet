@@ -19,6 +19,7 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
 
     private final class SavingService: WorkjetService, @unchecked Sendable {
         var provisioningResult: RemoteWorkerProvisioningResult
+        var inspectedHarnessStatus: HarnessComputerStatus = .unknown
         var events: [String] = []
 
         init(provisioningResult: RemoteWorkerProvisioningResult) {
@@ -34,6 +35,9 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         func provisionRemoteWorker(_ worker: Worker, on computer: Computer) async -> RemoteWorkerProvisioningResult {
             events.append("provision")
             return provisioningResult
+        }
+        func inspectHarness(_ harness: Harness, on computer: Computer) async -> HarnessComputerStatus {
+            inspectedHarnessStatus
         }
         func storeCredential(_ secret: Data, reference: String) throws {}
     }
@@ -236,6 +240,44 @@ final class RemoteWorkerProvisioningTests: XCTestCase {
         for _ in 0..<50 where model.workerProvisioningFailures[worker.id] == nil { await Task.yield() }
         XCTAssertEqual(model.workerProvisioningFailures[worker.id]?.component.id, "greppy")
         XCTAssertTrue(model.workerProvisioningFailures[worker.id]?.userVisibleDetail.contains("Digest") == true)
+    }
+
+    @MainActor
+    func testFreshInstalledHarnessClearsStaleHarnessProvisioningFailure() async {
+        var configuration = WorkjetDefaults.configuration()
+        let computer = remoteComputer()
+        configuration.computers.append(computer)
+        let worker = remoteWorker(computerID: computer.id)
+        configuration.workers = []
+        let failedComponent = RemoteProvisioningComponent(
+            kind: .harness,
+            id: "claude-code",
+            state: .broken,
+            detail: "Alte fehlgeschlagene Probe."
+        )
+        let service = SavingService(provisioningResult: RemoteWorkerProvisioningResult(
+            workerIDs: [worker.id],
+            computerID: computer.id,
+            components: [failedComponent],
+            failure: RemoteProvisioningFailure(component: failedComponent)
+        ))
+        let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
+
+        let saveResult = await model.saveWorkerDurably(worker)
+        XCTAssertEqual(saveResult, .succeeded)
+        for _ in 0..<50 where model.workerProvisioningFailures[worker.id] == nil { await Task.yield() }
+        XCTAssertNotNil(model.workerProvisioningFailures[worker.id])
+
+        service.inspectedHarnessStatus = HarnessComputerStatus(
+            state: .installed,
+            detail: "Claude Code 2.1.222 ist installiert.",
+            version: "2.1.222",
+            action: .update,
+            actions: [.update, .remove]
+        )
+        _ = await model.inspectHarness(.claudeCode, on: computer)
+
+        XCTAssertNil(model.workerProvisioningFailures[worker.id])
     }
 
     /// Opt-in production-path smoke test. The gate contains host, Linux user,
