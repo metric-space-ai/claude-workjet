@@ -42,7 +42,7 @@ final class MiniMaxCapacityTests: XCTestCase {
         XCTAssertEqual(client.requests.count, 2)
         XCTAssertEqual(client.requests[0].value(forHTTPHeaderField: "x-api-key"), "mini-secret")
         XCTAssertNil(client.requests[0].value(forHTTPHeaderField: "Authorization"))
-        XCTAssertEqual(client.requests[1].url?.absoluteString, "https://www.minimax.io/v1/token_plan/remains")
+        XCTAssertEqual(client.requests[1].url?.absoluteString, "https://api.minimax.io/v1/token_plan/remains")
         XCTAssertEqual(client.requests[1].httpMethod, "GET")
         XCTAssertEqual(client.requests[1].value(forHTTPHeaderField: "Authorization"), "Bearer mini-secret")
         XCTAssertEqual(credentials.reads, 1)
@@ -55,6 +55,28 @@ final class MiniMaxCapacityTests: XCTestCase {
         XCTAssertTrue(result?.summary.contains("Woche 80 % genutzt") == true)
         XCTAssertTrue(result?.summary.contains("Reset 2026-") == true)
         XCTAssertNotNil(result?.resetAt)
+    }
+
+    func testTokenPlanPreservesWindowsAndPublishedRateCeilings() throws {
+        let data = Data(#"{"base_resp":{"status_code":0},"model_remains":[{"model_name":"general","current_interval_remaining_percent":99,"current_interval_status":1,"current_weekly_remaining_percent":73,"current_weekly_status":1,"weekly_boost_permille":1000,"weekly_end_time":1786320000000}]}"#.utf8)
+        let result = try XCTUnwrap(ProviderInspector.parseMiniMaxCapacity(data))
+        XCTAssertEqual(result.capacity.signals.filter { $0.kind == .quota }.count, 2)
+        XCTAssertEqual(result.capacity.signals.filter { $0.kind == .rate }.map(\.compactValue), ["200/m", "10M/m"])
+        XCTAssertEqual(result.capacity.quotaCompactValue, "27%")
+        XCTAssertEqual(result.capacity.rateCompactValue, "200/m")
+    }
+
+    func testUsageURLSupportsGlobalCNAndPAYG() {
+        XCTAssertEqual(ProviderInspector.miniMaxUsageURL(baseURL: URL(string: "https://api.minimax.io/anthropic")!, apiKey: "plan")?.absoluteString, "https://api.minimax.io/v1/token_plan/remains")
+        XCTAssertEqual(ProviderInspector.miniMaxUsageURL(baseURL: URL(string: "https://api.minimaxi.com/anthropic")!, apiKey: "plan")?.absoluteString, "https://api.minimaxi.com/v1/token_plan/remains")
+        XCTAssertEqual(ProviderInspector.miniMaxUsageURL(baseURL: URL(string: "https://api.minimax.io/anthropic")!, apiKey: "sk-api-test")?.absoluteString, "https://api.minimax.io/account/query_balance")
+        XCTAssertNil(ProviderInspector.miniMaxUsageURL(baseURL: URL(string: "https://evil.example/anthropic")!, apiKey: "plan"))
+    }
+
+    func testParsesPAYGBalanceWithoutInventingPercentage() throws {
+        let result = try XCTUnwrap(ProviderInspector.parseMiniMaxBalance(Data(#"{"available_balance":49.59,"currency":"USD"}"#.utf8)))
+        XCTAssertNil(result.capacity.fraction)
+        XCTAssertEqual(result.capacity.quotaCompactValue, "$49.59")
     }
 
     func testMalformedAmbiguousAndFailedResponsesStayUnavailable() {

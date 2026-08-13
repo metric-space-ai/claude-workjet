@@ -182,6 +182,45 @@ final class DefaultsAndLogicTests: XCTestCase {
         XCTAssertEqual(CapacityStatus.measured(used: 25, limit: 100, unit: "requests", rateLimited: false).fraction, 0.25)
         XCTAssertNil(CapacityStatus.measured(used: 110, limit: 100, unit: "requests", rateLimited: false).fraction)
         XCTAssertEqual(CapacityStatus.unavailable(reason: "none").level, .unavailable)
+        let observed = CapacityStatus.observed(signals: [
+            CapacitySignal(kind: .quota, label: "Woche", used: 41, limit: 100, source: "Provider", scope: "Account"),
+            CapacitySignal(kind: .rate, label: "RPM", compactValue: "200/m", source: "Dokumentation", scope: "Model", evidence: .published)
+        ], reason: nil)
+        XCTAssertEqual(observed.quotaCompactValue, "41%")
+        XCTAssertEqual(observed.rateCompactValue, "200/m")
+        XCTAssertEqual(observed.rateEvidence, .published)
+        XCTAssertTrue(observed.detail.contains("Woche"))
+        let quotaOnly = CapacityStatus.observed(signals: [CapacitySignal(kind: .quota, label: "Woche", used: 1, limit: 10, source: "Probe", scope: "Account")], reason: nil)
+        XCTAssertNil(quotaOnly.rateLimited)
+        let stale = CapacityStatus.observed(signals: [CapacitySignal(kind: .quota, label: "Alt", used: 9, limit: 10, observedAt: .distantPast, source: "Probe", scope: "Account")], reason: nil)
+        XCTAssertEqual(stale.fraction, 0.9, "Die gespeicherte Messung bleibt als Evidence inspectierbar.")
+        XCTAssertNil(stale.displayFraction, "Veraltete Messungen dürfen nicht als aktueller UI-Status erscheinen.")
+        XCTAssertNil(stale.quotaCompactValue)
+        XCTAssertEqual(stale.level, .unavailable)
+        let staleRate = CapacityStatus.observed(signals: [
+            CapacitySignal(kind: .rate, label: "Alt", observedAt: .distantPast, source: "Probe", scope: "Account", limited: true)
+        ], reason: nil)
+        XCTAssertNil(staleRate.rateLimited)
+
+        let openAIRate = ProviderInspector.parseDocumentedRateHeaders([
+            "X-RateLimit-Limit-Requests": ["500"],
+            "x-ratelimit-remaining-requests": ["475"],
+            "x-ratelimit-limit-tokens": ["10000000"],
+            "x-ratelimit-remaining-tokens": ["9000000"]
+        ], provider: .openAI)
+        XCTAssertEqual(openAIRate?.rateCompactValue, "475/500")
+        XCTAssertEqual(openAIRate?.rateEvidence, .measured)
+        let anthropicRate = ProviderInspector.parseDocumentedRateHeaders([
+            "anthropic-ratelimit-requests-limit": ["100"],
+            "anthropic-ratelimit-requests-remaining": ["80"],
+            "anthropic-ratelimit-requests-reset": ["2026-08-13T20:00:00Z"]
+        ], provider: .anthropic)
+        XCTAssertEqual(anthropicRate?.rateCompactValue, "80/100")
+        XCTAssertNotNil(anthropicRate?.signals.first?.resetAt)
+        XCTAssertNil(ProviderInspector.parseDocumentedRateHeaders([
+            "x-ratelimit-limit-requests": ["500"],
+            "x-ratelimit-remaining-requests": ["475"]
+        ], provider: .xAI), "Kompatible Header dürfen ohne dokumentiertes Provider-Profil nicht umgedeutet werden.")
         XCTAssertEqual(WorkerFilter.filtered(WorkjetDefaults.configuration().workers, query: "review", computerID: WorkjetDefaults.localID).map(\.name), ["Kimi · Cyber & Review"])
         XCTAssertEqual(DurationFormatter.string(for: 3725), "1h 2m")
     }

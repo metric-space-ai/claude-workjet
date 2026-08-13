@@ -1284,7 +1284,13 @@ public final class WorkjetViewModel: ObservableObject {
         // response cannot prove that this specific OAuth identity can answer.
         provider.status = .unverified
         provider.statusDetail = "Im Gateway registriert; der einzelne Account ist technisch nicht separat prüfbar. Nutze die Worker-Probe für den gemeinsamen Laufzeitpfad."
-        provider.capacity = .unavailable(reason: "Für diesen Zugang sind keine Nutzungsdaten verfügbar.")
+        if case .observed = provider.capacity {
+            // A provider-specific local protocol (for example Codex app-server)
+            // may prove capacity for the exact OAuth identity even though the
+            // shared gateway's model-list request cannot prove account routing.
+        } else {
+            provider.capacity = .unavailable(reason: "Für diesen Zugang sind keine Nutzungsdaten verfügbar.")
+        }
     }
 
     private var workerHealthIsFresh: Bool {

@@ -187,30 +187,33 @@ struct CapacityIndicator: View {
         }
     }
     private var detail: String {
-        guard let fraction = capacity.fraction else { return "Keine Nutzungsdaten" }
-        return "\(Int((fraction * 100).rounded())) Prozent belegt" + (capacity.rateLimited == true ? ", Rate-Limit aktiv" : "")
+        capacity.detail
     }
+    @ViewBuilder
     var body: some View {
-        HStack(spacing: 3) {
-            compactSignal(prefix: "Q", value: quotaValue, color: color)
-            compactSignal(prefix: "R", value: rateValue, color: rateColor)
+        if quotaValue != nil || rateValue != nil {
+            HStack(spacing: 3) {
+                if let quotaValue { compactSignal(prefix: "Q", value: quotaValue, color: color) }
+                if let rateValue { compactSignal(prefix: "R", value: rateValue, color: rateColor) }
+            }
+            .accessibilityElement(children: .ignore).accessibilityLabel("Kapazität \(label): \(detail)").help(detail)
         }
-        .accessibilityElement(children: .ignore).accessibilityLabel("Kapazität \(label): \(detail)").help(detail)
     }
 
-    private var quotaValue: String {
-        guard let fraction = capacity.fraction else { return "—" }
-        return "\(Int((fraction * 100).rounded()))%"
+    private var quotaValue: String? {
+        capacity.quotaCompactValue
     }
 
-    private var rateValue: String {
-        guard let limited = capacity.rateLimited else { return "—" }
-        return limited ? "Limit" : "—"
+    private var rateValue: String? {
+        if let value = capacity.rateCompactValue { return value }
+        guard capacity.signals.isEmpty, capacity.rateLimited == true else { return nil }
+        return "Limit"
     }
 
     private var rateColor: Color {
         guard let limited = capacity.rateLimited else { return WJTheme.secondaryText }
-        return limited ? WJTheme.quotaCritical : WJTheme.quotaOK
+        if limited { return WJTheme.quotaCritical }
+        return capacity.rateEvidence == .measured ? WJTheme.quotaOK : WJTheme.secondaryText
     }
 
     private func compactSignal(prefix: String, value: String, color: Color) -> some View {

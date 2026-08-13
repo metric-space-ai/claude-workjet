@@ -100,6 +100,34 @@ A stale heartbeat, reused PID, malformed journal, or vanished process becomes in
 
 Telemetry deliberately avoids treating arbitrary output files as canonical live streams. Harness-specific event support is reported only where the implementation can identify and validate it.
 
+## Provider capacity
+
+Quota and rate badges are evidence, not decoration. Workjet hides a value when
+the selected account cannot supply it; it never renders placeholder `Q–` or
+`R–` badges and never copies a gateway-wide value onto an individual account.
+
+Current adapters are deliberately provider-specific:
+
+| Route | Evidence shown |
+|---|---|
+| ChatGPT/Codex subscription | Account-matched primary and secondary windows from Codex app-server |
+| MiniMax Token Plan | Measured 5-hour and weekly windows; documented M3 ceilings are labelled as published limits |
+| MiniMax PAYG | Measured monetary balance, without inventing a percentage |
+| Z.ai Coding Plan | Measured 5-hour, weekly, and Web/MCP windows; the plan's dynamic tier is not presented as fixed RPM |
+| Direct OpenAI or Anthropic API | Documented response rate headers only when the provider identifies the route |
+
+Measured values carry their observation time and stop appearing as current UI
+status after 15 minutes. Published ceilings remain visually neutral. Multiple
+account quotas are never summed because their windows, tiers, and reset times
+may differ.
+
+xAI management capacity, Kimi Code OAuth usage, Antigravity usage, and a second
+CLIProxy-owned OpenAI identity require a separately authorized management
+bridge or exact local account match. Until that boundary is configured,
+Workjet shows no quota claim for those accounts. Generic OpenAI-compatible
+endpoints have no standardized quota-header contract; HTTP 429 alone proves
+only that the attempted request was limited.
+
 ## Remote telemetry
 
 Remote host state is authoritative for remote runs. Workjet uses typed list, adopt, event, and stop operations with stable worker ownership and an exclusive event cursor.

@@ -175,9 +175,50 @@ public struct Computer: Identifiable, Equatable, Codable, Sendable {
     public var usesManagedTailscaleSSH: Bool { transport == .tailscale && tailscaleSSHEnabled == true }
 }
 
+public struct CapacitySignal: Equatable, Codable, Sendable {
+    public enum Kind: String, Codable, Sendable { case quota, rate }
+    public enum Evidence: String, Codable, Sendable { case measured, published, userConfigured }
+
+    public var kind: Kind
+    public var label: String
+    public var used: Double?
+    public var limit: Double?
+    public var compactValue: String?
+    public var resetAt: Date?
+    public var observedAt: Date
+    public var source: String
+    public var scope: String
+    public var evidence: Evidence
+    public var limited: Bool
+
+    public init(kind: Kind, label: String, used: Double? = nil, limit: Double? = nil, compactValue: String? = nil, resetAt: Date? = nil, observedAt: Date = Date(), source: String, scope: String, evidence: Evidence = .measured, limited: Bool = false) {
+        self.kind = kind
+        self.label = label
+        self.used = used
+        self.limit = limit
+        self.compactValue = compactValue
+        self.resetAt = resetAt
+        self.observedAt = observedAt
+        self.source = source
+        self.scope = scope
+        self.evidence = evidence
+        self.limited = limited
+    }
+
+    public var fraction: Double? {
+        guard let used, let limit, used >= 0, limit > 0, used <= limit else { return nil }
+        return used / limit
+    }
+
+    public func isCurrent(at now: Date = Date(), maximumAge: TimeInterval = 15 * 60) -> Bool {
+        evidence != .measured || now.timeIntervalSince(observedAt) <= maximumAge
+    }
+}
+
 public enum CapacityStatus: Equatable, Codable, Sendable {
     case measured(used: Double, limit: Double, unit: String, rateLimited: Bool)
     case userConfigured(used: Double, limit: Double, unit: String, rateLimited: Bool)
+    case observed(signals: [CapacitySignal], reason: String?)
     case unavailable(reason: String)
 
     public var fraction: Double? {
@@ -185,6 +226,8 @@ public enum CapacityStatus: Equatable, Codable, Sendable {
         case let .measured(used, limit, _, _), let .userConfigured(used, limit, _, _):
             guard used >= 0, limit > 0, used <= limit else { return nil }
             return used / limit
+        case let .observed(signals, _):
+            return signals.filter { $0.kind == .quota }.compactMap(\.fraction).max()
         case .unavailable:
             return nil
         }
@@ -193,18 +236,74 @@ public enum CapacityStatus: Equatable, Codable, Sendable {
     public var rateLimited: Bool? {
         switch self {
         case let .measured(_, _, _, value), let .userConfigured(_, _, _, value): return value
+        case let .observed(signals, _):
+            let rates = signals.filter { $0.kind == .rate && $0.isCurrent() }
+            guard !rates.isEmpty else { return nil }
+            return rates.contains(where: \.limited)
         case .unavailable: return nil
         }
     }
 
+    public var rateEvidence: CapacitySignal.Evidence? {
+        signals.first(where: { $0.kind == .rate && $0.isCurrent() })?.evidence
+    }
+
     public var reason: String? {
-        guard case let .unavailable(reason) = self else { return nil }
-        return reason
+        switch self {
+        case let .unavailable(reason): return reason
+        case let .observed(_, reason): return reason
+        default: return nil
+        }
+    }
+
+    public var signals: [CapacitySignal] {
+        guard case let .observed(signals, _) = self else { return [] }
+        return signals
+    }
+
+    public var quotaCompactValue: String? {
+        if case let .observed(signals, _) = self {
+            let current = signals.filter { $0.kind == .quota && $0.isCurrent() }
+            if let fraction = current.compactMap(\.fraction).max() { return "\(Int((fraction * 100).rounded()))%" }
+            return current.compactMap(\.compactValue).first
+        }
+        if let fraction { return "\(Int((fraction * 100).rounded()))%" }
+        return nil
+    }
+
+    public var rateCompactValue: String? {
+        let rates = signals.filter { $0.kind == .rate && $0.isCurrent() }
+        if rates.contains(where: \.limited) { return "Limit" }
+        return rates.compactMap(\.compactValue).first
+    }
+
+    public var displayFraction: Double? {
+        if case let .observed(signals, _) = self {
+            return signals.filter { $0.kind == .quota && $0.isCurrent() }.compactMap(\.fraction).max()
+        }
+        return fraction
+    }
+
+    public var detail: String {
+        if signals.isEmpty {
+            if let fraction { return "\(Int((fraction * 100).rounded())) Prozent belegt" + (rateLimited == true ? ", Rate-Limit aktiv" : "") }
+            return reason ?? "Keine belastbaren Kapazitätsdaten"
+        }
+        let formatter = ISO8601DateFormatter()
+        return signals.map { signal in
+            let value: String
+            if let fraction = signal.fraction { value = "\(Int((fraction * 100).rounded())) % genutzt" }
+            else { value = signal.compactValue ?? "Status verfügbar" }
+            let reset = signal.resetAt.map { " · Reset \(formatter.string(from: $0))" } ?? ""
+            let evidence = signal.evidence == .published ? " · veröffentlichte Obergrenze" : ""
+            let freshness = signal.isCurrent() ? "" : " · Messung veraltet"
+            return "\(signal.label): \(value)\(reset) · \(signal.source)\(evidence)\(freshness)"
+        }.joined(separator: "\n")
     }
 
     public enum Level: Equatable, Sendable { case ok, warning, critical, unavailable }
     public var level: Level {
-        guard let fraction else { return .unavailable }
+        guard let fraction = displayFraction else { return .unavailable }
         if rateLimited == true || fraction >= 0.9 { return .critical }
         if fraction >= 0.7 { return .warning }
         return .ok
@@ -902,6 +1001,11 @@ public struct ProviderPool: Equatable, Sendable {
                 (valueUsed, valueLimit, valueUnit, valueRateLimited, valueMeasured) = (accountUsed, accountLimit, accountUnit, accountRateLimited, true)
             case let .userConfigured(accountUsed, accountLimit, accountUnit, accountRateLimited):
                 (valueUsed, valueLimit, valueUnit, valueRateLimited, valueMeasured) = (accountUsed, accountLimit, accountUnit, accountRateLimited, false)
+            case .observed:
+                guard accounts.count == 1 else {
+                    return .unavailable(reason: "Mehrere account-spezifische Quoten werden getrennt angezeigt und nicht addiert.")
+                }
+                return account.capacity
             case .unavailable:
                 return .unavailable(reason: "Mindestens ein Zugang im Pool liefert keine belastbaren Kapazitätsdaten.")
             }

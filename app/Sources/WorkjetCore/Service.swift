@@ -781,6 +781,7 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     private let cliProxyInspector: CLIProxyInspector
     private let providerInspector: ProviderInspector
     private let gatewayProviderInspector: ProviderInspector
+    private let codexCapacityReader: CodexAppServerCapacityReader
     private let credentialStore: any CredentialStoring
     private let tailscaleDiscovery: TailscaleDeviceDiscovery
     private let remoteBootstrap: RemotePiBootstrap
@@ -797,13 +798,14 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     private let workingDirectory: URL
     private let persistenceBlock: Error?
 
-    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, providerInspector: ProviderInspector? = nil, credentialStore: any CredentialStoring, tailscaleDiscovery: TailscaleDeviceDiscovery = TailscaleDeviceDiscovery(), remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), cliProxyAccounts: CLIProxyAccountAuthenticator? = nil, learningStore: AdHocLearningStore? = nil, workjetActivationStore: WorkjetActivationStore? = nil, harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator(), remoteProvisioning: RemoteWorkerProvisioningCoordinator = RemoteWorkerProvisioningCoordinator(), gatewayTunnels: any RemoteGatewayTunnelManaging = RemoteGatewayTunnelManager(), workspaceSnapshots: any WorkspaceSnapshotPreparing = GitWorkspaceSnapshotPreparer(), workspaceRuns: RemoteWorkspaceRunStore = RemoteWorkspaceRunStore(), workspaceResultImporter: LocalWorkspaceResultImporter = LocalWorkspaceResultImporter(), commandRunner: any CommandRunning = ProcessCommandRunner(), workingDirectory: URL? = nil, persistenceBlock: Error? = nil) {
+    public init(configurationStore: any ConfigurationStoring, promptStore: any PromptSynchronizing, telemetryStore: any RunTelemetryReading, cliProxyInspector: CLIProxyInspector, providerInspector: ProviderInspector? = nil, credentialStore: any CredentialStoring, tailscaleDiscovery: TailscaleDeviceDiscovery = TailscaleDeviceDiscovery(), remoteBootstrap: RemotePiBootstrap = RemotePiBootstrap(), cliProxyAccounts: CLIProxyAccountAuthenticator? = nil, learningStore: AdHocLearningStore? = nil, workjetActivationStore: WorkjetActivationStore? = nil, harnessLifecycle: HarnessLifecycleCoordinator = HarnessLifecycleCoordinator(), remoteProvisioning: RemoteWorkerProvisioningCoordinator = RemoteWorkerProvisioningCoordinator(), gatewayTunnels: any RemoteGatewayTunnelManaging = RemoteGatewayTunnelManager(), workspaceSnapshots: any WorkspaceSnapshotPreparing = GitWorkspaceSnapshotPreparer(), workspaceRuns: RemoteWorkspaceRunStore = RemoteWorkspaceRunStore(), workspaceResultImporter: LocalWorkspaceResultImporter = LocalWorkspaceResultImporter(), commandRunner: any CommandRunning = ProcessCommandRunner(), codexCapacityReader: CodexAppServerCapacityReader? = nil, workingDirectory: URL? = nil, persistenceBlock: Error? = nil) {
         self.configurationStore = configurationStore
         self.promptStore = promptStore
         self.telemetryStore = telemetryStore
         self.cliProxyInspector = cliProxyInspector
         self.providerInspector = providerInspector ?? ProviderInspector(credentials: credentialStore)
         self.gatewayProviderInspector = ProviderInspector(credentials: CLIProxyGatewayCredentialStore())
+        self.codexCapacityReader = codexCapacityReader ?? CodexAppServerCapacityReader(runner: commandRunner)
         self.credentialStore = credentialStore
         self.tailscaleDiscovery = tailscaleDiscovery
         self.remoteBootstrap = remoteBootstrap
@@ -832,7 +834,15 @@ public final class LocalWorkjetService: WorkjetService, @unchecked Sendable {
     public func inspectCLIProxy(_ configuration: CLIProxyConfiguration) async -> CLIProxyStatus { await cliProxyInspector.inspect(configuration) }
     public func inspectProvider(_ provider: Provider) async -> ProviderProbeResult {
         if provider.credentialReference == CLIProxyGatewayCredentialStore.reference {
-            return await gatewayProviderInspector.inspect(provider)
+            var result = await gatewayProviderInspector.inspect(provider)
+            if provider.modelProvider == .openAI,
+               let snapshot = await codexCapacityReader.read(),
+               let accountCapacity = snapshot.capacity(matchingAccountLabel: provider.accountLabel) {
+                result.capacity = accountCapacity
+                let plan = snapshot.plan.map { " · \($0.capitalized)" } ?? ""
+                result.detail += " Codex-Kontingent für diesen Account gemessen\(plan)."
+            }
+            return result
         }
         return await providerInspector.inspect(provider)
     }

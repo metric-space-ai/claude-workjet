@@ -117,7 +117,18 @@ public enum CredentialError: LocalizedError {
 public struct HTTPResponse: Sendable {
     public var statusCode: Int
     public var data: Data
-    public init(statusCode: Int, data: Data) { self.statusCode = statusCode; self.data = data }
+    /// Lower-cased field names with each original field value preserved.
+    /// Quota parsers must opt into a documented provider-specific profile.
+    public var headers: [String: [String]]
+    public init(statusCode: Int, data: Data, headers: [String: [String]] = [:]) {
+        self.statusCode = statusCode
+        self.data = data
+        var normalized: [String: [String]] = [:]
+        for (name, values) in headers { normalized[name.lowercased(), default: []].append(contentsOf: values) }
+        self.headers = normalized
+    }
+
+    public func header(_ name: String) -> String? { headers[name.lowercased()]?.first }
 }
 
 public protocol HTTPClient: Sendable {
@@ -139,7 +150,13 @@ public struct URLSessionHTTPClient: HTTPClient, Sendable {
         let session = URLSession(configuration: configuration, delegate: NoRedirectDelegate(), delegateQueue: nil)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        return HTTPResponse(statusCode: http.statusCode, data: data)
+        var headers: [String: [String]] = [:]
+        for (rawName, rawValue) in http.allHeaderFields {
+            let name = String(describing: rawName).lowercased()
+            if let values = rawValue as? [String] { headers[name, default: []].append(contentsOf: values) }
+            else { headers[name, default: []].append(String(describing: rawValue)) }
+        }
+        return HTTPResponse(statusCode: http.statusCode, data: data, headers: headers)
     }
 }
 
@@ -259,9 +276,11 @@ public struct ProviderInspector: Sendable {
         }
         let route = provider.kind.isLocalGateway ? " · Zugang über lokalen Gateway" : ""
         var detail = "Verbindung geprüft · \(models.count) Modelle gefunden\(route)."
-        var capacity: CapacityStatus = .unavailable(reason: "Für diesen Zugang sind keine Kapazitätsdaten verfügbar.")
-        if provider.kind == .directAPI, provider.modelProvider == .miniMax, let accessToken {
-            var quotaRequest = URLRequest(url: URL(string: "https://www.minimax.io/v1/token_plan/remains")!)
+        var capacity = Self.parseDocumentedRateHeaders(response.headers, provider: provider.modelProvider)
+            ?? .unavailable(reason: "Für diesen Zugang sind keine Kapazitätsdaten verfügbar.")
+        if provider.kind == .directAPI, provider.modelProvider == .miniMax, let accessToken,
+           let usageURL = Self.miniMaxUsageURL(baseURL: baseURL, apiKey: accessToken) {
+            var quotaRequest = URLRequest(url: usageURL)
             quotaRequest.httpMethod = "GET"
             quotaRequest.setValue("application/json", forHTTPHeaderField: "Accept")
             quotaRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
@@ -269,7 +288,9 @@ public struct ProviderInspector: Sendable {
                 let quotaResponse = try await client.request(quotaRequest)
                 if (200..<300).contains(quotaResponse.statusCode),
                    quotaResponse.data.count <= 1_048_576,
-                   let measured = Self.parseMiniMaxCapacity(quotaResponse.data) {
+                   let measured = accessToken.hasPrefix("sk-api-")
+                        ? Self.parseMiniMaxBalance(quotaResponse.data)
+                        : Self.parseMiniMaxCapacity(quotaResponse.data) {
                     capacity = measured.capacity
                     detail += " Kontingent: \(measured.summary)."
                 } else {
@@ -277,6 +298,25 @@ public struct ProviderInspector: Sendable {
                 }
             } catch {
                 capacity = .unavailable(reason: "Kontingent ist derzeit nicht erreichbar.")
+            }
+        } else if provider.kind == .directAPI, provider.modelProvider == .zAI, let accessToken,
+                  let usageURL = Self.zAIUsageURL(baseURL: baseURL) {
+            var quotaRequest = URLRequest(url: usageURL)
+            quotaRequest.httpMethod = "GET"
+            quotaRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+            quotaRequest.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            do {
+                let quotaResponse = try await client.request(quotaRequest)
+                if (200..<300).contains(quotaResponse.statusCode),
+                   quotaResponse.data.count <= 1_048_576,
+                   let measured = Self.parseZAIUsage(quotaResponse.data) {
+                    capacity = measured.capacity
+                    detail += " Kontingent: \(measured.summary)."
+                } else {
+                    capacity = .unavailable(reason: "Coding-Plan-Kontingent konnte nicht gelesen werden.")
+                }
+            } catch {
+                capacity = .unavailable(reason: "Coding-Plan-Kontingent ist derzeit nicht erreichbar.")
             }
         }
         return ProviderProbeResult(status: .connected, detail: detail, modelIDs: models, capacity: capacity)
@@ -286,6 +326,105 @@ public struct ProviderInspector: Sendable {
         public var capacity: CapacityStatus
         public var summary: String
         public var resetAt: Date?
+    }
+
+    /// Parses only provider-documented response headers. "OpenAI compatible"
+    /// alone is deliberately insufficient evidence for these semantics.
+    public static func parseDocumentedRateHeaders(_ headers: [String: [String]], provider: ModelProvider?) -> CapacityStatus? {
+        var normalized: [String: [String]] = [:]
+        for (name, values) in headers { normalized[name.lowercased(), default: []].append(contentsOf: values) }
+        let source = provider == .openAI ? "OpenAI-Antwortheader" : "Anthropic-Antwortheader"
+        let observedAt = Date()
+        var signals: [CapacitySignal] = []
+        for (suffix, label) in [("requests", "Anfragen"), ("tokens", "Tokens")] {
+            let limitName: String
+            let remainingName: String
+            let resetName: String
+            switch provider {
+            case .openAI:
+                limitName = "x-ratelimit-limit-\(suffix)"
+                remainingName = "x-ratelimit-remaining-\(suffix)"
+                resetName = "x-ratelimit-reset-\(suffix)"
+            case .anthropic:
+                limitName = "anthropic-ratelimit-\(suffix)-limit"
+                remainingName = "anthropic-ratelimit-\(suffix)-remaining"
+                resetName = "anthropic-ratelimit-\(suffix)-reset"
+            default:
+                return nil
+            }
+            guard let limit = headerNumber(normalized, limitName), limit > 0,
+                  let remaining = headerNumber(normalized, remainingName), remaining >= 0, remaining <= limit else { continue }
+            let compact = "\(compactNumber(remaining))/\(compactNumber(limit))"
+            signals.append(CapacitySignal(
+                kind: .rate,
+                label: label,
+                used: limit - remaining,
+                limit: limit,
+                compactValue: compact,
+                resetAt: headerReset(normalized[resetName]?.first, observedAt: observedAt),
+                observedAt: observedAt,
+                source: source,
+                scope: "Account/Projekt",
+                limited: remaining == 0
+            ))
+        }
+        guard !signals.isEmpty else { return nil }
+        return .observed(signals: signals, reason: nil)
+    }
+
+    private static func headerNumber(_ headers: [String: [String]], _ name: String) -> Double? {
+        guard let value = headers[name]?.first?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return Double(value)
+    }
+
+    private static func headerReset(_ raw: String?, observedAt: Date) -> Date? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return nil }
+        if let date = ISO8601DateFormatter().date(from: raw) { return date }
+        if let seconds = Double(raw) { return observedAt.addingTimeInterval(seconds) }
+        let pattern = #"(?i)([0-9]*\.?[0-9]+)(ms|s|m|h)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(raw.startIndex..<raw.endIndex, in: raw)
+        let matches = expression.matches(in: raw, range: range)
+        guard !matches.isEmpty else { return nil }
+        var seconds = 0.0
+        for match in matches {
+            guard let valueRange = Range(match.range(at: 1), in: raw),
+                  let unitRange = Range(match.range(at: 2), in: raw),
+                  let value = Double(raw[valueRange]) else { return nil }
+            switch raw[unitRange].lowercased() {
+            case "ms": seconds += value / 1_000
+            case "s": seconds += value
+            case "m": seconds += value * 60
+            case "h": seconds += value * 3_600
+            default: return nil
+            }
+        }
+        return observedAt.addingTimeInterval(seconds)
+    }
+
+    private static func compactNumber(_ value: Double) -> String {
+        if value >= 1_000_000 { return String(format: "%.1fM", value / 1_000_000).replacingOccurrences(of: ".0M", with: "M") }
+        if value >= 1_000 { return String(format: "%.1fk", value / 1_000).replacingOccurrences(of: ".0k", with: "k") }
+        return String(Int(value.rounded()))
+    }
+
+    public static func miniMaxUsageURL(baseURL: URL, apiKey: String) -> URL? {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(), host == "api.minimax.io" || host == "api.minimaxi.com" || host == "www.minimax.io" || host == "www.minimaxi.com" else { return nil }
+        if host.hasPrefix("www.") { components.host = "api." + host.dropFirst(4) }
+        components.path = apiKey.hasPrefix("sk-api-") ? "/account/query_balance" : "/v1/token_plan/remains"
+        components.query = nil
+        components.fragment = nil
+        return components.url
+    }
+
+    public static func zAIUsageURL(baseURL: URL) -> URL? {
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
+              let host = components.host?.lowercased(), ["api.z.ai", "open.bigmodel.cn", "dev.bigmodel.cn"].contains(host) else { return nil }
+        components.path = "/api/monitor/usage/quota/limit"
+        components.query = nil
+        components.fragment = nil
+        return components.url
     }
 
     /// Parses only explicitly identified text/coding-plan windows. In
@@ -302,6 +441,8 @@ public struct ProviderInspector: Sendable {
             var limit: Double
             var label: String
             var resetAt: Date?
+            var compactValue: String?
+            var limited: Bool
             var fraction: Double { used / limit }
         }
         var windows: [Window] = []
@@ -314,21 +455,27 @@ public struct ProviderInspector: Sendable {
                 guard let value = number(entry[key]), value > 0 else { return nil }
                 return Date(timeIntervalSince1970: value > 10_000_000_000 ? value / 1_000 : value)
             }
-            func appendCounts(usedKey: String, limitKey: String, label: String, resetKey: String) -> Bool {
+            func status(_ key: String) -> Int? { number(entry[key]).map(Int.init) }
+            func appendCounts(usedKey: String, limitKey: String, label: String, resetKey: String, statusKey: String) -> Bool {
                 guard let used = number(entry[usedKey]), let limit = number(entry[limitKey]),
                       used >= 0, limit > 0, used <= limit else { return false }
-                windows.append(Window(used: used, limit: limit, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey)))
+                let state = status(statusKey)
+                windows.append(Window(used: state == 2 ? limit : used, limit: limit, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey), compactValue: state == 3 ? "∞" : nil, limited: state == 2))
                 return true
             }
-            func appendRemainingPercent(key: String, label: String, resetKey: String) {
-                guard let remaining = number(entry[key]), (0...100).contains(remaining) else { return }
-                windows.append(Window(used: 100 - remaining, limit: 100, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey)))
+            func appendRemainingPercent(key: String, label: String, resetKey: String, statusKey: String, boost: Double = 1) {
+                guard let remaining = number(entry[key]), remaining >= 0 else { return }
+                let displayed = remaining * boost
+                let state = status(statusKey)
+                let bounded = min(displayed, 100)
+                windows.append(Window(used: state == 2 ? 100 : max(0, 100 - bounded), limit: 100, label: "\(rawName) · \(label)", resetAt: resetDate(resetKey), compactValue: state == 3 ? "∞" : (displayed > 100 ? "\(Int(displayed.rounded()))% übrig" : nil), limited: state == 2))
             }
-            if !appendCounts(usedKey: "current_interval_usage_count", limitKey: "current_interval_total_count", label: "Intervall", resetKey: "end_time") {
-                appendRemainingPercent(key: "current_interval_remaining_percent", label: "Intervall", resetKey: "end_time")
+            if !appendCounts(usedKey: "current_interval_usage_count", limitKey: "current_interval_total_count", label: "5 Stunden", resetKey: "end_time", statusKey: "current_interval_status") {
+                appendRemainingPercent(key: "current_interval_remaining_percent", label: "5 Stunden", resetKey: "end_time", statusKey: "current_interval_status")
             }
-            if !appendCounts(usedKey: "current_weekly_usage_count", limitKey: "current_weekly_total_count", label: "Woche", resetKey: "weekly_end_time") {
-                appendRemainingPercent(key: "current_weekly_remaining_percent", label: "Woche", resetKey: "weekly_end_time")
+            let boost = max(1, (number(entry["weekly_boost_permille"]) ?? 1_000) / 1_000)
+            if !appendCounts(usedKey: "current_weekly_usage_count", limitKey: "current_weekly_total_count", label: "Woche", resetKey: "weekly_end_time", statusKey: "current_weekly_status") {
+                appendRemainingPercent(key: "current_weekly_remaining_percent", label: "Woche", resetKey: "weekly_end_time", statusKey: "current_weekly_status", boost: boost)
             }
         }
         guard let worst = windows.max(by: { $0.fraction < $1.fraction }) else { return nil }
@@ -340,12 +487,74 @@ public struct ProviderInspector: Sendable {
                 return "\(window.label) \(Int((window.fraction * 100).rounded())) % genutzt\(reset)"
             }
             .joined(separator: "; ")
-        let unitReset = worst.resetAt.map { " · Reset \(formatter.string(from: $0))" } ?? ""
+        let observedAt = Date()
+        var signals = windows.map {
+            CapacitySignal(kind: .quota, label: $0.label, used: $0.used, limit: $0.limit, compactValue: $0.compactValue, resetAt: $0.resetAt, observedAt: observedAt, source: "MiniMax Token Plan", scope: "Account", limited: $0.limited)
+        }
+        signals += [
+            CapacitySignal(kind: .rate, label: "M3 Anfragen", compactValue: "200/m", observedAt: observedAt, source: "MiniMax-Dokumentation", scope: "M3", evidence: .published),
+            CapacitySignal(kind: .rate, label: "M3 Tokens", compactValue: "10M/m", observedAt: observedAt, source: "MiniMax-Dokumentation", scope: "M3", evidence: .published)
+        ]
         return MiniMaxCapacityMeasurement(
-            capacity: .measured(used: worst.used, limit: worst.limit, unit: worst.label + unitReset, rateLimited: worst.used >= worst.limit),
+            capacity: .observed(signals: signals, reason: nil),
             summary: summaries,
             resetAt: worst.resetAt
         )
+    }
+
+    public static func parseMiniMaxBalance(_ data: Data) -> MiniMaxCapacityMeasurement? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let balance = number(root["available_balance"] ?? (root["data"] as? [String: Any])?["available_balance"]), balance >= 0 else { return nil }
+        let currency = (root["currency"] as? String) ?? ((root["data"] as? [String: Any])?["currency"] as? String) ?? "USD"
+        let value = currency.uppercased() == "USD" ? String(format: "$%.2f", balance) : "\(balance) \(currency)"
+        let signal = CapacitySignal(kind: .quota, label: "PAYG-Guthaben", compactValue: value, source: "MiniMax Kontostand", scope: "Account")
+        return MiniMaxCapacityMeasurement(capacity: .observed(signals: [signal], reason: nil), summary: "Verfügbar \(value)", resetAt: nil)
+    }
+
+    public struct ZAIUsageMeasurement: Equatable, Sendable {
+        public var capacity: CapacityStatus
+        public var summary: String
+    }
+
+    public static func parseZAIUsage(_ data: Data, observedAt: Date = Date()) -> ZAIUsageMeasurement? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let payload = (root["data"] as? [String: Any]) ?? root
+        guard let entries = payload["limits"] as? [[String: Any]] else { return nil }
+        let tier = nonempty(payload["level"])?.capitalized
+        var signals: [CapacitySignal] = []
+        for entry in entries {
+            guard let type = nonempty(entry["type"])?.uppercased(), let percentage = number(entry["percentage"]), (0...100).contains(percentage) else { continue }
+            let windowNumber = number(entry["number"]).map(Int.init)
+            let unit = number(entry["unit"]).map(Int.init)
+            let label: String
+            if type == "TOKENS_LIMIT", windowNumber == 5, unit == 3 { label = "5 Stunden" }
+            else if type == "TOKENS_LIMIT", windowNumber == 1, unit == 6 { label = "Woche" }
+            else if type == "TIME_LIMIT", windowNumber == 1, unit == 5 { label = "Web/MCP · Monat" }
+            else { continue }
+            let reset = timestamp(entry["nextResetTime"] ?? entry["next_reset_time"])
+            signals.append(CapacitySignal(kind: .quota, label: label, used: percentage, limit: 100, resetAt: reset, observedAt: observedAt, source: "Z.ai Coding Plan", scope: type == "TIME_LIMIT" ? "Web/MCP" : "Modelle", limited: percentage >= 100))
+        }
+        guard !signals.isEmpty else { return nil }
+        if let tier {
+            signals.append(CapacitySignal(kind: .rate, label: "Dynamische Parallelität", compactValue: "\(tier) · dyn.", observedAt: observedAt, source: "Z.ai Coding Plan", scope: "Account"))
+        }
+        let summary = signals.filter { $0.kind == .quota }.map { "\($0.label) \(Int(($0.fraction ?? 0) * 100)) % genutzt" }.joined(separator: "; ")
+        return ZAIUsageMeasurement(capacity: .observed(signals: signals, reason: nil), summary: summary)
+    }
+
+    private static func nonempty(_ value: Any?) -> String? {
+        guard let value = value as? String else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func timestamp(_ value: Any?) -> Date? {
+        if let text = value as? String {
+            if let date = ISO8601DateFormatter().date(from: text) { return date }
+            if let number = Double(text) { return Date(timeIntervalSince1970: number > 10_000_000_000 ? number / 1_000 : number) }
+        }
+        guard let number = number(value), number > 0 else { return nil }
+        return Date(timeIntervalSince1970: number > 10_000_000_000 ? number / 1_000 : number)
     }
 
     private static func number(_ value: Any?) -> Double? {

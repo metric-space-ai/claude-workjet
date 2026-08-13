@@ -436,7 +436,7 @@ struct ProviderAccountsView: View {
     }
 
     private func accountSummary(_ account: Provider) -> String {
-        if let fraction = account.capacity.fraction {
+        if let fraction = account.capacity.displayFraction {
             let reset = capacityResetLabel(account.capacity).map { " · \($0)" } ?? ""
             return "\(model.providerPresentation(for: account).state) · \(Int((fraction * 100).rounded())) %\(reset)"
         }
@@ -444,9 +444,13 @@ struct ProviderAccountsView: View {
     }
 
     private func capacityResetLabel(_ capacity: CapacityStatus) -> String? {
+        if let resetAt = capacity.signals.filter({ $0.isCurrent() }).compactMap(\.resetAt).min() {
+            return "Reset " + resetAt.formatted(.dateTime.day().month().hour().minute())
+        }
         let unit: String
         switch capacity {
         case let .measured(_, _, value, _), let .userConfigured(_, _, value, _): unit = value
+        case .observed: return nil
         case .unavailable: return nil
         }
         guard let marker = unit.range(of: " · Reset ") else { return nil }

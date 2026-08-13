@@ -283,16 +283,16 @@ final class HarnessLifecycleIntegrationTests: XCTestCase {
             configuration.workers[index].providerRoute = .account(provider.id)
         }
         let model = WorkjetViewModel(configuration: configuration, service: service, persistenceDelay: 60)
-        let local = try XCTUnwrap(configuration.computers.first(where: \.isLocal))
+        let expectedInspectionCount = Set(configuration.workers.map(\.harness)).count
 
         model.startPolling()
-        while model.harnessStatus(.claudeCode, on: local.id).state != .installed {
+        while await gate.callCount < expectedInspectionCount {
             await Task.yield()
         }
         model.stopPolling()
 
         let inspectionCount = await gate.callCount
-        XCTAssertEqual(inspectionCount, Set(configuration.workers.map(\.harness)).count, "Jede konfigurierte Harness-Abhängigkeit darf genau eine Startprüfung auslösen.")
+        XCTAssertEqual(inspectionCount, expectedInspectionCount, "Jede konfigurierte Harness-Abhängigkeit darf genau eine Startprüfung auslösen.")
         XCTAssertTrue(model.workers.allSatisfy { model.operationalStatus(for: $0).state == .unverified })
         XCTAssertTrue(model.statusMessages.isEmpty)
     }
